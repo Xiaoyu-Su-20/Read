@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Reader",
+  "version": "0.1.0",
+  "identifier": "com.openai.calmreader",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Reader",
+        "width": 1440,
+        "height": 960,
+        "minWidth": 980,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false,
+        "maximized": true,
+        "decorations": false,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/**/*",
+          "$APPLOCALDATA/**/*",
+          "$LOCALAPPDATA/**/*"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico"]
+  }
+}
+

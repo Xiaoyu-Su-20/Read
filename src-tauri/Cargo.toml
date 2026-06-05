@@ -1,0 +1,30 @@
+[package]
+name = "calm-reader"
+version = "0.1.0"
+description = "A calm, command-first PDF reader."
+authors = ["OpenAI Codex"]
+edition = "2021"
+
+[lib]
+name = "calm_reader_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+chrono = { version = "0.4.38", features = ["serde"] }
+sanitize-filename = "0.5.0"
+serde = { version = "1.0.214", features = ["derive"] }
+serde_json = "1.0.132"
+sha2 = "0.10.8"
+tauri = { version = "2.0.0", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2.0.0"
+thiserror = "1.0.65"
+uuid = { version = "1.11.0", features = ["serde", "v4"] }
+
+[dev-dependencies]
+tempfile = "3.13.0"
+
+[package.metadata]
+
