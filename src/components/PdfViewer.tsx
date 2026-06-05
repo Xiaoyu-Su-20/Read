@@ -213,23 +213,37 @@ export default function PdfViewer({
         }
 
         const viewport = page.getViewport({ scale: zoom });
+        const ratio = window.devicePixelRatio || 1;
+        const offscreenCanvas = window.document.createElement("canvas");
+        const offscreenContext = offscreenCanvas.getContext("2d", { alpha: false });
+        if (!offscreenContext) {
+          return;
+        }
+
+        offscreenCanvas.width = Math.floor(viewport.width * ratio);
+        offscreenCanvas.height = Math.floor(viewport.height * ratio);
+
+        await page.render({
+          canvasContext: offscreenContext,
+          viewport,
+          transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0]
+        }).promise;
+
+        if (cancelled || !canvasRef.current || !textLayerRef.current) {
+          return;
+        }
+
         const canvas = canvasRef.current;
         const context = canvas.getContext("2d", { alpha: false });
         if (!context) {
           return;
         }
 
-        const ratio = window.devicePixelRatio || 1;
-        canvas.width = Math.floor(viewport.width * ratio);
-        canvas.height = Math.floor(viewport.height * ratio);
+        canvas.width = offscreenCanvas.width;
+        canvas.height = offscreenCanvas.height;
         canvas.style.width = `${viewport.width}px`;
         canvas.style.height = `${viewport.height}px`;
-
-        await page.render({
-          canvasContext: context,
-          viewport,
-          transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0]
-        }).promise;
+        context.drawImage(offscreenCanvas, 0, 0);
 
         const textLayer = textLayerRef.current;
         textLayer.replaceChildren();
@@ -246,6 +260,7 @@ export default function PdfViewer({
           viewport
         });
         await renderTask.render();
+        setError(null);
       } catch (renderError) {
         if (cancelled) {
           return;
@@ -264,7 +279,7 @@ export default function PdfViewer({
     return () => {
       cancelled = true;
     };
-  }, [currentPage, document, zoom]);
+  }, [currentPage, document, onStatusChange, zoom]);
 
   useEffect(() => {
     if (!document) {

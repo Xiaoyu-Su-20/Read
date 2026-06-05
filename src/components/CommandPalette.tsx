@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import { filterPaletteItems } from "../lib/commands";
 import type { PaletteItem } from "../lib/types";
@@ -36,6 +36,7 @@ export default function CommandPalette({
 }: CommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const deferredQuery = useDeferredValue(session?.query ?? "");
+  const [activeIndex, setActiveIndex] = useState(0);
 
   useEffect(() => {
     if (!open) {
@@ -44,6 +45,17 @@ export default function CommandPalette({
     inputRef.current?.focus();
     inputRef.current?.select();
   }, [open, session?.kind]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [open, session?.kind, session?.query]);
+
+  const immediateFilteredItems = useMemo(() => {
+    if (!session || session.kind === "input") {
+      return [];
+    }
+    return filterPaletteItems(session.items, session.query);
+  }, [session]);
 
   const filteredItems = useMemo(() => {
     if (!session || session.kind === "input") {
@@ -56,15 +68,23 @@ export default function CommandPalette({
     return null;
   }
 
+  const displayedActiveIndex =
+    filteredItems.length === 0 ? -1 : Math.min(activeIndex, filteredItems.length - 1);
+
   const handleEnter = async () => {
     if (session.kind === "input") {
       await session.onSubmit(session.query);
+      onClose();
       return;
     }
 
-    const firstItem = filteredItems[0];
-    if (firstItem) {
-      await firstItem.onSelect();
+    const selectedItem =
+      immediateFilteredItems[Math.min(activeIndex, Math.max(immediateFilteredItems.length - 1, 0))];
+    if (selectedItem) {
+      await selectedItem.onSelect();
+      if (session.kind === "select") {
+        onClose();
+      }
     }
   };
 
@@ -94,6 +114,14 @@ export default function CommandPalette({
               event.preventDefault();
               onClose();
             }
+            if (session.kind !== "input" && event.key === "ArrowDown") {
+              event.preventDefault();
+              setActiveIndex((index) => Math.min(index + 1, Math.max(immediateFilteredItems.length - 1, 0)));
+            }
+            if (session.kind !== "input" && event.key === "ArrowUp") {
+              event.preventDefault();
+              setActiveIndex((index) => Math.max(index - 1, 0));
+            }
             if (event.key === "Enter") {
               event.preventDefault();
               void handleEnter();
@@ -103,21 +131,34 @@ export default function CommandPalette({
 
         {session.kind === "input" ? (
           <div className="palette__empty">
-            <p>Press Enter to {session.confirmLabel.toLowerCase()}.</p>
+            <p>
+              {session.emptyMessage ??
+                `Press Enter to ${session.confirmLabel.toLowerCase()}.`}
+            </p>
           </div>
         ) : filteredItems.length === 0 ? (
           <div className="palette__empty">
             <p>{session.emptyMessage}</p>
           </div>
         ) : (
-          <ul className="palette__results">
-            {filteredItems.map((item) => (
+          <ul className="palette__results" role="listbox" aria-label={session.title}>
+            {filteredItems.map((item, index) => (
               <li key={item.id}>
                 <button
-                  className="palette__item"
+                  className={
+                    index === displayedActiveIndex
+                      ? "palette__item palette__item--active"
+                      : "palette__item"
+                  }
                   type="button"
+                  role="option"
+                  aria-selected={index === displayedActiveIndex}
+                  onMouseEnter={() => setActiveIndex(index)}
                   onClick={() => {
                     void item.onSelect();
+                    if (session.kind === "select") {
+                      onClose();
+                    }
                   }}
                 >
                   <span>
