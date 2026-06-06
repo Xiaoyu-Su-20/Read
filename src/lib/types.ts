@@ -4,8 +4,10 @@ export type FolderRecord = {
   id: string;
   name: string;
   parentId: string | null;
-  createdAt: string;
+  createdAt: string | null;
 };
+
+export type DocumentAvailability = "available" | "missing";
 
 export type DocumentRecord = {
   id: string;
@@ -13,10 +15,10 @@ export type DocumentRecord = {
   fileName: string;
   folderId: string;
   relativePath: string;
-  sidecarRelativePath: string;
   fingerprint: string;
   importedAt: string;
   lastOpenedAt: string | null;
+  availability: DocumentAvailability;
 };
 
 export type Bookmark = {
@@ -47,6 +49,14 @@ export type DocumentPayload = {
   filePath: string;
 };
 
+export type RenderedPagePayload = {
+  imagePath: string;
+  pageNumber: number;
+  width: number;
+  height: number;
+  cacheKey: string;
+};
+
 export type FolderTreeNode = {
   folder: FolderRecord;
   folders: FolderTreeNode[];
@@ -69,9 +79,6 @@ export type ViewerSnapshot = {
 export type ViewerApi = {
   nextPage: () => void;
   previousPage: () => void;
-  zoomIn: () => void;
-  zoomOut: () => void;
-  resetZoom: () => void;
   goToPage: (page: number) => void;
   search: (query: string) => Promise<number>;
   jumpToOutline: (item: OutlineItem) => void;

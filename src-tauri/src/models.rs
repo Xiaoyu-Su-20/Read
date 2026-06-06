@@ -8,7 +8,21 @@ pub struct FolderRecord {
     pub id: String,
     pub name: String,
     pub parent_id: Option<String>,
-    pub created_at: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DocumentAvailability {
+    Available,
+    Missing,
+}
+
+impl Default for DocumentAvailability {
+    fn default() -> Self {
+        Self::Available
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -19,10 +33,11 @@ pub struct DocumentRecord {
     pub file_name: String,
     pub folder_id: String,
     pub relative_path: String,
-    pub sidecar_relative_path: String,
     pub fingerprint: String,
     pub imported_at: String,
     pub last_opened_at: Option<String>,
+    #[serde(default)]
+    pub availability: DocumentAvailability,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -84,6 +99,16 @@ pub struct DocumentPayload {
     pub file_path: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedPagePayload {
+    pub image_path: String,
+    pub page_number: u32,
+    pub width: u32,
+    pub height: u32,
+    pub cache_key: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderTreeNode {
@@ -95,24 +120,24 @@ pub struct FolderTreeNode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryIndex {
+    #[serde(default = "default_index_version")]
     pub version: u32,
-    pub folders: Vec<FolderRecord>,
+    #[serde(default)]
     pub documents: Vec<DocumentRecord>,
+    #[serde(default)]
     pub last_opened_document_id: Option<String>,
 }
 
 impl Default for LibraryIndex {
     fn default() -> Self {
         Self {
-            version: 1,
-            folders: vec![FolderRecord {
-                id: ROOT_FOLDER_ID.to_string(),
-                name: "Library".to_string(),
-                parent_id: None,
-                created_at: crate::store::timestamp(),
-            }],
+            version: default_index_version(),
             documents: Vec::new(),
             last_opened_document_id: None,
         }
     }
+}
+
+fn default_index_version() -> u32 {
+    2
 }

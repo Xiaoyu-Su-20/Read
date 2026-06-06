@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { collectDocuments, findFolderNode, flattenFolders } from "./tree";
+import type { FolderTreeNode } from "./types";
 
-const library = {
+const library: FolderTreeNode = {
   folder: {
     id: "root",
     name: "Library",
     parentId: null,
-    createdAt: "2026-01-01T00:00:00Z"
+    createdAt: null
   },
   documents: [],
   folders: [
@@ -16,7 +17,7 @@ const library = {
         id: "work",
         name: "Work",
         parentId: "root",
-        createdAt: "2026-01-01T00:00:00Z"
+        createdAt: null
       },
       documents: [
         {
@@ -25,10 +26,10 @@ const library = {
           fileName: "spec.pdf",
           folderId: "work",
           relativePath: "Work/spec.pdf",
-          sidecarRelativePath: "Work/spec.pdf.reader.json",
           fingerprint: "123",
           importedAt: "2026-01-01T00:00:00Z",
-          lastOpenedAt: null
+          lastOpenedAt: null,
+          availability: "available"
         }
       ],
       folders: []

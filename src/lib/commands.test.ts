@@ -37,10 +37,10 @@ describe("commands helpers", () => {
         fileName: "older.pdf",
         folderId: "root",
         relativePath: "older.pdf",
-        sidecarRelativePath: "older.pdf.reader.json",
         fingerprint: "a",
         importedAt: "2026-01-01T00:00:00Z",
-        lastOpenedAt: "2026-01-02T00:00:00Z"
+        lastOpenedAt: "2026-01-02T00:00:00Z",
+        availability: "available"
       },
       {
         id: "newer",
@@ -48,10 +48,10 @@ describe("commands helpers", () => {
         fileName: "newer.pdf",
         folderId: "root",
         relativePath: "newer.pdf",
-        sidecarRelativePath: "newer.pdf.reader.json",
         fingerprint: "b",
         importedAt: "2026-01-01T00:00:00Z",
-        lastOpenedAt: "2026-01-03T00:00:00Z"
+        lastOpenedAt: "2026-01-03T00:00:00Z",
+        availability: "available"
       }
     ]);
 

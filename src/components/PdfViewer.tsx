@@ -2,21 +2,39 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
+import { readDocumentBytes, renderPdfPage } from "../lib/api";
+import { debugAction, startDebugProcess } from "../lib/debugLog";
+import {
+  createRenderedPageCache,
+  makeRenderCacheKey,
+  shouldIgnoreRenderResponse
+} from "../lib/pdfRender";
+
 import type {
   DocumentState,
   OutlineItem,
+  RenderedPagePayload,
   ViewerApi,
   ViewerSnapshot
 } from "../lib/types";
 
 type PdfViewerProps = {
-  filePath: string | null;
+  documentId: string | null;
   initialState: DocumentState | null;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
   onOutlineChange: (items: OutlineItem[]) => void;
   onStatusChange: (message: string) => void;
   registerApi: (api: ViewerApi | null) => void;
 };
+
+type LoadedPdfTextDocument = Awaited<ReturnType<typeof loadPdfTextDocument>>;
+
+type VisibleRenderedPage = RenderedPagePayload & {
+  imageUrl: string;
+  requestKey: string;
+};
+
+const RENDER_CACHE_SIZE = 20;
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/legacy/build/pdf.worker.mjs",
@@ -33,30 +51,30 @@ const standardFontDataUrl = withTrailingSlash(
 const cMapUrl = withTrailingSlash(
   new URL("pdfjs-dist/cmaps/", import.meta.url).toString()
 );
+const iccUrl = withTrailingSlash(
+  new URL("pdfjs-dist/iccs/", import.meta.url).toString()
+);
+const wasmUrl = withTrailingSlash(
+  new URL("pdfjs-dist/wasm/", import.meta.url).toString()
+);
 
-type LoadedPdfDocument = Awaited<ReturnType<typeof loadPdfDocument>>;
-
-async function loadPdfDocument(url: string) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Unable to read PDF bytes (${response.status}).`);
-  }
-  const data = new Uint8Array(await response.arrayBuffer());
-
+async function loadPdfTextDocument(data: Uint8Array) {
   return pdfjsLib.getDocument({
     data,
     cMapUrl,
     cMapPacked: true,
+    iccUrl,
     standardFontDataUrl,
-    isImageDecoderSupported: false,
+    wasmUrl,
+    useWorkerFetch: false,
     useWasm: false,
-    disableFontFace: true,
+    disableFontFace: false,
     useSystemFonts: true
   }).promise;
 }
 
 async function resolveDestinationPage(
-  document: LoadedPdfDocument,
+  document: LoadedPdfTextDocument,
   destination: unknown
 ) {
   if (!destination) {
@@ -79,7 +97,7 @@ async function resolveDestinationPage(
 
   if (reference && typeof reference === "object") {
     const index = await document.getPageIndex(
-      reference as Parameters<LoadedPdfDocument["getPageIndex"]>[0]
+      reference as Parameters<LoadedPdfTextDocument["getPageIndex"]>[0]
     );
     return index + 1;
   }
@@ -88,7 +106,7 @@ async function resolveDestinationPage(
 }
 
 async function extractOutline(
-  document: LoadedPdfDocument,
+  document: LoadedPdfTextDocument,
   items: unknown[] | null,
   prefix = "outline"
 ): Promise<OutlineItem[]> {
@@ -114,79 +132,133 @@ async function extractOutline(
   return result;
 }
 
+function toVisibleRenderedPage(
+  payload: RenderedPagePayload,
+  requestKey: string
+): VisibleRenderedPage {
+  return {
+    ...payload,
+    imageUrl: convertFileSrc(payload.imagePath),
+    requestKey
+  };
+}
+
 export default function PdfViewer({
-  filePath,
+  documentId,
   initialState,
   onSnapshotChange,
   onOutlineChange,
   onStatusChange,
   registerApi
 }: PdfViewerProps) {
-  const [document, setDocument] = useState<LoadedPdfDocument | null>(null);
+  const [textDocument, setTextDocument] = useState<LoadedPdfTextDocument | null>(null);
   const [pageCount, setPageCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
-  const [zoom, setZoom] = useState(1);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [documentError, setDocumentError] = useState<string | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [loadingDocument, setLoadingDocument] = useState(false);
+  const [isRendering, setIsRendering] = useState(false);
+  const [visiblePage, setVisiblePage] = useState<VisibleRenderedPage | null>(null);
+  const [pageInitialized, setPageInitialized] = useState(false);
 
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const textLayerRef = useRef<HTMLDivElement | null>(null);
   const pageTextCache = useRef(new Map<number, string>());
+  const renderedPageCache = useRef(createRenderedPageCache(RENDER_CACHE_SIZE));
   const lastWheelActionAt = useRef(0);
+  const renderSequenceRef = useRef(0);
+  const initializedDocumentIdRef = useRef<string | null>(null);
+  const initialPageRef = useRef(1);
 
-  const applyZoomDelta = (direction: number) => {
-    setZoom((value) => {
-      const next = direction < 0 ? value + 0.1 : value - 0.1;
-      return Math.min(3, Math.max(0.5, Number(next.toFixed(2))));
-    });
-  };
+  useEffect(() => {
+    if (documentId === initializedDocumentIdRef.current) {
+      return;
+    }
+
+    initializedDocumentIdRef.current = documentId;
+    initialPageRef.current = Math.max(initialState?.lastPage ?? 1, 1);
+    setCurrentPage(initialPageRef.current);
+    setTextDocument(null);
+    setPageCount(0);
+    setDocumentError(null);
+    setRenderError(null);
+    setIsRendering(false);
+    setVisiblePage(null);
+    setPageInitialized(false);
+    pageTextCache.current.clear();
+    renderedPageCache.current.clear();
+  }, [documentId]);
 
   useEffect(() => {
     let cancelled = false;
+
     async function load() {
-      if (!filePath) {
-        setDocument(null);
+      if (!documentId) {
+        setTextDocument(null);
         setPageCount(0);
+        setDocumentError(null);
         pageTextCache.current.clear();
+        renderedPageCache.current.clear();
+        onOutlineChange([]);
         registerApi(null);
         return;
       }
 
-      setLoading(true);
-      setError(null);
+      setLoadingDocument(true);
+      setDocumentError(null);
+      const process = startDebugProcess("viewer.load-document", {
+        documentId
+      });
 
       try {
-        const loadedDocument = await loadPdfDocument(convertFileSrc(filePath));
+        const loadedBytes = await readDocumentBytes(documentId);
+        process.checkpoint("bytes-loaded", {
+          byteCount: loadedBytes.length
+        });
+        const loadedDocument = await loadPdfTextDocument(Uint8Array.from(loadedBytes));
         if (cancelled) {
           return;
         }
+        process.checkpoint("pdfjs-loaded", {
+          pageCount: loadedDocument.numPages
+        });
 
         const nextPage = Math.min(
-          Math.max(initialState?.lastPage ?? 1, 1),
+          Math.max(initialPageRef.current, 1),
           loadedDocument.numPages
         );
-        const nextZoom = initialState?.zoom ?? 1;
         const nextOutline = await extractOutline(
           loadedDocument,
           await loadedDocument.getOutline()
         );
+        if (cancelled) {
+          return;
+        }
 
         pageTextCache.current.clear();
-        setDocument(loadedDocument);
+        setTextDocument(loadedDocument);
         setPageCount(loadedDocument.numPages);
         setCurrentPage(nextPage);
-        setZoom(nextZoom);
+        setPageInitialized(true);
         onOutlineChange(nextOutline);
         onStatusChange(`Opened ${loadedDocument.numPages} pages.`);
+        process.finish({
+          pageCount: loadedDocument.numPages,
+          initialPage: nextPage,
+          outlineCount: nextOutline.length
+        });
       } catch (loadError) {
         if (cancelled) {
           return;
         }
-        setError(loadError instanceof Error ? loadError.message : "Unable to load PDF.");
+
+        const message =
+          loadError instanceof Error ? loadError.message : "Unable to load PDF.";
+        setDocumentError(message);
+        setPageInitialized(false);
         onStatusChange("Unable to load the selected PDF.");
+        process.fail(loadError);
       } finally {
         if (!cancelled) {
-          setLoading(false);
+          setLoadingDocument(false);
         }
       }
     }
@@ -196,116 +268,105 @@ export default function PdfViewer({
     return () => {
       cancelled = true;
     };
-  }, [filePath, onOutlineChange, onStatusChange]);
+  }, [documentId, onOutlineChange, onStatusChange, registerApi]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function renderCurrentPage() {
-      if (!document || !canvasRef.current || !textLayerRef.current) {
-        return;
-      }
-
-      try {
-        const page = await document.getPage(currentPage);
-        if (cancelled) {
-          return;
-        }
-
-        const viewport = page.getViewport({ scale: zoom });
-        const ratio = window.devicePixelRatio || 1;
-        const offscreenCanvas = window.document.createElement("canvas");
-        const offscreenContext = offscreenCanvas.getContext("2d", { alpha: false });
-        if (!offscreenContext) {
-          return;
-        }
-
-        offscreenCanvas.width = Math.floor(viewport.width * ratio);
-        offscreenCanvas.height = Math.floor(viewport.height * ratio);
-
-        await page.render({
-          canvasContext: offscreenContext,
-          viewport,
-          transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0]
-        }).promise;
-
-        if (cancelled || !canvasRef.current || !textLayerRef.current) {
-          return;
-        }
-
-        const canvas = canvasRef.current;
-        const context = canvas.getContext("2d", { alpha: false });
-        if (!context) {
-          return;
-        }
-
-        canvas.width = offscreenCanvas.width;
-        canvas.height = offscreenCanvas.height;
-        canvas.style.width = `${viewport.width}px`;
-        canvas.style.height = `${viewport.height}px`;
-        context.drawImage(offscreenCanvas, 0, 0);
-
-        const textLayer = textLayerRef.current;
-        textLayer.replaceChildren();
-        textLayer.className = "reader-page__text-layer textLayer";
-        textLayer.style.width = `${viewport.width}px`;
-        textLayer.style.height = `${viewport.height}px`;
-        if (cancelled) {
-          return;
-        }
-
-        const renderTask = new pdfjsLib.TextLayer({
-          container: textLayer,
-          textContentSource: page.streamTextContent(),
-          viewport
-        });
-        await renderTask.render();
-        setError(null);
-      } catch (renderError) {
-        if (cancelled) {
-          return;
-        }
-        const message =
-          renderError instanceof Error
-            ? renderError.message
-            : "Unable to render this PDF page.";
-        setError(message);
-        onStatusChange(message);
-      }
-    }
-
-    void renderCurrentPage();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [currentPage, document, onStatusChange, zoom]);
-
-  useEffect(() => {
-    if (!document) {
+    if (!documentId) {
+      renderSequenceRef.current += 1;
+      setVisiblePage(null);
+      setIsRendering(false);
+      setRenderError(null);
       return;
     }
+
+    if (!pageInitialized) {
+      return;
+    }
+
+    const requestKey = makeRenderCacheKey(documentId, currentPage);
+    const cachedPage = renderedPageCache.current.get(requestKey);
+    const requestSequence = renderSequenceRef.current + 1;
+    renderSequenceRef.current = requestSequence;
+
+    debugAction("viewer.navigate", {
+      documentId,
+        currentPage,
+        requestSequence,
+        pageInitialized,
+        cached: Boolean(cachedPage)
+      });
+
+    if (cachedPage) {
+      setVisiblePage(toVisibleRenderedPage(cachedPage, requestKey));
+      setRenderError(null);
+      setIsRendering(false);
+      return;
+    }
+
+    setIsRendering(true);
+    setRenderError(null);
+
+    const process = startDebugProcess("viewer.render-page", {
+      documentId,
+      page: currentPage,
+      requestSequence,
+      pageInitialized,
+      cached: false
+    });
+    void renderPdfPage(documentId, currentPage)
+      .then((payload) => {
+        if (shouldIgnoreRenderResponse(requestSequence, renderSequenceRef.current)) {
+          process.checkpoint("stale-response", {
+            page: payload.pageNumber,
+            activeSequence: renderSequenceRef.current
+          });
+          return;
+        }
+
+        renderedPageCache.current.set(requestKey, payload);
+        setVisiblePage(toVisibleRenderedPage(payload, requestKey));
+        setRenderError(null);
+        setIsRendering(false);
+        process.finish({
+          page: payload.pageNumber,
+          backendCacheKey: payload.cacheKey
+        });
+      })
+      .catch((renderFailure) => {
+        if (shouldIgnoreRenderResponse(requestSequence, renderSequenceRef.current)) {
+          return;
+        }
+
+        process.fail(renderFailure);
+        setRenderError("Unable to render this PDF page.");
+        setIsRendering(false);
+        onStatusChange("Unable to render this PDF page.");
+      });
+  }, [currentPage, documentId, onStatusChange, pageInitialized]);
+
+  useEffect(() => {
+    if (!textDocument || !pageInitialized) {
+      return;
+    }
+
     onSnapshotChange({
       currentPage,
       pageCount,
-      zoom
+      zoom: 1
     });
-  }, [currentPage, document, onSnapshotChange, pageCount, zoom]);
+  }, [currentPage, onSnapshotChange, pageCount, pageInitialized, textDocument]);
 
   useEffect(() => {
-    if (!document) {
+    if (!textDocument) {
       registerApi(null);
       return;
     }
 
     const api: ViewerApi = {
-      nextPage: () => setCurrentPage((page) => Math.min(page + 1, document.numPages)),
+      nextPage: () => setCurrentPage((page) => Math.min(page + 1, textDocument.numPages)),
       previousPage: () => setCurrentPage((page) => Math.max(page - 1, 1)),
-      zoomIn: () => setZoom((value) => Math.min(3, Number((value + 0.1).toFixed(2)))),
-      zoomOut: () => setZoom((value) => Math.max(0.5, Number((value - 0.1).toFixed(2)))),
-      resetZoom: () => setZoom(1),
       goToPage: (page) =>
-        setCurrentPage(Math.min(Math.max(Math.round(page), 1), document.numPages)),
+        setCurrentPage(Math.min(Math.max(Math.round(page), 1), textDocument.numPages)),
       search: async (query) => {
         const normalizedQuery = query.trim().toLowerCase();
         if (!normalizedQuery) {
@@ -313,10 +374,10 @@ export default function PdfViewer({
           return 0;
         }
 
-        for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+        for (let pageNumber = 1; pageNumber <= textDocument.numPages; pageNumber += 1) {
           let pageText = pageTextCache.current.get(pageNumber);
           if (!pageText) {
-            const page = await document.getPage(pageNumber);
+            const page = await textDocument.getPage(pageNumber);
             const content = await page.getTextContent();
             pageText = content.items
               .map((item) =>
@@ -348,9 +409,9 @@ export default function PdfViewer({
 
     registerApi(api);
     return () => registerApi(null);
-  }, [currentPage, document, onStatusChange, pageCount]);
+  }, [currentPage, onStatusChange, pageCount, registerApi, textDocument]);
 
-  if (!filePath) {
+  if (!documentId) {
     return (
       <div className="reader-empty">
         <div className="empty-state">
@@ -362,21 +423,11 @@ export default function PdfViewer({
     );
   }
 
-  if (loading) {
+  if (documentError) {
     return (
       <div className="reader-empty">
         <div className="empty-state">
-          <p>Loading document...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="reader-empty">
-        <div className="empty-state">
-          <p>{error}</p>
+          <p>{documentError}</p>
         </div>
       </div>
     );
@@ -392,18 +443,20 @@ export default function PdfViewer({
           return;
         }
 
-        if (event.ctrlKey || event.metaKey) {
-          applyZoomDelta(event.deltaY);
-          lastWheelActionAt.current = now;
-          return;
-        }
-
         const primaryDelta =
           Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
 
         if (primaryDelta < 0) {
+          debugAction("viewer.navigate-wheel", {
+            direction: "previous",
+            currentPage
+          });
           setCurrentPage((page) => Math.max(page - 1, 1));
         } else if (primaryDelta > 0) {
+          debugAction("viewer.navigate-wheel", {
+            direction: "next",
+            currentPage
+          });
           setCurrentPage((page) => Math.min(page + 1, pageCount || page));
         }
 
@@ -411,8 +464,33 @@ export default function PdfViewer({
       }}
     >
       <div className="reader-page">
-        <canvas ref={canvasRef} className="reader-page__canvas" />
-        <div ref={textLayerRef} className="reader-page__text-layer" />
+        {visiblePage ? (
+          <img
+            key={visiblePage.requestKey}
+            className="reader-page__image"
+            src={visiblePage.imageUrl}
+            alt={`Page ${visiblePage.pageNumber}`}
+            draggable={false}
+          />
+        ) : null}
+
+        {isRendering ? (
+          <div className="reader-page__status" role="status" aria-live="polite">
+            Rendering...
+          </div>
+        ) : null}
+
+        {loadingDocument && !visiblePage ? (
+          <div className="reader-page__status" role="status" aria-live="polite">
+            Loading document...
+          </div>
+        ) : null}
+
+        {renderError ? (
+          <div className="reader-page__status reader-page__status--error" role="status">
+            {renderError}
+          </div>
+        ) : null}
       </div>
     </div>
   );

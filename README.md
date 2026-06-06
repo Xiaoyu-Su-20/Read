@@ -2,14 +2,14 @@
 
 A calm, command-first desktop PDF reader built with `Tauri 2`, `React`, `TypeScript`, `Vite`, and `PDF.js`.
 
-The app is designed to keep chrome minimal, favor keyboard-driven interaction, and store imported PDFs in an app-managed local library with per-document sidecar metadata.
+The app is designed to keep chrome minimal, favor keyboard-driven interaction, and keep the user-facing library folder clean while app metadata stays private.
 
 ## Features
 
 - Minimal full-screen reading shell with custom window chrome
-- App-managed local PDF library
+- Filesystem-backed PDF library rooted in a fixed visible documents folder
 - Command palette workflow
-- Per-document reading state and bookmarks
+- Private per-document reading state and bookmarks
 - Single-document reading flow
 - Local-only, offline-first storage
 
@@ -94,9 +94,16 @@ src-tauri/target/release/bundle/
 
 ## Storage Model
 
-Imported PDFs are copied into the app data directory and tracked through a local library index plus per-file sidecar state.
+The `Reader` folder in the user's documents directory is the source of truth for PDFs and folders.
 
-On Windows, the library typically lives under:
+- The visible library root is `<Documents>/Reader`.
+- The app creates `<Documents>/Reader/Collections` and `<Documents>/Reader/Inbox` by default.
+- The library root contains only user PDFs and folders.
+- Reader metadata, indexes, migrated legacy sidecars, and document state live in the app data directory.
+- On startup and manual rescan, the app reconciles its private index with the current folder structure.
+- Ordinary File Explorer renames and moves are preserved when possible by matching PDFs back to stored fingerprints.
+
+On Windows, private app data typically lives under:
 
 ```text
 %APPDATA%\com.openai.calmreader\

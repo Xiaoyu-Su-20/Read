@@ -14,8 +14,8 @@ pub enum AppError {
     StripPrefix(#[from] std::path::StripPrefixError),
     #[error("Document not found: {0}")]
     DocumentNotFound(String),
-    #[error("Folder not found: {0}")]
-    FolderNotFound(String),
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+    #[error("Render error: {0}")]
+    Render(String),
 }

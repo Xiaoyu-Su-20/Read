@@ -35,3 +35,6 @@ Desktop.ini
 tmp/
 tmp-*/
 
+# Local Cargo vendoring
+.cargo/
+vendor/

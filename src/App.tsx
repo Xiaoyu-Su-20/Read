@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import CommandPalette, { type PaletteSession } from "./components/CommandPalette";
@@ -9,13 +9,22 @@ import OutlineOverlay from "./components/OutlineOverlay";
 import PdfViewer from "./components/PdfViewer";
 import {
   createFolder,
+  getLibraryRoot,
   importPdf,
   listLibrary,
   listRecentDocuments,
   moveDocument,
+  openLibraryFolder,
   openDocument,
-  saveDocumentState
+  removeFromLibrary,
+  renameDocument,
+  renameFolder,
+  rescanLibrary,
+  saveDocumentState,
+  showDocumentInExplorer,
+  showFolderInExplorer
 } from "./lib/api";
+import { debugAction, runDebugProcess, startDebugProcess } from "./lib/debugLog";
 import { findBookmarkAtPage, formatShortcut, sortRecentDocuments } from "./lib/commands";
 import { flattenFolders } from "./lib/tree";
 import type {
@@ -31,10 +40,6 @@ import { ROOT_FOLDER_ID } from "./lib/types";
 
 function bookmarkSignature(bookmarks: DocumentState["bookmarks"]) {
   return bookmarks.map((bookmark) => `${bookmark.id}:${bookmark.page}`).join("|");
-}
-
-function formatZoom(zoom: number) {
-  return `${Math.round(zoom * 100)}%`;
 }
 
 function now() {
@@ -80,6 +85,7 @@ export default function App() {
   const [libraryTree, setLibraryTree] = useState<Awaited<ReturnType<typeof listLibrary>> | null>(
     null
   );
+  const [libraryRoot, setLibraryRootPath] = useState<string>("");
   const [recentDocuments, setRecentDocuments] = useState<DocumentRecord[]>([]);
   const [activeDocument, setActiveDocument] = useState<DocumentPayload | null>(null);
   const [readerState, setReaderState] = useState<DocumentState | null>(null);
@@ -97,11 +103,41 @@ export default function App() {
   const [currentFolderId, setCurrentFolderId] = useState(ROOT_FOLDER_ID);
 
   const viewerApiRef = useRef<ViewerApi | null>(null);
+  const activeDocumentId = activeDocument?.document.id ?? null;
 
-  async function refreshLibraryState() {
-    const [tree, recents] = await Promise.all([listLibrary(), listRecentDocuments()]);
-    setLibraryTree(tree);
-    setRecentDocuments(sortRecentDocuments(recents));
+  function resetOpenDocument() {
+    debugAction("app.reset-open-document");
+    setActiveDocument(null);
+    setReaderState(null);
+    setOutlineItems([]);
+    setViewerSnapshot({
+      currentPage: 1,
+      pageCount: 0,
+      zoom: 1
+    });
+  }
+
+  async function refreshLibraryState(options?: { rescan?: boolean }) {
+    return runDebugProcess(
+      "app.refresh-library-state",
+      {
+        rescan: Boolean(options?.rescan)
+      },
+      async () => {
+        const tree = await (options?.rescan ? rescanLibrary() : listLibrary());
+        const [recents, root] = await Promise.all([listRecentDocuments(), getLibraryRoot()]);
+        setLibraryTree(tree);
+        setRecentDocuments(sortRecentDocuments(recents));
+        setLibraryRootPath(root);
+      }
+    );
+  }
+
+  async function refreshRecentDocuments() {
+    return runDebugProcess("app.refresh-recent-documents", {}, async () => {
+      const recents = await listRecentDocuments();
+      setRecentDocuments(sortRecentDocuments(recents));
+    });
   }
 
   useEffect(() => {
@@ -111,6 +147,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!libraryTree) {
+      return;
+    }
+
+    const folders = flattenFolders(libraryTree);
+    if (!folders.some((folder) => folder.id === currentFolderId)) {
+      setCurrentFolderId(ROOT_FOLDER_ID);
+    }
+  }, [currentFolderId, libraryTree]);
+
+  useEffect(() => {
     if (!activeDocument || !readerState) {
       return;
     }
@@ -118,12 +165,28 @@ export default function App() {
       return;
     }
 
+    debugAction("reader-state.save-scheduled", {
+      documentId: activeDocument.document.id,
+      page: readerState.lastPage,
+      zoom: readerState.zoom
+    });
+
     const timeout = window.setTimeout(() => {
-      void saveDocumentState(activeDocument.document.id, readerState).catch((error) => {
-        setStatusMessage(
-          error instanceof Error ? error.message : String(error || "Unable to save reader state.")
-        );
+      const process = startDebugProcess("reader-state.save", {
+        documentId: activeDocument.document.id,
+        page: readerState.lastPage,
+        zoom: readerState.zoom
       });
+      void saveDocumentState(activeDocument.document.id, readerState)
+        .then(() => {
+          process.finish();
+        })
+        .catch((error) => {
+          process.fail(error);
+          setStatusMessage(
+            error instanceof Error ? error.message : String(error || "Unable to save reader state.")
+          );
+        });
     }, 350);
 
     return () => window.clearTimeout(timeout);
@@ -142,23 +205,103 @@ export default function App() {
     return flattenFolders(libraryTree);
   }, [libraryTree]);
 
-  async function handleOpenDocument(documentId: string) {
-    const payload = await openDocument(documentId);
-    setActiveDocument(payload);
-    setReaderState(payload.state);
-    setCurrentFolderId(payload.document.folderId);
-    setStatusMessage(`Opened ${payload.document.title}.`);
-    setLibraryOpen(false);
-    setOutlineOpen(false);
-    await refreshLibraryState();
+  const handleViewerSnapshotChange = useCallback(
+    (snapshot: ViewerSnapshot) => {
+      setViewerSnapshot(snapshot);
+      setReaderState((current) => {
+        if (!current) {
+          return current;
+        }
+        if (activeDocumentId && current.documentId !== activeDocumentId) {
+          return current;
+        }
+        if (
+          current.lastPage === snapshot.currentPage &&
+          Math.abs(current.zoom - snapshot.zoom) < 0.001
+        ) {
+          return current;
+        }
+        return {
+          ...current,
+          lastPage: snapshot.currentPage,
+          zoom: snapshot.zoom,
+          lastOpenedAt: now()
+        };
+      });
+    },
+    [activeDocumentId]
+  );
+
+  const handleViewerOutlineChange = useCallback((items: OutlineItem[]) => {
+    setOutlineItems(items);
+  }, []);
+
+  const handleViewerStatusChange = useCallback((message: string) => {
+    setStatusMessage(message);
+  }, []);
+
+  const registerViewerApi = useCallback((api: ViewerApi | null) => {
+    viewerApiRef.current = api;
+  }, []);
+
+  async function syncActiveDocument() {
+    if (!activeDocument) {
+      return;
+    }
+
+    try {
+      await runDebugProcess(
+        "app.sync-active-document",
+        {
+          documentId: activeDocument.document.id
+        },
+        async () => {
+          const payload = await openDocument(activeDocument.document.id);
+          setActiveDocument(payload);
+          setReaderState(payload.state);
+          setCurrentFolderId(payload.document.folderId);
+          await refreshRecentDocuments();
+        }
+      );
+    } catch {
+      resetOpenDocument();
+    }
+  }
+
+  async function handleOpenDocument(documentId: string, options?: { refreshLibrary?: boolean }) {
+    await runDebugProcess(
+      "app.open-document",
+      {
+        documentId,
+        refreshLibrary: Boolean(options?.refreshLibrary)
+      },
+      async () => {
+        const payload = await openDocument(documentId);
+        setActiveDocument(payload);
+        setReaderState(payload.state);
+        setCurrentFolderId(payload.document.folderId);
+        setStatusMessage(`Opened ${payload.document.title}.`);
+        setLibraryOpen(false);
+        setOutlineOpen(false);
+        if (options?.refreshLibrary) {
+          await refreshLibraryState();
+        } else {
+          await refreshRecentDocuments();
+        }
+      }
+    );
   }
 
   function closePalette() {
+    debugAction("palette.close");
     setPaletteOpen(false);
     setPaletteSession(null);
   }
 
   function openCommands(items: PaletteItem[]) {
+    debugAction("palette.open-commands", {
+      itemCount: items.length
+    });
     setPaletteSession({
       kind: "commands",
       title: "Reader actions",
@@ -170,6 +313,10 @@ export default function App() {
   }
 
   function openSelection(title: string, items: PaletteItem[], emptyMessage: string) {
+    debugAction("palette.open-selection", {
+      title,
+      itemCount: items.length
+    });
     setPaletteSession({
       kind: "select",
       title,
@@ -187,6 +334,9 @@ export default function App() {
     onSubmit: (value: string) => void | Promise<void>,
     initialValue = ""
   ) {
+    debugAction("palette.open-prompt", {
+      title
+    });
     setPaletteSession({
       kind: "input",
       title,
@@ -202,6 +352,7 @@ export default function App() {
   }
 
   async function promptImportFlow() {
+    const process = startDebugProcess("app.prompt-import-flow");
     const selection = await open({
       multiple: false,
       filters: [
@@ -213,12 +364,19 @@ export default function App() {
     });
 
     if (typeof selection !== "string") {
+      process.finish({
+        selected: false
+      });
       return;
     }
 
     if (folderOptions.length === 0) {
       const record = await importPdf(selection, ROOT_FOLDER_ID);
-      await handleOpenDocument(record.id);
+      await handleOpenDocument(record.id, { refreshLibrary: true });
+      process.finish({
+        selected: true,
+        destinationFolderId: ROOT_FOLDER_ID
+      });
       return;
     }
 
@@ -231,14 +389,21 @@ export default function App() {
         onSelect: async () => {
           const record = await importPdf(selection, folder.id);
           closePalette();
-          await handleOpenDocument(record.id);
+          await handleOpenDocument(record.id, { refreshLibrary: true });
         }
       })),
       "Create a folder first or import into Library."
     );
+    process.finish({
+      selected: true,
+      deferredSelection: true
+    });
   }
 
   async function createFolderFlow() {
+    debugAction("library.create-folder-flow", {
+      currentFolderId
+    });
     openPrompt("Create folder", "Folder name", "Create folder", async (value) => {
       const folder = await createFolder(value, currentFolderId || ROOT_FOLDER_ID);
       await refreshLibraryState();
@@ -254,6 +419,10 @@ export default function App() {
       return;
     }
 
+    debugAction("library.move-document-flow", {
+      documentId: activeDocument.document.id
+    });
+
     const availableDestinations = folderOptions.filter(
       (folder) => folder.id !== activeDocument.document.folderId
     );
@@ -267,21 +436,118 @@ export default function App() {
         onSelect: async () => {
           const moved = await moveDocument(activeDocument.document.id, folder.id);
           closePalette();
-          await handleOpenDocument(moved.id);
+          await handleOpenDocument(moved.id, { refreshLibrary: true });
         }
       })),
       "There is no other folder available yet."
     );
   }
 
+  async function renameDocumentFlow() {
+    if (!activeDocument) {
+      setStatusMessage("Open a document before renaming it.");
+      return;
+    }
+
+    debugAction("library.rename-document-flow", {
+      documentId: activeDocument.document.id
+    });
+
+    openPrompt(
+      "Rename document",
+      "New PDF name",
+      "Rename",
+      async (value) => {
+        const renamed = await renameDocument(activeDocument.document.id, value);
+        await handleOpenDocument(renamed.id, { refreshLibrary: true });
+        setStatusMessage(`Renamed to ${renamed.fileName}.`);
+      },
+      activeDocument.document.fileName
+    );
+  }
+
+  async function renameFolderFlow() {
+    if (currentFolderId === ROOT_FOLDER_ID) {
+      setStatusMessage("Select a folder before renaming it.");
+      return;
+    }
+
+    debugAction("library.rename-folder-flow", {
+      folderId: currentFolderId
+    });
+
+    const currentFolder = folderOptions.find((folder) => folder.id === currentFolderId);
+    openPrompt(
+      "Rename folder",
+      "New folder name",
+      "Rename",
+      async (value) => {
+        const renamed = await renameFolder(currentFolderId, value);
+        await refreshLibraryState({ rescan: true });
+        setCurrentFolderId(renamed.id);
+        await syncActiveDocument();
+        setStatusMessage(`Renamed folder to ${renamed.name}.`);
+      },
+      currentFolder?.name ?? ""
+    );
+  }
+
+  async function removeFromLibraryFlow() {
+    if (!activeDocument) {
+      setStatusMessage("Open a document before removing it from the library.");
+      return;
+    }
+
+    const process = startDebugProcess("library.remove-from-library-flow", {
+      documentId: activeDocument.document.id
+    });
+
+    const selection = await open({
+      directory: true,
+      multiple: false
+    });
+
+    if (typeof selection !== "string") {
+      process.finish({
+        selected: false
+      });
+      return;
+    }
+
+    await removeFromLibrary(activeDocument.document.id, selection);
+    resetOpenDocument();
+    await refreshLibraryState({ rescan: true });
+    setStatusMessage("Moved the PDF out of the library without deleting it.");
+    process.finish({
+      selected: true
+    });
+  }
+
+  async function rescanLibraryFlow() {
+    await runDebugProcess("library.rescan-flow", {}, async () => {
+      await refreshLibraryState({ rescan: true });
+      await syncActiveDocument();
+      setStatusMessage("Rescanned the library.");
+    });
+  }
+
   function recentDocumentItems() {
     return recentDocuments.map((document) => ({
       id: document.id,
-      title: document.title,
-      subtitle: document.lastOpenedAt
-        ? new Date(document.lastOpenedAt).toLocaleString()
-        : "Never opened",
+      title:
+        document.availability === "missing" ? `${document.title} (Missing)` : document.title,
+      subtitle:
+        document.availability === "missing"
+          ? `Unavailable at ${document.relativePath}`
+          : document.lastOpenedAt
+            ? new Date(document.lastOpenedAt).toLocaleString()
+            : "Never opened",
       onSelect: async () => {
+        if (document.availability === "missing") {
+          closePalette();
+          setStatusMessage("That PDF is currently missing from the library.");
+          return;
+        }
         closePalette();
         await handleOpenDocument(document.id);
       }
@@ -308,11 +574,15 @@ export default function App() {
     }));
   }
 
+  const latestAvailableRecentDocument = recentDocuments.find(
+    (document) => document.availability === "available"
+  );
+
   const commandRegistry: PaletteItem[] = [
     {
       id: "import-pdf",
       title: "Import PDF",
-      subtitle: "Copy a local PDF into the app library",
+      subtitle: "Copy a local PDF into the selected library folder",
       meta: formatShortcut(["Tab"]),
       keywords: ["open file add pdf import"],
       onSelect: async () => {
@@ -323,10 +593,30 @@ export default function App() {
     {
       id: "create-folder",
       title: "Create library folder",
-      subtitle: "Add a folder inside the managed document library",
+      subtitle: "Add a folder inside the Reader library",
       keywords: ["folder library create"],
       onSelect: async () => {
         await createFolderFlow();
+      }
+    },
+    {
+      id: "open-library-folder",
+      title: "Open library folder",
+      subtitle: libraryRoot || "Open the Reader library in File Explorer",
+      keywords: ["library explorer folder root open"],
+      onSelect: async () => {
+        closePalette();
+        await openLibraryFolder();
+      }
+    },
+    {
+      id: "rescan-library",
+      title: "Rescan library",
+      subtitle: "Refresh the app index from the current folder structure",
+      keywords: ["rescan refresh sync explorer"],
+      onSelect: async () => {
+        closePalette();
+        await rescanLibraryFlow();
       }
     },
     {
@@ -339,9 +629,55 @@ export default function App() {
       }
     },
     {
+      id: "rename-document",
+      title: "Rename document",
+      subtitle: activeDocument?.document.fileName ?? "Open a PDF first",
+      keywords: ["rename file pdf"],
+      onSelect: async () => {
+        await renameDocumentFlow();
+      }
+    },
+    {
+      id: "rename-folder",
+      title: "Rename folder",
+      subtitle:
+        currentFolderId === ROOT_FOLDER_ID
+          ? "Select a library folder first"
+          : folderOptions.find((folder) => folder.id === currentFolderId)?.pathLabel ??
+            "Rename the current folder",
+      keywords: ["rename folder collection"],
+      onSelect: async () => {
+        await renameFolderFlow();
+      }
+    },
+    {
+      id: "show-in-explorer",
+      title: "Show in File Explorer",
+      subtitle: activeDocument?.document.fileName ?? "Open the current library folder",
+      keywords: ["explorer reveal show file folder"],
+      onSelect: async () => {
+        closePalette();
+        if (activeDocument) {
+          await showDocumentInExplorer(activeDocument.document.id);
+          return;
+        }
+        await showFolderInExplorer(currentFolderId);
+      }
+    },
+    {
+      id: "remove-from-library",
+      title: "Remove from library",
+      subtitle: "Move the current PDF out of the library without deleting it",
+      keywords: ["remove library move out keep file"],
+      onSelect: async () => {
+        closePalette();
+        await removeFromLibraryFlow();
+      }
+    },
+    {
       id: "open-library",
       title: "Open library browser",
-      subtitle: "Browse folders and stored PDFs",
+      subtitle: "Browse the folder structure under the library root",
       keywords: ["library folders browse"],
       onSelect: () => {
         closePalette();
@@ -364,16 +700,16 @@ export default function App() {
     {
       id: "reopen-last",
       title: "Reopen last document",
-      subtitle: recentDocuments[0]?.title ?? "No document in history yet",
+      subtitle: latestAvailableRecentDocument?.title ?? "No available document in history yet",
       keywords: ["last recent reopen"],
       onSelect: async () => {
-        if (!recentDocuments[0]) {
-          setStatusMessage("No recent document is available yet.");
+        if (!latestAvailableRecentDocument) {
+          setStatusMessage("No available recent document is ready to reopen.");
           closePalette();
           return;
         }
         closePalette();
-        await handleOpenDocument(recentDocuments[0].id);
+        await handleOpenDocument(latestAvailableRecentDocument.id);
       }
     },
     {
@@ -484,8 +820,6 @@ export default function App() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      const isCommand = event.ctrlKey || event.metaKey;
-
       if (
         event.key === "Tab" &&
         !event.shiftKey &&
@@ -510,27 +844,21 @@ export default function App() {
       }
 
       if (event.key === "PageDown" || event.key === "ArrowRight") {
+        debugAction("reader.navigate-keyboard", {
+          key: event.key,
+          direction: "next"
+        });
         viewerApiRef.current?.nextPage();
       }
 
       if (event.key === "PageUp" || event.key === "ArrowLeft") {
+        debugAction("reader.navigate-keyboard", {
+          key: event.key,
+          direction: "previous"
+        });
         viewerApiRef.current?.previousPage();
       }
 
-      if (isCommand && event.key === "=") {
-        event.preventDefault();
-        viewerApiRef.current?.zoomIn();
-      }
-
-      if (isCommand && event.key === "-") {
-        event.preventDefault();
-        viewerApiRef.current?.zoomOut();
-      }
-
-      if (isCommand && event.key === "0") {
-        event.preventDefault();
-        viewerApiRef.current?.resetZoom();
-      }
     }
 
     window.addEventListener("keydown", onKeyDown);
@@ -680,36 +1008,12 @@ export default function App() {
 
       <section className="workspace">
         <PdfViewer
-          filePath={activeDocument?.filePath ?? null}
+          documentId={activeDocument?.document.id ?? null}
           initialState={readerState}
-          onSnapshotChange={(snapshot) => {
-            setViewerSnapshot(snapshot);
-            setReaderState((current) => {
-              if (!current) {
-                return current;
-              }
-              if (activeDocument && current.documentId !== activeDocument.document.id) {
-                return current;
-              }
-              if (
-                current.lastPage === snapshot.currentPage &&
-                Math.abs(current.zoom - snapshot.zoom) < 0.001
-              ) {
-                return current;
-              }
-              return {
-                ...current,
-                lastPage: snapshot.currentPage,
-                zoom: snapshot.zoom,
-                lastOpenedAt: now()
-              };
-            });
-          }}
-          onOutlineChange={setOutlineItems}
-          onStatusChange={setStatusMessage}
-          registerApi={(api) => {
-            viewerApiRef.current = api;
-          }}
+          onSnapshotChange={handleViewerSnapshotChange}
+          onOutlineChange={handleViewerOutlineChange}
+          onStatusChange={handleViewerStatusChange}
+          registerApi={registerViewerApi}
         />
       </section>
 
