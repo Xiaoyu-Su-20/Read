@@ -4,9 +4,10 @@ mod models;
 mod store;
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
 };
 
 use debug::process as debug_process;
@@ -21,6 +22,88 @@ use tauri::{AppHandle, Manager, State};
 struct AppState {
     lock: Arc<Mutex<()>>,
     render_cache: Arc<Mutex<RenderCache>>,
+    in_flight_renders: Arc<Mutex<HashMap<String, Arc<InFlightRender>>>>,
+}
+
+struct InFlightRender {
+    result: Mutex<Option<Result<RenderedPagePayload, String>>>,
+    ready: Condvar,
+}
+
+impl InFlightRender {
+    fn new() -> Self {
+        Self {
+            result: Mutex::new(None),
+            ready: Condvar::new(),
+        }
+    }
+}
+
+fn run_or_join_in_flight_render(
+    request: store::PageRenderRequest,
+    render_cache: Arc<Mutex<RenderCache>>,
+    in_flight_renders: Arc<Mutex<HashMap<String, Arc<InFlightRender>>>>,
+) -> Result<RenderedPagePayload, String> {
+    let cache_key = request.cache_key.clone();
+
+    let (entry, is_leader) = {
+        let mut in_flight = in_flight_renders
+            .lock()
+            .map_err(|_| "Unable to lock in-flight render state.".to_string())?;
+
+        if let Some(existing) = in_flight.get(&cache_key) {
+            (existing.clone(), false)
+        } else {
+            let created = Arc::new(InFlightRender::new());
+            in_flight.insert(cache_key.clone(), created.clone());
+            (created, true)
+        }
+    };
+
+    if !is_leader {
+        crate::debug::action(
+            "command.render_pdf_page:join-in-flight",
+            json!({
+                "cacheKey": cache_key,
+                "documentId": request.document_id,
+                "page": request.page_number,
+                "zoom": request.zoom,
+            }),
+        );
+
+        let mut guard = entry
+            .result
+            .lock()
+            .map_err(|_| "Unable to lock in-flight render result.".to_string())?;
+        while guard.is_none() {
+            guard = entry
+                .ready
+                .wait(guard)
+                .map_err(|_| "Unable to wait for in-flight render result.".to_string())?;
+        }
+        return guard
+            .clone()
+            .ok_or_else(|| "Unable to resolve in-flight render result.".to_string())?;
+    }
+
+    let result =
+        LibraryStore::render_pdf_page_blocking(request, render_cache).map_err(|error| error.to_string());
+
+    {
+        let mut guard = entry
+            .result
+            .lock()
+            .map_err(|_| "Unable to lock in-flight render result.".to_string())?;
+        *guard = Some(result.clone());
+        entry.ready.notify_all();
+    }
+
+    let mut in_flight = in_flight_renders
+        .lock()
+        .map_err(|_| "Unable to lock in-flight render state.".to_string())?;
+    in_flight.remove(&cache_key);
+
+    result
 }
 
 fn app_store(app: &AppHandle) -> Result<LibraryStore, String> {
@@ -310,22 +393,25 @@ async fn render_pdf_page(
     state: State<'_, AppState>,
     document_id: String,
     page_number: u32,
+    zoom: f32,
 ) -> Result<RenderedPagePayload, String> {
     let process = debug_process(
         "command.render_pdf_page",
         json!({
             "documentId": document_id,
             "page": page_number,
+            "zoom": zoom,
         }),
     );
 
     let render_cache = state.render_cache.clone();
+    let in_flight_renders = state.in_flight_renders.clone();
     let task_document_id = document_id.clone();
 
     let result = tauri::async_runtime::spawn_blocking(move || {
         let store = app_store(&app)?;
         let request = store
-            .prepare_render_request(&task_document_id, page_number)
+            .prepare_render_request(&task_document_id, page_number, zoom)
             .map_err(|error| error.to_string())?;
         crate::debug::action(
             "command.render_pdf_page:document-path-resolved",
@@ -333,10 +419,11 @@ async fn render_pdf_page(
                 "cacheKey": request.cache_key.clone(),
                 "documentId": request.document_id.clone(),
                 "page": request.page_number,
+                "zoom": request.zoom,
             }),
         );
 
-        LibraryStore::render_pdf_page_blocking(request, render_cache).map_err(|error| error.to_string())
+        run_or_join_in_flight_render(request, render_cache, in_flight_renders)
     })
     .await
     .map_err(|error| format!("Unable to join blocking render task: {error}"))?;
@@ -355,6 +442,7 @@ pub fn run() {
         .manage(AppState {
             lock: Arc::new(Mutex::new(())),
             render_cache: Arc::new(Mutex::new(RenderCache::default())),
+            in_flight_renders: Arc::new(Mutex::new(HashMap::new())),
         })
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![

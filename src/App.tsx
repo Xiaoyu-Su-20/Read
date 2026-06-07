@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import CommandPalette, { type PaletteSession } from "./components/CommandPalette";
-import LibraryOverlay from "./components/LibraryOverlay";
+import CollectionView from "./components/CollectionView";
 import OutlineOverlay from "./components/OutlineOverlay";
 import PdfViewer from "./components/PdfViewer";
 import {
@@ -20,13 +20,11 @@ import {
   renameDocument,
   renameFolder,
   rescanLibrary,
-  saveDocumentState,
   showDocumentInExplorer,
   showFolderInExplorer
 } from "./lib/api";
 import { debugAction, runDebugProcess, startDebugProcess } from "./lib/debugLog";
 import { findBookmarkAtPage, formatShortcut, sortRecentDocuments } from "./lib/commands";
-import { flattenFolders } from "./lib/tree";
 import type {
   DocumentPayload,
   DocumentRecord,
@@ -37,10 +35,6 @@ import type {
   ViewerSnapshot
 } from "./lib/types";
 import { ROOT_FOLDER_ID } from "./lib/types";
-
-function bookmarkSignature(bookmarks: DocumentState["bookmarks"]) {
-  return bookmarks.map((bookmark) => `${bookmark.id}:${bookmark.page}`).join("|");
-}
 
 function now() {
   return new Date().toISOString();
@@ -98,12 +92,17 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState("Ready");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteSession, setPaletteSession] = useState<PaletteSession | null>(null);
-  const [libraryOpen, setLibraryOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
-  const [currentFolderId, setCurrentFolderId] = useState(ROOT_FOLDER_ID);
+  const [workspaceMode, setWorkspaceMode] = useState<"reader" | "collection">("reader");
+  const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
 
   const viewerApiRef = useRef<ViewerApi | null>(null);
   const activeDocumentId = activeDocument?.document.id ?? null;
+  const collections = libraryTree?.folders ?? [];
+  const selectedCollection =
+    collections.find((collection) => collection.folder.id === selectedCollectionId) ??
+    collections[0] ??
+    null;
 
   function resetOpenDocument() {
     debugAction("app.reset-open-document");
@@ -147,93 +146,39 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!libraryTree) {
+    if (collections.length === 0) {
+      setSelectedCollectionId(null);
       return;
     }
 
-    const folders = flattenFolders(libraryTree);
-    if (!folders.some((folder) => folder.id === currentFolderId)) {
-      setCurrentFolderId(ROOT_FOLDER_ID);
+    if (!selectedCollectionId || !collections.some((folder) => folder.folder.id === selectedCollectionId)) {
+      setSelectedCollectionId(collections[0].folder.id);
     }
-  }, [currentFolderId, libraryTree]);
+  }, [collections, selectedCollectionId]);
 
-  useEffect(() => {
-    if (!activeDocument || !readerState) {
-      return;
-    }
-    if (activeDocument.document.id !== readerState.documentId) {
-      return;
-    }
-
-    debugAction("reader-state.save-scheduled", {
-      documentId: activeDocument.document.id,
-      page: readerState.lastPage,
-      zoom: readerState.zoom
-    });
-
-    const timeout = window.setTimeout(() => {
-      const process = startDebugProcess("reader-state.save", {
-        documentId: activeDocument.document.id,
-        page: readerState.lastPage,
-        zoom: readerState.zoom
-      });
-      void saveDocumentState(activeDocument.document.id, readerState)
-        .then(() => {
-          process.finish();
-        })
-        .catch((error) => {
-          process.fail(error);
-          setStatusMessage(
-            error instanceof Error ? error.message : String(error || "Unable to save reader state.")
-          );
-        });
-    }, 350);
-
-    return () => window.clearTimeout(timeout);
-  }, [
-    activeDocument?.document.id,
-    bookmarkSignature(readerState?.bookmarks ?? []),
-    readerState?.lastPage,
-    readerState?.preferences.fitMode,
-    readerState?.zoom
-  ]);
-
-  const folderOptions = useMemo(() => {
-    if (!libraryTree) {
-      return [];
-    }
-    return flattenFolders(libraryTree);
-  }, [libraryTree]);
+  const collectionOptions = useMemo(
+    () =>
+      collections.map((collection) => ({
+        id: collection.folder.id,
+        name: collection.folder.name,
+        pathLabel: collection.folder.name
+      })),
+    [collections]
+  );
 
   const handleViewerSnapshotChange = useCallback(
     (snapshot: ViewerSnapshot) => {
       setViewerSnapshot(snapshot);
-      setReaderState((current) => {
-        if (!current) {
-          return current;
-        }
-        if (activeDocumentId && current.documentId !== activeDocumentId) {
-          return current;
-        }
-        if (
-          current.lastPage === snapshot.currentPage &&
-          Math.abs(current.zoom - snapshot.zoom) < 0.001
-        ) {
-          return current;
-        }
-        return {
-          ...current,
-          lastPage: snapshot.currentPage,
-          zoom: snapshot.zoom,
-          lastOpenedAt: now()
-        };
-      });
     },
-    [activeDocumentId]
+    []
   );
 
   const handleViewerOutlineChange = useCallback((items: OutlineItem[]) => {
     setOutlineItems(items);
+  }, []);
+
+  const handleViewerStateChange = useCallback((state: DocumentState | null) => {
+    setReaderState(state);
   }, []);
 
   const handleViewerStatusChange = useCallback((message: string) => {
@@ -259,7 +204,7 @@ export default function App() {
           const payload = await openDocument(activeDocument.document.id);
           setActiveDocument(payload);
           setReaderState(payload.state);
-          setCurrentFolderId(payload.document.folderId);
+          setSelectedCollectionId(payload.document.folderId);
           await refreshRecentDocuments();
         }
       );
@@ -279,9 +224,9 @@ export default function App() {
         const payload = await openDocument(documentId);
         setActiveDocument(payload);
         setReaderState(payload.state);
-        setCurrentFolderId(payload.document.folderId);
+        setSelectedCollectionId(payload.document.folderId);
         setStatusMessage(`Opened ${payload.document.title}.`);
-        setLibraryOpen(false);
+        setWorkspaceMode("reader");
         setOutlineOpen(false);
         if (options?.refreshLibrary) {
           await refreshLibraryState();
@@ -351,6 +296,16 @@ export default function App() {
     setPaletteOpen(true);
   }
 
+  function nextCollectionName(tree: Awaited<ReturnType<typeof listLibrary>> | null) {
+    const highest = (tree?.folders ?? []).reduce((max, folder) => {
+      const match = /^Collection (\d+)$/i.exec(folder.folder.name);
+      const value = match ? Number.parseInt(match[1] ?? "0", 10) : 0;
+      return Math.max(max, Number.isNaN(value) ? 0 : value);
+    }, 0);
+
+    return `Collection ${Math.max(highest + 1, 1)}`;
+  }
+
   async function promptImportFlow() {
     const process = startDebugProcess("app.prompt-import-flow");
     const selection = await open({
@@ -370,29 +325,28 @@ export default function App() {
       return;
     }
 
-    if (folderOptions.length === 0) {
-      const record = await importPdf(selection, ROOT_FOLDER_ID);
-      await handleOpenDocument(record.id, { refreshLibrary: true });
+    if (collectionOptions.length === 0) {
+      setStatusMessage("Create a collection before importing a PDF.");
       process.finish({
         selected: true,
-        destinationFolderId: ROOT_FOLDER_ID
+        destinationFolderId: null
       });
       return;
     }
 
     openSelection(
-      "Import into folder",
-      folderOptions.map((folder) => ({
+      "Import into collection",
+      collectionOptions.map((folder) => ({
         id: folder.id,
         title: folder.pathLabel,
-        subtitle: folder.id === ROOT_FOLDER_ID ? "Library root" : "Library folder",
+        subtitle: "Collection",
         onSelect: async () => {
           const record = await importPdf(selection, folder.id);
           closePalette();
           await handleOpenDocument(record.id, { refreshLibrary: true });
         }
       })),
-      "Create a folder first or import into Library."
+      "Create a collection first."
     );
     process.finish({
       selected: true,
@@ -400,17 +354,16 @@ export default function App() {
     });
   }
 
-  async function createFolderFlow() {
-    debugAction("library.create-folder-flow", {
-      currentFolderId
+  async function createCollectionFlow() {
+    const name = nextCollectionName(libraryTree);
+    debugAction("library.create-collection-flow", {
+      name
     });
-    openPrompt("Create folder", "Folder name", "Create folder", async (value) => {
-      const folder = await createFolder(value, currentFolderId || ROOT_FOLDER_ID);
-      await refreshLibraryState();
-      setCurrentFolderId(folder.id);
-      setLibraryOpen(true);
-      setStatusMessage(`Created ${folder.name}.`);
-    });
+    const folder = await createFolder(name, ROOT_FOLDER_ID);
+    await refreshLibraryState();
+    setSelectedCollectionId(folder.id);
+    setWorkspaceMode("collection");
+    setStatusMessage(`Created ${folder.name}.`);
   }
 
   async function moveDocumentFlow() {
@@ -423,12 +376,12 @@ export default function App() {
       documentId: activeDocument.document.id
     });
 
-    const availableDestinations = folderOptions.filter(
+    const availableDestinations = collectionOptions.filter(
       (folder) => folder.id !== activeDocument.document.folderId
     );
 
     openSelection(
-      "Move document to folder",
+      "Move document to collection",
       availableDestinations.map((folder) => ({
         id: folder.id,
         title: folder.pathLabel,
@@ -467,28 +420,27 @@ export default function App() {
   }
 
   async function renameFolderFlow() {
-    if (currentFolderId === ROOT_FOLDER_ID) {
-      setStatusMessage("Select a folder before renaming it.");
+    if (!selectedCollection) {
+      setStatusMessage("Select a collection before renaming it.");
       return;
     }
 
-    debugAction("library.rename-folder-flow", {
-      folderId: currentFolderId
+    debugAction("library.rename-collection-flow", {
+      folderId: selectedCollection.folder.id
     });
 
-    const currentFolder = folderOptions.find((folder) => folder.id === currentFolderId);
     openPrompt(
-      "Rename folder",
-      "New folder name",
+      "Rename collection",
+      "New collection name",
       "Rename",
       async (value) => {
-        const renamed = await renameFolder(currentFolderId, value);
+        const renamed = await renameFolder(selectedCollection.folder.id, value);
         await refreshLibraryState({ rescan: true });
-        setCurrentFolderId(renamed.id);
+        setSelectedCollectionId(renamed.id);
         await syncActiveDocument();
-        setStatusMessage(`Renamed folder to ${renamed.name}.`);
+        setStatusMessage(`Renamed collection to ${renamed.name}.`);
       },
-      currentFolder?.name ?? ""
+      selectedCollection.folder.name
     );
   }
 
@@ -582,21 +534,12 @@ export default function App() {
     {
       id: "import-pdf",
       title: "Import PDF",
-      subtitle: "Copy a local PDF into the selected library folder",
+      subtitle: "Copy a local PDF into a collection",
       meta: formatShortcut(["Tab"]),
       keywords: ["open file add pdf import"],
       onSelect: async () => {
         closePalette();
         await promptImportFlow();
-      }
-    },
-    {
-      id: "create-folder",
-      title: "Create library folder",
-      subtitle: "Add a folder inside the Reader library",
-      keywords: ["folder library create"],
-      onSelect: async () => {
-        await createFolderFlow();
       }
     },
     {
@@ -621,33 +564,11 @@ export default function App() {
     },
     {
       id: "move-document",
-      title: "Move document to folder",
+      title: "Move document to collection",
       subtitle: activeDocument?.document.title ?? "Open a PDF first",
-      keywords: ["move folder"],
+      keywords: ["move folder collection"],
       onSelect: async () => {
         await moveDocumentFlow();
-      }
-    },
-    {
-      id: "rename-document",
-      title: "Rename document",
-      subtitle: activeDocument?.document.fileName ?? "Open a PDF first",
-      keywords: ["rename file pdf"],
-      onSelect: async () => {
-        await renameDocumentFlow();
-      }
-    },
-    {
-      id: "rename-folder",
-      title: "Rename folder",
-      subtitle:
-        currentFolderId === ROOT_FOLDER_ID
-          ? "Select a library folder first"
-          : folderOptions.find((folder) => folder.id === currentFolderId)?.pathLabel ??
-            "Rename the current folder",
-      keywords: ["rename folder collection"],
-      onSelect: async () => {
-        await renameFolderFlow();
       }
     },
     {
@@ -661,7 +582,7 @@ export default function App() {
           await showDocumentInExplorer(activeDocument.document.id);
           return;
         }
-        await showFolderInExplorer(currentFolderId);
+        await showFolderInExplorer(selectedCollection?.folder.id);
       }
     },
     {
@@ -672,16 +593,6 @@ export default function App() {
       onSelect: async () => {
         closePalette();
         await removeFromLibraryFlow();
-      }
-    },
-    {
-      id: "open-library",
-      title: "Open library browser",
-      subtitle: "Browse the folder structure under the library root",
-      keywords: ["library folders browse"],
-      onSelect: () => {
-        closePalette();
-        setLibraryOpen(true);
       }
     },
     {
@@ -773,28 +684,19 @@ export default function App() {
       subtitle: `Page ${viewerSnapshot.currentPage}`,
       keywords: ["bookmark save page"],
       onSelect: () => {
-        if (!readerState) {
+        const currentState = viewerApiRef.current?.getReaderState();
+        if (!currentState) {
           closePalette();
           setStatusMessage("Open a document before editing bookmarks.");
           return;
         }
 
-        const existing = findBookmarkAtPage(
-          readerState.bookmarks,
-          viewerSnapshot.currentPage
+        const existing = findBookmarkAtPage(currentState.bookmarks, viewerSnapshot.currentPage);
+        viewerApiRef.current?.setBookmarks(
+          existing
+            ? currentState.bookmarks.filter((bookmark) => bookmark.id !== existing.id)
+            : [...currentState.bookmarks, makeBookmark(viewerSnapshot.currentPage)]
         );
-        setReaderState((current) => {
-          if (!current) {
-            return current;
-          }
-          return {
-            ...current,
-            lastOpenedAt: now(),
-            bookmarks: existing
-              ? current.bookmarks.filter((bookmark) => bookmark.id !== existing.id)
-              : [...current.bookmarks, makeBookmark(viewerSnapshot.currentPage)]
-          };
-        });
         setStatusMessage(
           existing
             ? `Removed bookmark from page ${viewerSnapshot.currentPage}.`
@@ -824,7 +726,6 @@ export default function App() {
         event.key === "Tab" &&
         !event.shiftKey &&
         !paletteOpen &&
-        !libraryOpen &&
         !outlineOpen
       ) {
         event.preventDefault();
@@ -834,12 +735,15 @@ export default function App() {
 
       if (event.key === "Escape") {
         closePalette();
-        setLibraryOpen(false);
         setOutlineOpen(false);
         return;
       }
 
       if (paletteOpen) {
+        return;
+      }
+
+      if (workspaceMode !== "reader") {
         return;
       }
 
@@ -863,7 +767,20 @@ export default function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [commandRegistry, libraryOpen, outlineOpen, paletteOpen]);
+  }, [commandRegistry, outlineOpen, paletteOpen, workspaceMode]);
+
+  const topbarTitle =
+    workspaceMode === "collection"
+      ? selectedCollection?.folder.name ?? "Library"
+      : activeDocument?.document.title ?? "Library";
+  const topbarStatus =
+    workspaceMode === "collection"
+      ? selectedCollection
+        ? `${selectedCollection.documents.length} books`
+        : "No collection selected"
+      : viewerSnapshot.pageCount > 0
+        ? `${viewerSnapshot.currentPage} / ${viewerSnapshot.pageCount}`
+        : "No document open";
 
   return (
     <main className="app-shell">
@@ -882,7 +799,33 @@ export default function App() {
         </button>
 
         <div className="sidebar__stack">
-          <button className="sidebar__icon-button" type="button" aria-label="Documents">
+          <button
+            className={`sidebar__icon-button${
+              workspaceMode === "collection" ? " sidebar__icon-button--active" : ""
+            }`}
+            type="button"
+            aria-label="Collections"
+            onClick={() => {
+              setWorkspaceMode("collection");
+            }}
+          >
+            <ChromeIcon label="Collections">
+              <rect x="5" y="5" width="5.5" height="5.5" rx="1" fill="currentColor" stroke="none" />
+              <rect x="13.5" y="5" width="5.5" height="5.5" rx="1" />
+              <rect x="5" y="13.5" width="5.5" height="5.5" rx="1" />
+              <rect x="13.5" y="13.5" width="5.5" height="5.5" rx="1" fill="currentColor" stroke="none" />
+            </ChromeIcon>
+          </button>
+          <button
+            className={`sidebar__icon-button${
+              workspaceMode === "reader" ? " sidebar__icon-button--active" : ""
+            }`}
+            type="button"
+            aria-label="Reader"
+            onClick={() => {
+              setWorkspaceMode("reader");
+            }}
+          >
             <ChromeIcon label="Documents">
               <path d="M8 3.5h6l4 4V20a.5.5 0 0 1-.5.5h-9A1.5 1.5 0 0 1 7 19V5a1.5 1.5 0 0 1 1.5-1.5Z" />
               <path d="M14 3.5V8h4" />
@@ -933,14 +876,10 @@ export default function App() {
       <header className="topbar">
         <div className="topbar__drag" data-tauri-drag-region>
           <div className="topbar__brand" data-tauri-drag-region>
-            <strong>{activeDocument?.document.title ?? "Library"}</strong>
+            <strong>{topbarTitle}</strong>
           </div>
           <div className="topbar__status" data-tauri-drag-region>
-            <span>
-              {viewerSnapshot.pageCount > 0
-                ? `${viewerSnapshot.currentPage} / ${viewerSnapshot.pageCount}`
-                : "No document open"}
-            </span>
+            <span>{topbarStatus}</span>
             {!isPassiveStatusMessage(statusMessage) ? <span>{statusMessage}</span> : null}
           </div>
         </div>
@@ -1007,14 +946,41 @@ export default function App() {
       </header>
 
       <section className="workspace">
-        <PdfViewer
-          documentId={activeDocument?.document.id ?? null}
-          initialState={readerState}
-          onSnapshotChange={handleViewerSnapshotChange}
-          onOutlineChange={handleViewerOutlineChange}
-          onStatusChange={handleViewerStatusChange}
-          registerApi={registerViewerApi}
-        />
+        {workspaceMode === "collection" ? (
+          <CollectionView
+            tree={libraryTree}
+            selectedCollectionId={selectedCollection?.folder.id ?? null}
+            activeDocumentId={activeDocumentId}
+            onSelectCollection={setSelectedCollectionId}
+            onCreateCollection={() => createCollectionFlow()}
+            onRenameCollection={async (collectionId, nextName) => {
+              const renamed = await renameFolder(collectionId, nextName);
+              await refreshLibraryState({ rescan: true });
+              setSelectedCollectionId(renamed.id);
+              await syncActiveDocument();
+            }}
+            onOpenDocument={async (documentId) => {
+              await handleOpenDocument(documentId);
+            }}
+            onRenameDocument={async (documentId, nextName) => {
+              const renamed = await renameDocument(documentId, nextName);
+              await refreshLibraryState({ rescan: true });
+              setSelectedCollectionId(renamed.folderId);
+              if (activeDocumentId === documentId) {
+                await handleOpenDocument(renamed.id, { refreshLibrary: false });
+              }
+            }}
+          />
+        ) : (
+          <PdfViewer
+            document={activeDocument}
+            onSnapshotChange={handleViewerSnapshotChange}
+            onOutlineChange={handleViewerOutlineChange}
+            onStateChange={handleViewerStateChange}
+            onStatusChange={handleViewerStatusChange}
+            registerApi={registerViewerApi}
+          />
+        )}
       </section>
 
       <CommandPalette
@@ -1023,17 +989,6 @@ export default function App() {
         onClose={closePalette}
         onChangeQuery={(query) => {
           setPaletteSession((current) => (current ? { ...current, query } : current));
-        }}
-      />
-
-      <LibraryOverlay
-        open={libraryOpen}
-        tree={libraryTree}
-        currentFolderId={currentFolderId}
-        onClose={() => setLibraryOpen(false)}
-        onSelectFolder={setCurrentFolderId}
-        onOpenDocument={(document) => {
-          void handleOpenDocument(document.id);
         }}
       />
 

@@ -84,11 +84,13 @@ export function readDocumentBytes(documentId: string) {
 
 export function renderPdfPage(
   documentId: string,
-  pageNumber: number
+  pageNumber: number,
+  zoom: number
 ) {
   return invokeLogged<RenderedPagePayload>("render_pdf_page", {
     documentId,
-    pageNumber
+    pageNumber,
+    zoom
   });
 }
 

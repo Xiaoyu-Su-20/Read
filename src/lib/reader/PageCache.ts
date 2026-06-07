@@ -1,20 +1,16 @@
-import type { RenderedPagePayload } from "./types";
+import type { RenderedPagePayload } from "../types";
 
-type RenderedPageCacheEntry = RenderedPagePayload;
+export type CachedRenderedPage = RenderedPagePayload & {
+  imageUrl: string;
+  requestKey: string;
+};
 
-export function makeRenderCacheKey(documentId: string, pageNumber: number) {
-  return `${documentId}:${pageNumber}`;
+export function makePageCacheKey(documentId: string, pageNumber: number, zoom = 1) {
+  return `${documentId}:${pageNumber}:${zoom.toFixed(2)}`;
 }
 
-export function shouldIgnoreRenderResponse(
-  requestSequence: number,
-  activeSequence: number
-) {
-  return requestSequence !== activeSequence;
-}
-
-export function createRenderedPageCache(maxEntries: number) {
-  const entries = new Map<string, RenderedPageCacheEntry>();
+export function createPageCache(maxEntries: number) {
+  const entries = new Map<string, CachedRenderedPage>();
 
   return {
     clear() {
@@ -30,10 +26,13 @@ export function createRenderedPageCache(maxEntries: number) {
       entries.set(key, cached);
       return cached;
     },
+    has(key: string) {
+      return entries.has(key);
+    },
     keys() {
       return [...entries.keys()];
     },
-    set(key: string, value: RenderedPageCacheEntry) {
+    set(key: string, value: CachedRenderedPage) {
       if (entries.has(key)) {
         entries.delete(key);
       }

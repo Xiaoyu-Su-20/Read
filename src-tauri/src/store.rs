@@ -23,9 +23,11 @@ use crate::{
 };
 
 const RENDERER_VERSION: &str = "mupdf-v2";
-const PDF_RENDER_SCALE: f32 = 1.5;
+const BASE_PDF_RENDER_SCALE: f32 = 1.0;
 const JPEG_QUALITY: u32 = 82;
 pub const MAX_RENDER_CACHE_ENTRIES: usize = 20;
+const DEFAULT_COLLECTIONS: [&str; 3] = ["Collection 1", "Collection 2", "Collection 3"];
+const DEFAULT_COLLECTION_ID: &str = "Collection 1";
 
 #[derive(Debug, Clone)]
 pub struct PageRenderRequest {
@@ -33,6 +35,7 @@ pub struct PageRenderRequest {
     pub fingerprint: String,
     pub document_path: String,
     pub page_number: u32,
+    pub zoom: f32,
     pub cache_key: String,
     pub image_path: PathBuf,
 }
@@ -195,10 +198,11 @@ impl LibraryStore {
 
     pub fn list_library(&self) -> AppResult<FolderTreeNode> {
         self.ensure_ready()?;
+        self.reconcile_library()?;
 
         let index = self.load_index()?;
         let root = self.library_root_path();
-        self.build_tree(&root, "", &index)
+        self.build_tree(&root, &index)
     }
 
     pub fn rescan_library(&self) -> AppResult<FolderTreeNode> {
@@ -207,7 +211,7 @@ impl LibraryStore {
 
         let index = self.load_index()?;
         let root = self.library_root_path();
-        self.build_tree(&root, "", &index)
+        self.build_tree(&root, &index)
     }
 
     pub fn create_folder(
@@ -219,8 +223,11 @@ impl LibraryStore {
         let trimmed = name.trim();
         self.validate_folder_name(trimmed)?;
 
+        let parent_id = parent_id.unwrap_or(ROOT_FOLDER_ID);
+        self.ensure_collection_parent(parent_id)?;
+
         let root = self.library_root_path();
-        let parent_path = self.resolve_folder_path(&root, parent_id.unwrap_or(ROOT_FOLDER_ID))?;
+        let parent_path = self.resolve_folder_path(&root, parent_id)?;
         fs::create_dir_all(&parent_path)?;
 
         let folder_path = parent_path.join(trimmed);
@@ -256,8 +263,10 @@ impl LibraryStore {
         }
 
         let root = self.library_root_path();
-        let destination_folder_path =
-            self.resolve_folder_path(&root, destination_folder_id.unwrap_or(ROOT_FOLDER_ID))?;
+        let destination_folder_id = destination_folder_id.ok_or_else(|| {
+            AppError::InvalidInput("Choose a collection before importing a PDF.".to_string())
+        })?;
+        let destination_folder_path = self.resolve_collection_path(&root, destination_folder_id)?;
         fs::create_dir_all(&destination_folder_path)?;
 
         let file_name = source_path
@@ -310,7 +319,7 @@ impl LibraryStore {
         let document = index.documents[document_index].clone();
         self.ensure_document_available(&document)?;
 
-        let destination_folder_path = self.resolve_folder_path(&root, destination_folder_id)?;
+        let destination_folder_path = self.resolve_collection_path(&root, destination_folder_id)?;
         fs::create_dir_all(&destination_folder_path)?;
 
         let current_path = self.absolute_document_path(&root, &document);
@@ -338,6 +347,11 @@ impl LibraryStore {
             .parent()
             .ok_or_else(|| AppError::InvalidInput("Unable to resolve the document folder.".to_string()))?;
         let normalized_name = self.normalize_pdf_file_name(new_name)?;
+
+        if normalized_name.eq_ignore_ascii_case(&document.file_name) {
+            return Ok(document);
+        }
+
         let destination_path = self.unique_pdf_path(parent, &normalized_name);
 
         self.move_file(&current_path, &destination_path)?;
@@ -367,6 +381,7 @@ impl LibraryStore {
                 "The library root cannot be renamed.".to_string(),
             ));
         }
+        self.ensure_collection_id(folder_id)?;
 
         let trimmed = new_name.trim();
         self.validate_folder_name(trimmed)?;
@@ -441,6 +456,8 @@ impl LibraryStore {
             )));
         }
 
+        let page_count = self.document_page_count(&file_path)?;
+
         let mut state = self.read_state(&document)?;
         state.last_opened_at = Some(timestamp());
         self.write_state(&state)?;
@@ -453,6 +470,7 @@ impl LibraryStore {
             document: index.documents[document_index].clone(),
             state,
             file_path: file_path.to_string_lossy().to_string(),
+            page_count,
         })
     }
 
@@ -474,7 +492,7 @@ impl LibraryStore {
             self.ensure_ready()?;
             process.checkpoint("ensure-ready", json!({}));
 
-            let mut index = self.load_index()?;
+            let index = self.load_index()?;
             process.checkpoint("load-index", json!({}));
             let document_index = Self::find_document_index(&index, document_id)?;
             let document = index.documents[document_index].clone();
@@ -489,11 +507,7 @@ impl LibraryStore {
             state.last_opened_at = Some(timestamp());
             self.write_state(&state)?;
             process.checkpoint("write-state", json!({}));
-
-            index.documents[document_index].last_opened_at = state.last_opened_at.clone();
-            index.last_opened_document_id = Some(document_id.to_string());
-            self.save_index(&index)?;
-            process.checkpoint("save-index", json!({}));
+            process.checkpoint("skip-catalog-save", json!({}));
             Ok(())
         })();
 
@@ -566,6 +580,7 @@ impl LibraryStore {
         &self,
         document_id: &str,
         page_number: u32,
+        zoom: f32,
     ) -> AppResult<PageRenderRequest> {
         self.ensure_ready()?;
 
@@ -575,13 +590,20 @@ impl LibraryStore {
             ));
         }
 
+        if zoom <= 0.0 {
+            return Err(AppError::InvalidInput(
+                "Zoom must be greater than zero.".to_string(),
+            ));
+        }
+
         let source = self.document_render_source(document_id)?;
         let document_path = source.path.to_string_lossy().to_string();
-        let cache_key = self.render_cache_key(&source.document.id, page_number);
+        let cache_key = self.render_cache_key(&source.document.id, page_number, zoom);
         let image_path = self.render_output_path(
             &source.document.id,
             &source.document.fingerprint,
             page_number,
+            zoom,
         );
 
         Ok(PageRenderRequest {
@@ -589,6 +611,7 @@ impl LibraryStore {
             fingerprint: source.document.fingerprint,
             document_path,
             page_number,
+            zoom,
             cache_key,
             image_path,
         })
@@ -599,9 +622,10 @@ impl LibraryStore {
         &self,
         document_id: &str,
         page_number: u32,
+        zoom: f32,
         render_cache: Arc<Mutex<RenderCache>>,
     ) -> AppResult<RenderedPagePayload> {
-        let request = self.prepare_render_request(document_id, page_number)?;
+        let request = self.prepare_render_request(document_id, page_number, zoom)?;
         Self::render_pdf_page_blocking(request, render_cache)
     }
 
@@ -616,6 +640,7 @@ impl LibraryStore {
                 "documentId": request.document_id,
                 "imagePath": request.image_path.to_string_lossy().to_string(),
                 "page": request.page_number,
+                "zoom": request.zoom,
             }),
         );
 
@@ -649,7 +674,7 @@ impl LibraryStore {
                 "render-started",
                 json!({
                     "pageCount": page_count,
-                    "scale": PDF_RENDER_SCALE,
+                    "scale": BASE_PDF_RENDER_SCALE * request.zoom,
                 }),
             );
 
@@ -659,7 +684,8 @@ impl LibraryStore {
                     request.page_number
                 ))
             })?;
-            let matrix = Matrix::new_scale(PDF_RENDER_SCALE, PDF_RENDER_SCALE);
+            let render_scale = BASE_PDF_RENDER_SCALE * request.zoom;
+            let matrix = Matrix::new_scale(render_scale, render_scale);
             let logical_rect = page
                 .bounds()
                 .map_err(|error| {
@@ -739,12 +765,23 @@ impl LibraryStore {
 
         let result = (|| -> AppResult<()> {
             let mut index = self.load_index()?;
-            let pdf_paths = self.collect_pdf_paths(&root)?;
-            let legacy_sidecars = self.collect_legacy_sidecars(&root)?;
+            let previous_index = index.clone();
+            self.ensure_default_library_structure()?;
+            let migrated_root_pdfs = self.migrate_root_pdfs_into_default_collection(&root)?;
+            let collection_paths = self.collection_paths(&root)?;
+            let mut pdf_paths = Vec::new();
+            let mut legacy_sidecars = self.collect_immediate_legacy_sidecars(&root)?;
+
+            for collection_path in &collection_paths {
+                pdf_paths.extend(self.collect_immediate_pdf_paths(collection_path)?);
+                legacy_sidecars.extend(self.collect_immediate_legacy_sidecars(collection_path)?);
+            }
             process.checkpoint(
                 "scan-complete",
                 json!({
+                    "collectionCount": collection_paths.len(),
                     "legacySidecarCount": legacy_sidecars.len(),
+                    "migratedRootPdfCount": migrated_root_pdfs,
                     "pdfCount": pdf_paths.len(),
                 }),
             );
@@ -879,13 +916,22 @@ impl LibraryStore {
             }
 
             index.documents = next_documents;
-            self.save_index(&index)?;
-            process.checkpoint(
-                "save-index",
-                json!({
-                    "documentCount": index.documents.len(),
-                }),
-            );
+            if index != previous_index {
+                self.save_index(&index)?;
+                process.checkpoint(
+                    "save-index",
+                    json!({
+                        "documentCount": index.documents.len(),
+                    }),
+                );
+            } else {
+                process.checkpoint(
+                    "skip-save-index",
+                    json!({
+                        "documentCount": index.documents.len(),
+                    }),
+                );
+            }
             Ok(())
         })();
 
@@ -993,8 +1039,10 @@ impl LibraryStore {
     }
 
     fn ensure_default_library_structure(&self) -> AppResult<()> {
-        for folder_name in ["Collections", "Inbox"] {
-            fs::create_dir_all(self.library_dir.join(folder_name))?;
+        if self.collection_paths(&self.library_dir)?.is_empty() {
+            for folder_name in DEFAULT_COLLECTIONS {
+                fs::create_dir_all(self.library_dir.join(folder_name))?;
+            }
         }
 
         Ok(())
@@ -1007,59 +1055,74 @@ impl LibraryStore {
     }
 
     fn save_index(&self, index: &LibraryIndex) -> AppResult<()> {
-        let raw = serde_json::to_string_pretty(index)?;
-        fs::write(&self.index_path, raw)?;
-        Ok(())
-    }
+        let process = debug_process(
+            "store.save_index",
+            json!({
+                "documentCount": index.documents.len(),
+                "indexPath": self.index_path.to_string_lossy().to_string(),
+                "lastOpenedDocumentId": index.last_opened_document_id,
+            }),
+        );
 
-    fn build_tree(
-        &self,
-        root: &Path,
-        relative_path: &str,
-        index: &LibraryIndex,
-    ) -> AppResult<FolderTreeNode> {
-        let folder_path = if relative_path.is_empty() {
-            root.to_path_buf()
-        } else {
-            root.join(relative_path)
-        };
+        let result = (|| -> AppResult<()> {
+            let raw = serde_json::to_string_pretty(index)?;
+            process.checkpoint(
+                "serialize-complete",
+                json!({
+                    "byteCount": raw.len(),
+                }),
+            );
+            fs::write(&self.index_path, &raw)?;
+            process.checkpoint(
+                "write-complete",
+                json!({
+                    "byteCount": raw.len(),
+                }),
+            );
+            Ok(())
+        })();
 
-        let mut folders = Vec::new();
-        let mut entries = fs::read_dir(&folder_path)?
-            .collect::<Result<Vec<_>, _>>()?;
-        entries.sort_by_key(|entry| entry.file_name());
-
-        for entry in entries {
-            let entry_path = entry.path();
-            if entry_path.is_dir() {
-                let child_relative = self.relative_to_root(root, &entry_path)?;
-                folders.push(self.build_tree(root, &child_relative, index)?);
-            }
+        match &result {
+            Ok(_) => process.finish(json!({})),
+            Err(error) => process.fail(&error.to_string(), json!({})),
         }
 
-        let folder_id = if relative_path.is_empty() {
-            ROOT_FOLDER_ID.to_string()
-        } else {
-            relative_path.to_string()
-        };
+        result
+    }
 
+    fn build_tree(&self, root: &Path, index: &LibraryIndex) -> AppResult<FolderTreeNode> {
+        let mut folders = Vec::new();
+        for collection_path in self.collection_paths(root)? {
+            let relative_path = self.relative_to_root(root, &collection_path)?;
+            folders.push(self.build_collection_node(&relative_path, index));
+        }
+
+        folders.sort_by(|left, right| left.folder.name.cmp(&right.folder.name));
+
+        Ok(FolderTreeNode {
+            folder: self.folder_record_for_relative(""),
+            folders,
+            documents: Vec::new(),
+        })
+    }
+
+    fn build_collection_node(&self, relative_path: &str, index: &LibraryIndex) -> FolderTreeNode {
         let mut documents = index
             .documents
             .iter()
             .filter(|document| {
                 document.availability == DocumentAvailability::Available
-                    && document.folder_id == folder_id
+                    && document.folder_id == relative_path
             })
             .cloned()
             .collect::<Vec<_>>();
         documents.sort_by(|left, right| left.title.cmp(&right.title));
-        folders.sort_by(|left, right| left.folder.name.cmp(&right.folder.name));
 
-        Ok(FolderTreeNode {
+        FolderTreeNode {
             folder: self.folder_record_for_relative(relative_path),
-            folders,
+            folders: Vec::new(),
             documents,
-        })
+        }
     }
 
     fn folder_record_for_relative(&self, relative_path: &str) -> FolderRecord {
@@ -1131,6 +1194,11 @@ impl LibraryStore {
         Ok(root.join(folder_id))
     }
 
+    fn resolve_collection_path(&self, root: &Path, folder_id: &str) -> AppResult<PathBuf> {
+        self.ensure_collection_id(folder_id)?;
+        self.resolve_folder_path(root, folder_id)
+    }
+
     fn absolute_document_path(&self, root: &Path, document: &DocumentRecord) -> PathBuf {
         root.join(&document.relative_path)
     }
@@ -1199,12 +1267,76 @@ impl LibraryStore {
         }
     }
 
-    fn collect_pdf_paths(&self, directory: &Path) -> AppResult<Vec<PathBuf>> {
-        self.collect_matching_paths(directory, |path| self.is_pdf_path(path))
+    fn ensure_collection_parent(&self, folder_id: &str) -> AppResult<()> {
+        if folder_id == ROOT_FOLDER_ID {
+            return Ok(());
+        }
+
+        Err(AppError::InvalidInput(
+            "Collections can only be created at the library root.".to_string(),
+        ))
     }
 
-    fn collect_legacy_sidecars(&self, directory: &Path) -> AppResult<Vec<PathBuf>> {
-        self.collect_matching_paths(directory, |path| {
+    fn ensure_collection_id(&self, folder_id: &str) -> AppResult<()> {
+        if folder_id == ROOT_FOLDER_ID {
+            return Err(AppError::InvalidInput(
+                "Select a collection instead of the library root.".to_string(),
+            ));
+        }
+
+        self.validate_relative_path(folder_id)?;
+        if folder_id.contains('/') || folder_id.contains('\\') {
+            return Err(AppError::InvalidInput(
+                "Collections must be root-level folders.".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn collection_paths(&self, root: &Path) -> AppResult<Vec<PathBuf>> {
+        let mut collections = fs::read_dir(root)?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        collections.sort();
+        Ok(collections)
+    }
+
+    fn migrate_root_pdfs_into_default_collection(&self, root: &Path) -> AppResult<usize> {
+        let destination_directory = root.join(DEFAULT_COLLECTION_ID);
+        fs::create_dir_all(&destination_directory)?;
+        let pdf_paths = self.collect_immediate_pdf_paths(root)?;
+        let mut migrated = 0;
+
+        for pdf_path in pdf_paths {
+            let file_name = pdf_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| AppError::InvalidInput("Invalid PDF file name.".to_string()))?;
+            let destination_path = self.unique_pdf_path(&destination_directory, file_name);
+            self.move_file(&pdf_path, &destination_path)?;
+
+            let legacy_sidecar = self.sidecar_path_for_pdf(&pdf_path);
+            if legacy_sidecar.exists() {
+                let destination_sidecar = self.sidecar_path_for_pdf(&destination_path);
+                self.move_file(&legacy_sidecar, &destination_sidecar)?;
+            }
+
+            migrated += 1;
+        }
+
+        Ok(migrated)
+    }
+
+    fn collect_immediate_pdf_paths(&self, directory: &Path) -> AppResult<Vec<PathBuf>> {
+        self.collect_immediate_matching_paths(directory, |path| self.is_pdf_path(path))
+    }
+
+    fn collect_immediate_legacy_sidecars(&self, directory: &Path) -> AppResult<Vec<PathBuf>> {
+        self.collect_immediate_matching_paths(directory, |path| {
             path.file_name()
                 .and_then(|value| value.to_str())
                 .map(|file_name| file_name.ends_with(".pdf.reader.json"))
@@ -1212,7 +1344,7 @@ impl LibraryStore {
         })
     }
 
-    fn collect_matching_paths(
+    fn collect_immediate_matching_paths(
         &self,
         directory: &Path,
         matches: impl Fn(&Path) -> bool + Copy,
@@ -1223,9 +1355,7 @@ impl LibraryStore {
 
         for entry in entries {
             let path = entry.path();
-            if path.is_dir() {
-                results.extend(self.collect_matching_paths(&path, matches)?);
-            } else if matches(&path) {
+            if path.is_file() && matches(&path) {
                 results.push(path);
             }
         }
@@ -1379,17 +1509,36 @@ impl LibraryStore {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
-    fn render_cache_key(&self, document_id: &str, page_number: u32) -> String {
-        format!("{document_id}:{page_number}")
+    fn document_page_count(&self, path: &Path) -> AppResult<u32> {
+        let document_path = path.to_string_lossy().into_owned();
+        let document = Document::open(&document_path)
+            .map_err(|error| AppError::Render(format!("Unable to open PDF with MuPDF: {error}")))?;
+        let page_count = document
+            .page_count()
+            .map_err(|error| AppError::Render(format!("Unable to inspect PDF pages: {error}")))?;
+        Ok(page_count.max(1) as u32)
     }
 
-    fn render_output_path(&self, document_id: &str, fingerprint: &str, page_number: u32) -> PathBuf {
+    fn render_cache_key(&self, document_id: &str, page_number: u32, zoom: f32) -> String {
+        format!("{document_id}:{page_number}:{zoom:.2}")
+    }
+
+    fn render_output_path(
+        &self,
+        document_id: &str,
+        fingerprint: &str,
+        page_number: u32,
+        zoom: f32,
+    ) -> PathBuf {
         let digest = Sha256::digest(
-            format!("{RENDERER_VERSION}:{document_id}:{fingerprint}:{page_number}").as_bytes(),
+            format!("{RENDERER_VERSION}:{document_id}:{fingerprint}:{page_number}:{zoom:.2}")
+                .as_bytes(),
         );
         self.rendered_pages_dir.join(format!(
-            "{RENDERER_VERSION}-{}-p{page_number}.jpg",
+            "{RENDERER_VERSION}-{}-p{page_number}-z{:.2}.jpg",
             &format!("{digest:x}")[..16]
+            ,
+            zoom
         ))
     }
 
@@ -1643,15 +1792,20 @@ mod tests {
         fs,
         path::Path,
         sync::{Arc, Mutex},
+        thread,
+        time::Duration,
     };
 
     use tempfile::tempdir;
 
-    use super::{LibraryStore, RenderCache, MAX_RENDER_CACHE_ENTRIES};
+    use super::{
+        LibraryStore, RenderCache, DEFAULT_COLLECTION_ID, DEFAULT_COLLECTIONS,
+        MAX_RENDER_CACHE_ENTRIES,
+    };
     use crate::models::{DocumentAvailability, DocumentState, ROOT_FOLDER_ID};
 
     fn write_sample_pdf(path: &Path, label: &str) {
-        fs::write(path, format!("%PDF-1.4\n{label}\n%%EOF")).unwrap();
+        write_valid_pdf(path, label);
     }
 
     fn write_sidecar(path: &Path, state: &DocumentState) {
@@ -1755,7 +1909,7 @@ mod tests {
         write_sample_pdf(&source, "hello");
 
         let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
-        let record = store.import_pdf(&source, Some(ROOT_FOLDER_ID)).unwrap();
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
         let root = Path::new(&store.library_root_string().unwrap()).to_path_buf();
 
         assert!(root.join(&record.relative_path).exists());
@@ -1775,7 +1929,7 @@ mod tests {
         write_sample_pdf(&source, "paper");
 
         let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
-        let record = store.import_pdf(&source, Some(ROOT_FOLDER_ID)).unwrap();
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
 
         let mut state = store.open_document(&record.id).unwrap().state;
         state.last_page = 24;
@@ -1783,12 +1937,19 @@ mod tests {
         store.save_document_state(&record.id, state).unwrap();
 
         let root = Path::new(&store.library_root_string().unwrap()).to_path_buf();
-        fs::rename(root.join("paper.pdf"), root.join("paper-renamed.pdf")).unwrap();
+        fs::rename(
+            root.join(DEFAULT_COLLECTION_ID).join("paper.pdf"),
+            root.join(DEFAULT_COLLECTION_ID).join("paper-renamed.pdf"),
+        )
+        .unwrap();
 
         store.rescan_library().unwrap();
         let reopened = store.open_document(&record.id).unwrap();
 
-        assert_eq!(reopened.document.relative_path, "paper-renamed.pdf");
+        assert_eq!(
+            reopened.document.relative_path,
+            format!("{DEFAULT_COLLECTION_ID}/paper-renamed.pdf")
+        );
         assert_eq!(reopened.state.last_page, 24);
         assert!((reopened.state.zoom - 1.25).abs() < f32::EPSILON);
     }
@@ -1817,7 +1978,11 @@ mod tests {
         write_sidecar(&root.join("legacy.pdf.reader.json"), &legacy_state);
 
         let library = store.rescan_library().unwrap();
-        let document = library.documents.first().unwrap();
+        let document = library
+            .folders
+            .first()
+            .and_then(|folder| folder.documents.first())
+            .unwrap();
 
         assert_eq!(document.id, "legacy-document");
         assert!(!root.join("legacy.pdf.reader.json").exists());
@@ -1834,7 +1999,7 @@ mod tests {
         write_sample_pdf(&source, "missing");
 
         let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
-        let record = store.import_pdf(&source, Some(ROOT_FOLDER_ID)).unwrap();
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
 
         let root = Path::new(&store.library_root_string().unwrap()).to_path_buf();
         fs::remove_file(root.join(&record.relative_path)).unwrap();
@@ -1847,13 +2012,88 @@ mod tests {
     }
 
     #[test]
+    fn creates_default_collections_when_library_is_empty() {
+        let temp = tempdir().unwrap();
+        let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+
+        let library = store.list_library().unwrap();
+        let collection_names = library
+            .folders
+            .iter()
+            .map(|folder| folder.folder.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(collection_names, DEFAULT_COLLECTIONS);
+    }
+
+    #[test]
+    fn migrates_root_level_pdfs_into_collection_one() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("Reader");
+        fs::create_dir_all(&root).unwrap();
+        write_sample_pdf(&root.join("loose.pdf"), "loose");
+
+        let store = LibraryStore::new(temp.path().join("app"), &root);
+        let library = store.list_library().unwrap();
+        let collection_one = library
+            .folders
+            .iter()
+            .find(|folder| folder.folder.id == DEFAULT_COLLECTION_ID)
+            .unwrap();
+
+        assert!(root.join(DEFAULT_COLLECTION_ID).join("loose.pdf").exists());
+        assert_eq!(collection_one.documents.len(), 1);
+        assert_eq!(collection_one.documents[0].relative_path, "Collection 1/loose.pdf");
+    }
+
+    #[test]
+    fn ignores_nested_folders_when_reconciling_collections() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("Reader");
+        let nested = root.join(DEFAULT_COLLECTION_ID).join("Nested");
+        fs::create_dir_all(&nested).unwrap();
+        write_sample_pdf(&nested.join("hidden.pdf"), "hidden");
+        write_sample_pdf(&root.join(DEFAULT_COLLECTION_ID).join("visible.pdf"), "visible");
+
+        let store = LibraryStore::new(temp.path().join("app"), &root);
+        let library = store.list_library().unwrap();
+        let collection_one = library
+            .folders
+            .iter()
+            .find(|folder| folder.folder.id == DEFAULT_COLLECTION_ID)
+            .unwrap();
+
+        assert_eq!(collection_one.folders.len(), 0);
+        assert_eq!(
+            collection_one
+                .documents
+                .iter()
+                .map(|document| document.file_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["visible.pdf"]
+        );
+    }
+
+    #[test]
+    fn rejects_importing_a_pdf_into_the_library_root() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("root.pdf");
+        write_sample_pdf(&source, "root");
+
+        let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+        let error = store.import_pdf(&source, Some(ROOT_FOLDER_ID)).unwrap_err();
+
+        assert!(error.to_string().contains("collection"));
+    }
+
+    #[test]
     fn rejects_state_for_wrong_document_id() {
         let temp = tempdir().unwrap();
         let source = temp.path().join("wrong.pdf");
         write_sample_pdf(&source, "wrong");
 
         let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
-        let record = store.import_pdf(&source, Some(ROOT_FOLDER_ID)).unwrap();
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
 
         let state = DocumentState::new("something-else".to_string(), record.fingerprint.clone());
         let error = store.save_document_state(&record.id, state).unwrap_err();
@@ -1867,10 +2107,14 @@ mod tests {
         write_sample_pdf(&source, "state");
 
         let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
-        let record = store.import_pdf(&source, Some(ROOT_FOLDER_ID)).unwrap();
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
 
         let root = Path::new(&store.library_root_string().unwrap()).to_path_buf();
-        fs::rename(root.join(&record.relative_path), root.join("state-moved.pdf")).unwrap();
+        fs::rename(
+            root.join(&record.relative_path),
+            root.join(DEFAULT_COLLECTION_ID).join("state-moved.pdf"),
+        )
+        .unwrap();
 
         let mut state = DocumentState::new(record.id.clone(), record.fingerprint.clone());
         state.last_page = 9;
@@ -1880,8 +2124,54 @@ mod tests {
         let recents = store.list_recent_documents().unwrap();
         let saved = recents.iter().find(|document| document.id == record.id).unwrap();
 
-        assert_eq!(saved.relative_path, "state.pdf");
+        assert_eq!(
+            saved.relative_path,
+            format!("{DEFAULT_COLLECTION_ID}/state.pdf")
+        );
         assert_eq!(store.open_document(&record.id).unwrap_err().to_string().contains("unavailable"), true);
+    }
+
+    #[test]
+    fn save_document_state_does_not_rewrite_library_index() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("catalog.pdf");
+        write_sample_pdf(&source, "catalog");
+
+        let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+        let before = store.load_index().unwrap();
+
+        let mut state = DocumentState::new(record.id.clone(), record.fingerprint.clone());
+        state.last_page = 12;
+        state.zoom = 1.3;
+        store.save_document_state(&record.id, state).unwrap();
+
+        let after = store.load_index().unwrap();
+        assert_eq!(after, before);
+
+        let recents = store.list_recent_documents().unwrap();
+        let updated = recents.iter().find(|document| document.id == record.id).unwrap();
+        assert!(updated.last_opened_at.is_some());
+    }
+
+    #[test]
+    fn reconcile_library_skips_index_write_when_catalog_is_unchanged() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("steady.pdf");
+        write_sample_pdf(&source, "steady");
+
+        let app_dir = temp.path().join("app");
+        let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+        let _record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+
+        let index_path = app_dir.join("library-index.json");
+        let before = fs::metadata(&index_path).unwrap().modified().unwrap();
+        thread::sleep(Duration::from_millis(1100));
+
+        let _ = store.list_library().unwrap();
+
+        let after = fs::metadata(&index_path).unwrap().modified().unwrap();
+        assert_eq!(after, before);
     }
 
     #[test]
@@ -1909,7 +2199,7 @@ mod tests {
         let render_cache = create_render_cache();
 
         let error = store
-            .render_pdf_page("missing-document", 1, render_cache)
+            .render_pdf_page("missing-document", 1, 1.0, render_cache)
             .unwrap_err();
         assert!(error.to_string().contains("Document not found"));
     }
@@ -1921,21 +2211,21 @@ mod tests {
         write_valid_pdf(&source, "Render me");
 
         let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
-        let record = store.import_pdf(&source, Some(ROOT_FOLDER_ID)).unwrap();
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
         let render_cache = create_render_cache();
 
         let error = store
-            .render_pdf_page(&record.id, 2, render_cache)
+            .render_pdf_page(&record.id, 2, 1.0, render_cache)
             .unwrap_err();
         assert!(error.to_string().contains("out of bounds"));
     }
 
     #[test]
-    fn render_cache_key_uses_the_document_and_page_only() {
+    fn render_cache_key_uses_the_document_page_and_zoom() {
         let temp = tempdir().unwrap();
         let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
 
-        assert_eq!(store.render_cache_key("doc-a", 4), "doc-a:4");
+        assert_eq!(store.render_cache_key("doc-a", 4, 1.25), "doc-a:4:1.25");
     }
 
     #[test]
@@ -1945,20 +2235,34 @@ mod tests {
         write_valid_pdf(&source, "Cache test");
 
         let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
-        let record = store.import_pdf(&source, Some(ROOT_FOLDER_ID)).unwrap();
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
         let render_cache = create_render_cache();
 
         let first = store
-            .render_pdf_page(&record.id, 1, render_cache.clone())
+            .render_pdf_page(&record.id, 1, 1.0, render_cache.clone())
             .unwrap();
         fs::write(&first.image_path, b"sentinel").unwrap();
 
-        let second = store.render_pdf_page(&record.id, 1, render_cache).unwrap();
+        let second = store.render_pdf_page(&record.id, 1, 1.0, render_cache).unwrap();
         let cached_contents = fs::read(&second.image_path).unwrap();
 
         assert_eq!(first.cache_key, second.cache_key);
         assert_eq!(second.page_number, 1);
         assert_eq!(cached_contents, b"sentinel");
+    }
+
+    #[test]
+    fn open_document_reports_lightweight_page_count() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("paged.pdf");
+        write_valid_pdf_pages(&source, &["One", "Two", "Three"]);
+
+        let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+        let payload = store.open_document(&record.id).unwrap();
+
+        assert_eq!(payload.page_count, 3);
+        assert_eq!(payload.state.last_page, 1);
     }
 
     #[test]
@@ -1975,7 +2279,8 @@ mod tests {
                 fingerprint: "fingerprint".to_string(),
                 document_path: "doc.pdf".to_string(),
                 page_number,
-                cache_key: format!("doc:{page_number}"),
+                zoom: 1.0,
+                cache_key: format!("doc:{page_number}:1.00"),
                 image_path: image_path.clone(),
             };
 
@@ -1998,7 +2303,7 @@ mod tests {
         };
 
         assert_eq!(cache_keys.len(), MAX_RENDER_CACHE_ENTRIES);
-        assert!(!cache_keys.contains(&"doc:1".to_string()));
-        assert!(cache_keys.contains(&format!("doc:{}", MAX_RENDER_CACHE_ENTRIES + 1)));
+        assert!(!cache_keys.contains(&"doc:1:1.00".to_string()));
+        assert!(cache_keys.contains(&format!("doc:{}:1.00", MAX_RENDER_CACHE_ENTRIES + 1)));
     }
 }

@@ -97,6 +97,7 @@ pub struct DocumentPayload {
     pub document: DocumentRecord,
     pub state: DocumentState,
     pub file_path: String,
+    pub page_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

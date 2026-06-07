@@ -1,47 +1,44 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  createRenderedPageCache,
-  makeRenderCacheKey,
-  shouldIgnoreRenderResponse
-} from "./pdfRender";
+import { createPageCache, makePageCacheKey } from "./PageCache";
 
-describe("pdfRender helpers", () => {
-  it("builds simple cache keys from the document and page", () => {
-    expect(makeRenderCacheKey("doc-1", 12)).toBe("doc-1:12");
-  });
-
-  it("treats outdated request sequences as stale", () => {
-    expect(shouldIgnoreRenderResponse(2, 3)).toBe(true);
-    expect(shouldIgnoreRenderResponse(3, 3)).toBe(false);
+describe("PageCache helpers", () => {
+  it("builds cache keys from the document, page, and zoom", () => {
+    expect(makePageCacheKey("doc-1", 12, 1.25)).toBe("doc-1:12:1.25");
   });
 
   it("evicts the least recently used page once the cache is full", () => {
-    const cache = createRenderedPageCache(2);
+    const cache = createPageCache(2);
 
     cache.set("doc:1", {
       imagePath: "C:/Reader/rendered-pages/1.jpg",
+      imageUrl: "asset://1",
       pageNumber: 1,
       width: 612,
       height: 792,
-      cacheKey: "doc:1"
+      cacheKey: "doc:1",
+      requestKey: "doc:1"
     });
     cache.set("doc:2", {
       imagePath: "C:/Reader/rendered-pages/2.jpg",
+      imageUrl: "asset://2",
       pageNumber: 2,
       width: 612,
       height: 792,
-      cacheKey: "doc:2"
+      cacheKey: "doc:2",
+      requestKey: "doc:2"
     });
 
     expect(cache.get("doc:1")?.pageNumber).toBe(1);
 
     cache.set("doc:3", {
       imagePath: "C:/Reader/rendered-pages/3.jpg",
+      imageUrl: "asset://3",
       pageNumber: 3,
       width: 612,
       height: 792,
-      cacheKey: "doc:3"
+      cacheKey: "doc:3",
+      requestKey: "doc:3"
     });
 
     expect(cache.get("doc:2")).toBeUndefined();

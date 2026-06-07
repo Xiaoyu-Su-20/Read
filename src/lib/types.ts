@@ -47,6 +47,7 @@ export type DocumentPayload = {
   document: DocumentRecord;
   state: DocumentState;
   filePath: string;
+  pageCount: number;
 };
 
 export type RenderedPagePayload = {
@@ -84,6 +85,8 @@ export type ViewerApi = {
   jumpToOutline: (item: OutlineItem) => void;
   getCurrentPage: () => number;
   getPageCount: () => number;
+  getReaderState: () => DocumentState | null;
+  setBookmarks: (bookmarks: Bookmark[]) => void;
 };
 
 export type PaletteItem = {
