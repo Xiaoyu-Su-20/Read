@@ -77,6 +77,66 @@ export type ViewerSnapshot = {
   zoom: number;
 };
 
+export type NoteBlockType = "paragraph" | "heading1" | "heading2" | "heading3";
+
+export type NoteSpan = {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+};
+
+export type NoteTextNode = {
+  type: "text";
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+};
+
+export type NotePageLinkNode = {
+  type: "page-link";
+  id: string;
+  text: string;
+  documentId: string | null;
+  pdfPageIndex: number | null;
+  bookPageLabel: string;
+  createdAt: string;
+};
+
+export type NoteInlineNode = NoteTextNode | NotePageLinkNode;
+
+export type NoteBlock = {
+  id: string;
+  type: NoteBlockType;
+  children: NoteInlineNode[];
+  spans?: NoteSpan[];
+};
+
+export type NoteDocument = {
+  id: string;
+  title: string;
+  bookId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+  blocks: NoteBlock[];
+};
+
+export type NoteIndexEntry = {
+  id: string;
+  title: string;
+  bookId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  excerpt: string;
+};
+
+export type NoteNavigationItem = {
+  id: string;
+  blockId: string;
+  title: string;
+  level: 1 | 2 | 3;
+};
+
 export type ViewerApi = {
   nextPage: () => void;
   previousPage: () => void;

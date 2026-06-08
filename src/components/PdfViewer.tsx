@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import { useReaderController } from "../lib/reader/useReaderController";
 import type { DocumentPayload, DocumentState, OutlineItem, ViewerApi, ViewerSnapshot } from "../lib/types";
 
@@ -10,7 +12,7 @@ type PdfViewerProps = {
   registerApi: (api: ViewerApi | null) => void;
 };
 
-export default function PdfViewer({
+const PdfViewer = memo(function PdfViewer({
   document,
   onSnapshotChange,
   onOutlineChange,
@@ -25,6 +27,7 @@ export default function PdfViewer({
     loadingDocument,
     documentError,
     renderError,
+    handleKeyDown,
     handleWheel,
     markIncomingReady
   } = useReaderController({
@@ -40,9 +43,7 @@ export default function PdfViewer({
     return (
       <div className="reader-empty">
         <div className="empty-state">
-          <span className="eyebrow">Reader</span>
-          <h2>Your desk is clear.</h2>
-          <p>Press Tab to open commands, import a PDF, and start reading.</p>
+          <h2>学中做，做中学</h2>
         </div>
       </div>
     );
@@ -59,53 +60,67 @@ export default function PdfViewer({
   }
 
   return (
-    <div className="reader-stage" onWheel={handleWheel}>
-      <div className="reader-page">
-        {displayedPage || incomingPage ? (
-          <div className="reader-page__surface">
-            {displayedPage ? (
-              <img
-                key={displayedPage.requestKey}
-                className="reader-page__image reader-page__image--displayed"
-                src={displayedPage.imageUrl}
-                alt={`Page ${displayedPage.pageNumber}`}
-                draggable={false}
-              />
-            ) : null}
+    <div className="reader-stage">
+      <div
+        className="reader-scroll-surface"
+        tabIndex={0}
+        onKeyDown={handleKeyDown}
+        onPointerDown={(event) => {
+          event.currentTarget.focus();
+        }}
+        onWheel={handleWheel}
+      >
+        <div className="reader-page">
+          {displayedPage || incomingPage ? (
+            <div className="pdf-page-layer">
+              <div className="reader-page__surface">
+                {displayedPage ? (
+                  <img
+                    key={displayedPage.requestKey}
+                    className="reader-page__image reader-page__image--displayed"
+                    src={displayedPage.imageUrl}
+                    alt={`Page ${displayedPage.pageNumber}`}
+                    draggable={false}
+                  />
+                ) : null}
 
-            {incomingPage ? (
-              <img
-                key={incomingPage.requestKey}
-                className="reader-page__image reader-page__image--incoming"
-                src={incomingPage.imageUrl}
-                alt={`Page ${incomingPage.pageNumber}`}
-                draggable={false}
-                onLoad={() => {
-                  markIncomingReady(incomingPage.requestKey);
-                }}
-              />
-            ) : null}
-          </div>
-        ) : null}
-
-        {isRendering ? (
-          <div className="reader-page__status" role="status" aria-live="polite">
-            Rendering...
-          </div>
-        ) : null}
-
-        {loadingDocument && !displayedPage && !incomingPage ? (
-          <div className="reader-page__status" role="status" aria-live="polite">
-            Loading document...
-          </div>
-        ) : null}
-
-        {renderError ? (
-          <div className="reader-page__status reader-page__status--error" role="status">
-            {renderError}
-          </div>
-        ) : null}
+                {incomingPage ? (
+                  <img
+                    key={incomingPage.requestKey}
+                    className="reader-page__image reader-page__image--incoming"
+                    src={incomingPage.imageUrl}
+                    alt={`Page ${incomingPage.pageNumber}`}
+                    draggable={false}
+                    onLoad={() => {
+                      markIncomingReady(incomingPage.requestKey);
+                    }}
+                  />
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
+
+      {isRendering ? (
+        <div className="reader-page__status" role="status" aria-live="polite">
+          Rendering...
+        </div>
+      ) : null}
+
+      {loadingDocument && !displayedPage && !incomingPage ? (
+        <div className="reader-page__status" role="status" aria-live="polite">
+          Loading document...
+        </div>
+      ) : null}
+
+      {renderError ? (
+        <div className="reader-page__status reader-page__status--error" role="status">
+          {renderError}
+        </div>
+      ) : null}
     </div>
   );
-}
+});
+
+export default PdfViewer;

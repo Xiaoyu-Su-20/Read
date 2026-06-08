@@ -9,6 +9,7 @@ use std::{
 
 use chrono::Utc;
 use mupdf::{Colorspace, Document, Matrix, Pixmap};
+use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -18,7 +19,9 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         DocumentAvailability, DocumentPayload, DocumentRecord, DocumentState, FolderRecord,
-        FolderTreeNode, LibraryIndex, RenderedPagePayload, ROOT_FOLDER_ID,
+        FolderTreeNode, LibraryIndex, NoteBlock, NoteBlockType, NoteDocument, NoteIndex,
+        NoteIndexEntry, NoteInlineNode, NotePageLinkNode, NoteTextNode,
+        RenderedPagePayload, ROOT_FOLDER_ID,
     },
 };
 
@@ -28,6 +31,7 @@ const JPEG_QUALITY: u32 = 82;
 pub const MAX_RENDER_CACHE_ENTRIES: usize = 20;
 const DEFAULT_COLLECTIONS: [&str; 3] = ["Collection 1", "Collection 2", "Collection 3"];
 const DEFAULT_COLLECTION_ID: &str = "Collection 1";
+const NOTE_DOCUMENT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct PageRenderRequest {
@@ -154,8 +158,9 @@ pub struct LibraryStore {
     library_dir: PathBuf,
     legacy_library_dir: PathBuf,
     index_path: PathBuf,
+    notes_dir: PathBuf,
+    notes_index_path: PathBuf,
     states_dir: PathBuf,
-    legacy_sidecar_dir: PathBuf,
     rendered_pages_dir: PathBuf,
 }
 
@@ -168,8 +173,9 @@ impl LibraryStore {
             library_dir,
             legacy_library_dir: app_dir.join("library"),
             index_path: app_dir.join("library-index.json"),
+            notes_dir: app_dir.join("notes"),
+            notes_index_path: app_dir.join("notes").join("index.json"),
             states_dir: app_dir.join("document-states"),
-            legacy_sidecar_dir: app_dir.join("legacy-sidecars"),
             rendered_pages_dir: app_dir.join("rendered-pages"),
             app_dir,
         }
@@ -177,12 +183,16 @@ impl LibraryStore {
 
     pub fn ensure_ready(&self) -> AppResult<()> {
         fs::create_dir_all(&self.app_dir)?;
+        fs::create_dir_all(&self.notes_dir)?;
         fs::create_dir_all(&self.states_dir)?;
-        fs::create_dir_all(&self.legacy_sidecar_dir)?;
         fs::create_dir_all(&self.rendered_pages_dir)?;
 
         if !self.index_path.exists() {
             self.save_index(&LibraryIndex::default())?;
+        }
+
+        if !self.notes_index_path.exists() {
+            self.save_notes_index(&NoteIndex::default())?;
         }
 
         fs::create_dir_all(&self.library_dir)?;
@@ -519,6 +529,66 @@ impl LibraryStore {
         result
     }
 
+    pub fn get_or_create_note_for_book(&self, document_id: &str) -> AppResult<NoteDocument> {
+        self.ensure_ready()?;
+        let document = self.find_document_by_id(document_id)?;
+        let index = self.load_notes_index()?;
+
+        let mut matching_entries = index
+            .notes
+            .iter()
+            .filter(|entry| entry.book_id.as_deref() == Some(document_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        matching_entries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+
+        for entry in matching_entries {
+            if let Ok(note) = self.load_note_document(&entry.id) {
+                return Ok(note);
+            }
+        }
+
+        let created_at = timestamp();
+        let note = NoteDocument {
+            id: Uuid::new_v4().to_string(),
+            title: document.title,
+            book_id: Some(document_id.to_string()),
+            created_at: created_at.clone(),
+            updated_at: created_at,
+            version: NOTE_DOCUMENT_VERSION,
+            blocks: vec![self.empty_note_block()],
+        };
+
+        self.save_note(note)
+    }
+
+    pub fn save_note(&self, mut note: NoteDocument) -> AppResult<NoteDocument> {
+        self.ensure_ready()?;
+
+        if let Some(book_id) = note.book_id.as_deref() {
+            let _ = self.find_document_by_id(book_id)?;
+        }
+
+        self.normalize_note_document(&mut note);
+        note.updated_at = timestamp();
+        if note.created_at.trim().is_empty() {
+            note.created_at = note.updated_at.clone();
+        }
+
+        self.write_json_atomically(&self.note_path(&note.id), &note)?;
+
+        let mut index = self.load_notes_index()?;
+        let metadata = self.note_index_entry(&note);
+        if let Some(existing) = index.notes.iter_mut().find(|entry| entry.id == note.id) {
+            *existing = metadata;
+        } else {
+            index.notes.push(metadata);
+        }
+        self.save_notes_index(&index)?;
+
+        Ok(note)
+    }
+
     pub fn list_recent_documents(&self) -> AppResult<Vec<DocumentRecord>> {
         self.ensure_ready()?;
         let mut index = self.load_index()?;
@@ -770,33 +840,18 @@ impl LibraryStore {
             let migrated_root_pdfs = self.migrate_root_pdfs_into_default_collection(&root)?;
             let collection_paths = self.collection_paths(&root)?;
             let mut pdf_paths = Vec::new();
-            let mut legacy_sidecars = self.collect_immediate_legacy_sidecars(&root)?;
 
             for collection_path in &collection_paths {
                 pdf_paths.extend(self.collect_immediate_pdf_paths(collection_path)?);
-                legacy_sidecars.extend(self.collect_immediate_legacy_sidecars(collection_path)?);
             }
             process.checkpoint(
                 "scan-complete",
                 json!({
                     "collectionCount": collection_paths.len(),
-                    "legacySidecarCount": legacy_sidecars.len(),
                     "migratedRootPdfCount": migrated_root_pdfs,
                     "pdfCount": pdf_paths.len(),
                 }),
             );
-            let mut parsed_sidecars = HashMap::new();
-
-            for sidecar_path in &legacy_sidecars {
-                match self.read_state_file(sidecar_path) {
-                    Ok(state) => {
-                        parsed_sidecars.insert(sidecar_path.clone(), state);
-                    }
-                    Err(_) => {
-                        self.archive_legacy_sidecar(sidecar_path)?;
-                    }
-                }
-            }
 
             let existing_documents = index.documents.clone();
             let mut matched_ids = HashSet::new();
@@ -805,8 +860,6 @@ impl LibraryStore {
 
             for pdf_path in pdf_paths {
                 let relative_path = self.relative_to_root(&root, &pdf_path)?;
-                let sidecar_path = self.sidecar_path_for_pdf(&pdf_path);
-                let legacy_state = parsed_sidecars.get(&sidecar_path).cloned();
                 let fingerprint = self.hash_file(&pdf_path)?;
 
                 let existing = self.match_existing_document(
@@ -814,25 +867,11 @@ impl LibraryStore {
                     &matched_ids,
                     &relative_path,
                     &fingerprint,
-                    legacy_state.as_ref(),
+                    None,
                 );
 
                 let existing_id = existing.as_ref().map(|document| document.id.clone());
-                let document_id = legacy_state
-                    .as_ref()
-                    .and_then(|state| {
-                        let taken_by_other_document = existing_documents.iter().any(|document| {
-                            document.id == state.document_id
-                                && existing_id.as_deref() != Some(document.id.as_str())
-                        });
-
-                        if taken_by_other_document {
-                            None
-                        } else {
-                            Some(state.document_id.clone())
-                        }
-                    })
-                    .or(existing_id.clone())
+                let document_id = existing_id
                     .unwrap_or_else(|| Uuid::new_v4().to_string());
 
                 let file_name = pdf_path
@@ -875,7 +914,7 @@ impl LibraryStore {
                             .as_ref()
                             .and_then(|id| self.read_state_file(&self.state_path(id)).ok())
                     });
-                let merged_state = self.merge_states(&document, private_state, legacy_state);
+                let merged_state = self.merge_states(&document, private_state);
                 document.last_opened_at = merged_state.last_opened_at.clone();
                 self.write_state(&merged_state)?;
 
@@ -898,21 +937,11 @@ impl LibraryStore {
                 }
 
                 let private_state = self.read_state_file(&self.state_path(&document.id)).ok();
-                let legacy_state = parsed_sidecars
-                    .values()
-                    .find(|state| state.document_id == document.id)
-                    .cloned();
-                let merged_state = self.merge_states(&document, private_state, legacy_state);
+                let merged_state = self.merge_states(&document, private_state);
                 document.last_opened_at = merged_state.last_opened_at.clone();
                 document.availability = DocumentAvailability::Missing;
                 self.write_state(&merged_state)?;
                 next_documents.push(document);
-            }
-
-            for sidecar_path in legacy_sidecars {
-                if sidecar_path.exists() {
-                    fs::remove_file(sidecar_path)?;
-                }
             }
 
             index.documents = next_documents;
@@ -947,20 +976,9 @@ impl LibraryStore {
         &self,
         document: &DocumentRecord,
         private_state: Option<DocumentState>,
-        legacy_state: Option<DocumentState>,
     ) -> DocumentState {
-        let selected = match (private_state, legacy_state) {
-            (Some(private_state), Some(legacy_state)) => {
-                if self.state_sort_key(&legacy_state) > self.state_sort_key(&private_state) {
-                    legacy_state
-                } else {
-                    private_state
-                }
-            }
-            (Some(private_state), None) => private_state,
-            (None, Some(legacy_state)) => legacy_state,
-            (None, None) => DocumentState::new(document.id.clone(), document.fingerprint.clone()),
-        };
+        let selected =
+            private_state.unwrap_or_else(|| DocumentState::new(document.id.clone(), document.fingerprint.clone()));
 
         let mut state = selected;
         state.document_id = document.id.clone();
@@ -970,15 +988,6 @@ impl LibraryStore {
             state.zoom = 1.0;
         }
         state
-    }
-
-    fn state_sort_key(&self, state: &DocumentState) -> (String, usize, u32, u32) {
-        (
-            state.last_opened_at.clone().unwrap_or_default(),
-            state.bookmarks.len(),
-            state.last_page,
-            (state.zoom * 1000.0) as u32,
-        )
     }
 
     fn match_existing_document(
@@ -1088,6 +1097,16 @@ impl LibraryStore {
         }
 
         result
+    }
+
+    fn load_notes_index(&self) -> AppResult<NoteIndex> {
+        self.ensure_ready()?;
+        let raw = fs::read_to_string(&self.notes_index_path)?;
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    fn save_notes_index(&self, index: &NoteIndex) -> AppResult<()> {
+        self.write_json_atomically(&self.notes_index_path, index)
     }
 
     fn build_tree(&self, root: &Path, index: &LibraryIndex) -> AppResult<FolderTreeNode> {
@@ -1319,12 +1338,6 @@ impl LibraryStore {
             let destination_path = self.unique_pdf_path(&destination_directory, file_name);
             self.move_file(&pdf_path, &destination_path)?;
 
-            let legacy_sidecar = self.sidecar_path_for_pdf(&pdf_path);
-            if legacy_sidecar.exists() {
-                let destination_sidecar = self.sidecar_path_for_pdf(&destination_path);
-                self.move_file(&legacy_sidecar, &destination_sidecar)?;
-            }
-
             migrated += 1;
         }
 
@@ -1333,15 +1346,6 @@ impl LibraryStore {
 
     fn collect_immediate_pdf_paths(&self, directory: &Path) -> AppResult<Vec<PathBuf>> {
         self.collect_immediate_matching_paths(directory, |path| self.is_pdf_path(path))
-    }
-
-    fn collect_immediate_legacy_sidecars(&self, directory: &Path) -> AppResult<Vec<PathBuf>> {
-        self.collect_immediate_matching_paths(directory, |path| {
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .map(|file_name| file_name.ends_with(".pdf.reader.json"))
-                .unwrap_or(false)
-        })
     }
 
     fn collect_immediate_matching_paths(
@@ -1361,18 +1365,6 @@ impl LibraryStore {
         }
 
         Ok(results)
-    }
-
-    fn archive_legacy_sidecar(&self, sidecar_path: &Path) -> AppResult<()> {
-        let file_name = sidecar_path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("legacy-sidecar.json");
-        let destination = self
-            .legacy_sidecar_dir
-            .join(format!("{}-{file_name}", Uuid::new_v4()));
-        self.move_file(sidecar_path, &destination)?;
-        Ok(())
     }
 
     fn move_file(&self, source: &Path, destination: &Path) -> AppResult<()> {
@@ -1575,12 +1567,8 @@ impl LibraryStore {
         self.states_dir.join(format!("{document_id}.json"))
     }
 
-    fn sidecar_path_for_pdf(&self, pdf_path: &Path) -> PathBuf {
-        let file_name = pdf_path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("document.pdf");
-        pdf_path.with_file_name(format!("{file_name}.reader.json"))
+    fn note_path(&self, note_id: &str) -> PathBuf {
+        self.notes_dir.join(format!("{note_id}.json"))
     }
 
     fn read_state(&self, document: &DocumentRecord) -> AppResult<DocumentState> {
@@ -1606,6 +1594,197 @@ impl LibraryStore {
         let raw = serde_json::to_string_pretty(state)?;
         let mut file = File::create(self.state_path(&state.document_id))?;
         file.write_all(raw.as_bytes())?;
+        Ok(())
+    }
+
+    fn load_note_document(&self, note_id: &str) -> AppResult<NoteDocument> {
+        let raw = fs::read_to_string(self.note_path(note_id))?;
+        let mut note: NoteDocument = serde_json::from_str(&raw)?;
+        self.normalize_note_document(&mut note);
+        Ok(note)
+    }
+
+    fn note_index_entry(&self, note: &NoteDocument) -> NoteIndexEntry {
+        NoteIndexEntry {
+            id: note.id.clone(),
+            title: note.title.clone(),
+            book_id: note.book_id.clone(),
+            created_at: note.created_at.clone(),
+            updated_at: note.updated_at.clone(),
+            excerpt: self.note_excerpt(note),
+        }
+    }
+
+    fn note_excerpt(&self, note: &NoteDocument) -> String {
+        let mut excerpt = note
+            .blocks
+            .iter()
+            .flat_map(|block| block.children.iter())
+            .map(|child| match child {
+                NoteInlineNode::Text(text) => text.text.trim(),
+                NoteInlineNode::PageLink(page_link) => page_link.text.trim(),
+            })
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if excerpt.len() > 160 {
+            excerpt.truncate(160);
+            excerpt.push_str("...");
+        }
+
+        excerpt
+    }
+
+    fn normalize_note_document(&self, note: &mut NoteDocument) {
+        if note.version < NOTE_DOCUMENT_VERSION {
+            note.version = NOTE_DOCUMENT_VERSION;
+        }
+
+        if note.title.trim().is_empty() {
+            note.title = "Untitled note".to_string();
+        } else {
+            note.title = note.title.trim().to_string();
+        }
+
+        if note.blocks.is_empty() {
+            note.blocks.push(self.empty_note_block());
+        }
+
+        for block in &mut note.blocks {
+            if block.id.trim().is_empty() {
+                block.id = Uuid::new_v4().to_string();
+            }
+
+            if block.children.is_empty() {
+                if block.spans.is_empty() {
+                    block.children.push(NoteInlineNode::Text(NoteTextNode {
+                        text: String::new(),
+                        bold: false,
+                        italic: false,
+                    }));
+                } else {
+                    block.children.extend(block.spans.iter().map(|span| {
+                        NoteInlineNode::Text(NoteTextNode {
+                            text: span.text.clone(),
+                            bold: span.bold,
+                            italic: span.italic,
+                        })
+                    }));
+                }
+            }
+
+            block.children = self.normalize_note_inline_nodes(&block.children, note.book_id.as_deref());
+            block.spans.clear();
+        }
+    }
+
+    fn empty_note_block(&self) -> NoteBlock {
+        NoteBlock {
+            id: Uuid::new_v4().to_string(),
+            r#type: NoteBlockType::Paragraph,
+            children: vec![NoteInlineNode::Text(NoteTextNode {
+                text: String::new(),
+                bold: false,
+                italic: false,
+            })],
+            spans: Vec::new(),
+        }
+    }
+
+    fn normalize_note_inline_nodes(
+        &self,
+        nodes: &[NoteInlineNode],
+        fallback_document_id: Option<&str>,
+    ) -> Vec<NoteInlineNode> {
+        let mut normalized = Vec::new();
+        let mut pending_text: Option<NoteTextNode> = None;
+
+        for node in nodes {
+            match node {
+                NoteInlineNode::Text(text) => {
+                    let next = NoteTextNode {
+                        text: text.text.clone(),
+                        bold: text.bold,
+                        italic: text.italic,
+                    };
+
+                    if let Some(current) = pending_text.as_mut() {
+                        if current.bold == next.bold && current.italic == next.italic {
+                            current.text.push_str(&next.text);
+                            continue;
+                        }
+                    }
+
+                    if let Some(current) = pending_text.replace(next) {
+                        normalized.push(NoteInlineNode::Text(current));
+                    }
+                }
+                NoteInlineNode::PageLink(page_link) => {
+                    if let Some(current) = pending_text.take() {
+                        normalized.push(NoteInlineNode::Text(current));
+                    }
+
+                    normalized.push(NoteInlineNode::PageLink(NotePageLinkNode {
+                        id: if page_link.id.trim().is_empty() {
+                            Uuid::new_v4().to_string()
+                        } else {
+                            page_link.id.clone()
+                        },
+                        text: page_link.text.clone(),
+                        document_id: page_link
+                            .document_id
+                            .clone()
+                            .or_else(|| fallback_document_id.map(ToOwned::to_owned)),
+                        pdf_page_index: page_link.pdf_page_index,
+                        book_page_label: page_link.book_page_label.trim().to_string(),
+                        created_at: if page_link.created_at.trim().is_empty() {
+                            timestamp()
+                        } else {
+                            page_link.created_at.clone()
+                        },
+                    }));
+                }
+            }
+        }
+
+        if let Some(current) = pending_text.take() {
+            normalized.push(NoteInlineNode::Text(current));
+        }
+
+        if normalized.is_empty() {
+            normalized.push(NoteInlineNode::Text(NoteTextNode {
+                text: String::new(),
+                bold: false,
+                italic: false,
+            }));
+        }
+
+        normalized
+    }
+
+    fn write_json_atomically<T: Serialize>(&self, path: &Path, value: &T) -> AppResult<()> {
+        let raw = serde_json::to_string_pretty(value)?;
+        self.write_string_atomically(path, &raw)
+    }
+
+    fn write_string_atomically(&self, path: &Path, raw: &str) -> AppResult<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| AppError::InvalidInput("Invalid file path.".to_string()))?;
+        let temp_path = path.with_file_name(format!("{file_name}.tmp"));
+
+        let mut file = File::create(&temp_path)?;
+        file.write_all(raw.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+
+        fs::rename(temp_path, path)?;
         Ok(())
     }
 }
@@ -1799,17 +1978,17 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        LibraryStore, RenderCache, DEFAULT_COLLECTION_ID, DEFAULT_COLLECTIONS,
+        timestamp, LibraryStore, RenderCache, DEFAULT_COLLECTION_ID, DEFAULT_COLLECTIONS,
+        NOTE_DOCUMENT_VERSION,
         MAX_RENDER_CACHE_ENTRIES,
     };
-    use crate::models::{DocumentAvailability, DocumentState, ROOT_FOLDER_ID};
+    use crate::models::{
+        DocumentAvailability, DocumentState, NoteBlock, NoteDocument, NoteInlineNode, NoteSpan,
+        NoteTextNode, ROOT_FOLDER_ID,
+    };
 
     fn write_sample_pdf(path: &Path, label: &str) {
         write_valid_pdf(path, label);
-    }
-
-    fn write_sidecar(path: &Path, state: &DocumentState) {
-        fs::write(path, serde_json::to_string_pretty(state).unwrap()).unwrap();
     }
 
     fn write_valid_pdf(path: &Path, text: &str) {
@@ -1952,44 +2131,6 @@ mod tests {
         );
         assert_eq!(reopened.state.last_page, 24);
         assert!((reopened.state.zoom - 1.25).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn migrates_legacy_sidecar_into_private_state_store() {
-        let temp = tempdir().unwrap();
-        let root = temp.path().join("library");
-        fs::create_dir_all(&root).unwrap();
-        let pdf_path = root.join("legacy.pdf");
-        write_sample_pdf(&pdf_path, "legacy");
-
-        let store = LibraryStore::new(temp.path().join("app"), &root);
-
-        let fingerprint = store.hash_file(&pdf_path).unwrap();
-        let legacy_state = DocumentState {
-            version: 1,
-            document_id: "legacy-document".to_string(),
-            fingerprint,
-            last_opened_at: Some("2026-01-03T00:00:00Z".to_string()),
-            last_page: 11,
-            zoom: 1.4,
-            bookmarks: Vec::new(),
-            preferences: crate::models::ReaderPreferences::default(),
-        };
-        write_sidecar(&root.join("legacy.pdf.reader.json"), &legacy_state);
-
-        let library = store.rescan_library().unwrap();
-        let document = library
-            .folders
-            .first()
-            .and_then(|folder| folder.documents.first())
-            .unwrap();
-
-        assert_eq!(document.id, "legacy-document");
-        assert!(!root.join("legacy.pdf.reader.json").exists());
-
-        let reopened = store.open_document("legacy-document").unwrap();
-        assert_eq!(reopened.state.last_page, 11);
-        assert!((reopened.state.zoom - 1.4).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -2152,6 +2293,176 @@ mod tests {
         let recents = store.list_recent_documents().unwrap();
         let updated = recents.iter().find(|document| document.id == record.id).unwrap();
         assert!(updated.last_opened_at.is_some());
+    }
+
+    #[test]
+    fn get_or_create_note_for_book_creates_note_file_and_index_entry() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("notes.pdf");
+        write_sample_pdf(&source, "notes");
+
+        let app_dir = temp.path().join("app");
+        let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+
+        let note = store.get_or_create_note_for_book(&record.id).unwrap();
+        let index = store.load_notes_index().unwrap();
+
+        assert!(app_dir.join("notes").join(format!("{}.json", note.id)).exists());
+        assert_eq!(note.book_id.as_deref(), Some(record.id.as_str()));
+        assert!(index.notes.iter().any(|entry| entry.id == note.id));
+    }
+
+    #[test]
+    fn get_or_create_note_for_book_returns_most_recent_existing_note() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("recent-note.pdf");
+        write_sample_pdf(&source, "recent-note");
+
+        let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+
+        let older = store
+            .save_note(NoteDocument {
+                id: uuid::Uuid::new_v4().to_string(),
+                title: "Older".to_string(),
+                book_id: Some(record.id.clone()),
+                created_at: timestamp(),
+                updated_at: timestamp(),
+                version: NOTE_DOCUMENT_VERSION,
+                blocks: vec![store.empty_note_block()],
+            })
+            .unwrap();
+        thread::sleep(Duration::from_millis(15));
+        let newer = store
+            .save_note(NoteDocument {
+                id: uuid::Uuid::new_v4().to_string(),
+                title: "Newer".to_string(),
+                book_id: Some(record.id.clone()),
+                created_at: timestamp(),
+                updated_at: timestamp(),
+                version: NOTE_DOCUMENT_VERSION,
+                blocks: vec![store.empty_note_block()],
+            })
+            .unwrap();
+
+        let selected = store.get_or_create_note_for_book(&record.id).unwrap();
+        assert_ne!(older.id, newer.id);
+        assert_eq!(selected.id, newer.id);
+    }
+
+    #[test]
+    fn save_note_updates_note_file_and_index_metadata() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("save-note.pdf");
+        write_sample_pdf(&source, "save-note");
+
+        let app_dir = temp.path().join("app");
+        let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+        let note = store.get_or_create_note_for_book(&record.id).unwrap();
+
+        let saved = store
+            .save_note(NoteDocument {
+                title: "Reading Notes".to_string(),
+                blocks: vec![NoteBlock {
+                    id: "heading".to_string(),
+                    r#type: crate::models::NoteBlockType::Heading1,
+                    children: vec![NoteInlineNode::Text(NoteTextNode {
+                        text: "Important".to_string(),
+                        bold: false,
+                        italic: false,
+                    })],
+                    spans: vec![NoteSpan {
+                        text: "Important".to_string(),
+                        bold: false,
+                        italic: false,
+                    }],
+                }],
+                ..note
+            })
+            .unwrap();
+
+        let raw = fs::read_to_string(app_dir.join("notes").join(format!("{}.json", saved.id))).unwrap();
+        let stored_note: NoteDocument = serde_json::from_str(&raw).unwrap();
+        let index = store.load_notes_index().unwrap();
+        let entry = index.notes.iter().find(|entry| entry.id == saved.id).unwrap();
+
+        assert_eq!(stored_note.title, "Reading Notes");
+        assert_eq!(entry.title, "Reading Notes");
+        assert_eq!(entry.excerpt, "Important");
+    }
+
+    #[test]
+    fn save_note_supports_standalone_notes() {
+        let temp = tempdir().unwrap();
+        let app_dir = temp.path().join("app");
+        let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+
+        let saved = store
+            .save_note(NoteDocument {
+                id: uuid::Uuid::new_v4().to_string(),
+                title: "Standalone".to_string(),
+                book_id: None,
+                created_at: timestamp(),
+                updated_at: timestamp(),
+                version: NOTE_DOCUMENT_VERSION,
+                blocks: vec![NoteBlock {
+                    id: "body".to_string(),
+                    r#type: crate::models::NoteBlockType::Paragraph,
+                    children: vec![NoteInlineNode::Text(NoteTextNode {
+                        text: "Freeform".to_string(),
+                        bold: false,
+                        italic: true,
+                    })],
+                    spans: vec![NoteSpan {
+                        text: "Freeform".to_string(),
+                        bold: false,
+                        italic: true,
+                    }],
+                }],
+            })
+            .unwrap();
+
+        let index = store.load_notes_index().unwrap();
+        let entry = index.notes.iter().find(|entry| entry.id == saved.id).unwrap();
+
+        assert!(app_dir.join("notes").join(format!("{}.json", saved.id)).exists());
+        assert!(entry.book_id.is_none());
+    }
+
+    #[test]
+    fn save_note_migrates_legacy_spans_into_children() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("legacy-spans.pdf");
+        write_sample_pdf(&source, "legacy-spans");
+
+        let app_dir = temp.path().join("app");
+        let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+        let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+        let note = store.get_or_create_note_for_book(&record.id).unwrap();
+
+        let saved = store
+            .save_note(NoteDocument {
+                blocks: vec![NoteBlock {
+                    id: "legacy".to_string(),
+                    r#type: crate::models::NoteBlockType::Paragraph,
+                    children: Vec::new(),
+                    spans: vec![NoteSpan {
+                        text: "(p. 45)".to_string(),
+                        bold: false,
+                        italic: false,
+                    }],
+                }],
+                ..note
+            })
+            .unwrap();
+
+        match &saved.blocks[0].children[0] {
+            NoteInlineNode::Text(text) => assert_eq!(text.text, "(p. 45)"),
+            _ => panic!("expected migrated text node"),
+        }
+        assert!(saved.blocks[0].spans.is_empty());
     }
 
     #[test]

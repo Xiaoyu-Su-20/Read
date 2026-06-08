@@ -1,4 +1,4 @@
-import type { WheelEvent } from "react";
+import type { KeyboardEvent, WheelEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
@@ -866,6 +866,29 @@ export function useReaderController({
     loadingDocument,
     documentError,
     renderError,
+    handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+      if (event.altKey || event.shiftKey || event.metaKey || event.ctrlKey) {
+        return;
+      }
+
+      if (event.key === "PageDown" || event.key === "ArrowRight") {
+        event.preventDefault();
+        debugAction("reader.navigate-keyboard", {
+          key: event.key,
+          direction: "next"
+        });
+        requestPageTurn(clampPage(targetPage + 1, pageCount || targetPage), "keyboard-next");
+      }
+
+      if (event.key === "PageUp" || event.key === "ArrowLeft") {
+        event.preventDefault();
+        debugAction("reader.navigate-keyboard", {
+          key: event.key,
+          direction: "previous"
+        });
+        requestPageTurn(clampPage(targetPage - 1, pageCount), "keyboard-previous");
+      }
+    },
     handleWheel(event: WheelEvent<HTMLDivElement>) {
       event.preventDefault();
 

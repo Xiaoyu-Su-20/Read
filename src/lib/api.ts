@@ -6,6 +6,7 @@ import type {
   DocumentRecord,
   RenderedPagePayload,
   DocumentState,
+  NoteDocument,
   FolderRecord,
   FolderTreeNode
 } from "./types";
@@ -99,6 +100,25 @@ export function saveDocumentState(documentId: string, readerState: DocumentState
     documentId,
     readerState
   });
+}
+
+export function getOrCreateNoteForBook(documentId: string) {
+  return invokeLogged<NoteDocument>("get_or_create_note_for_book", {
+    documentId
+  });
+}
+
+export function saveNote(note: NoteDocument) {
+  return invokeLogged<NoteDocument>("save_note", {
+    note
+  });
+}
+
+export function logNoteDebugEvent(event: string, fields: Record<string, unknown>) {
+  return invoke<void>("log_note_debug_event", {
+    event,
+    fields
+  }).catch(() => undefined);
 }
 
 export function listRecentDocuments() {

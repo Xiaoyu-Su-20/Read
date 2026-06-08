@@ -142,3 +142,108 @@ impl Default for LibraryIndex {
 fn default_index_version() -> u32 {
     2
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteSpan {
+    pub text: String,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTextNode {
+    pub text: String,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotePageLinkNode {
+    pub id: String,
+    pub text: String,
+    pub document_id: Option<String>,
+    pub pdf_page_index: Option<u32>,
+    pub book_page_label: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum NoteInlineNode {
+    Text(NoteTextNode),
+    #[serde(rename = "page-link")]
+    PageLink(NotePageLinkNode),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteBlockType {
+    Paragraph,
+    Heading1,
+    Heading2,
+    Heading3,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteBlock {
+    pub id: String,
+    pub r#type: NoteBlockType,
+    #[serde(default)]
+    pub children: Vec<NoteInlineNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<NoteSpan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteDocument {
+    pub id: String,
+    pub title: String,
+    pub book_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: u32,
+    #[serde(default)]
+    pub blocks: Vec<NoteBlock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteIndexEntry {
+    pub id: String,
+    pub title: String,
+    pub book_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub excerpt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteIndex {
+    #[serde(default = "default_note_index_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub notes: Vec<NoteIndexEntry>,
+}
+
+impl Default for NoteIndex {
+    fn default() -> Self {
+        Self {
+            version: default_note_index_version(),
+            notes: Vec::new(),
+        }
+    }
+}
+
+fn default_note_index_version() -> u32 {
+    1
+}

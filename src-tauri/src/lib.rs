@@ -12,10 +12,10 @@ use std::{
 
 use debug::process as debug_process;
 use models::{
-    DocumentPayload, DocumentRecord, DocumentState, FolderRecord, FolderTreeNode,
+    DocumentPayload, DocumentRecord, DocumentState, FolderRecord, FolderTreeNode, NoteDocument,
     RenderedPagePayload,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use store::{LibraryStore, RenderCache};
 use tauri::{AppHandle, Manager, State};
 
@@ -321,6 +321,41 @@ fn save_document_state(
 }
 
 #[tauri::command]
+fn get_or_create_note_for_book(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    document_id: String,
+) -> Result<NoteDocument, String> {
+    run_logged_command("get_or_create_note_for_book", json!({
+        "documentId": document_id,
+    }), || with_store(&app, state, |store| {
+        store
+            .get_or_create_note_for_book(&document_id)
+            .map_err(|error| error.to_string())
+    }))
+}
+
+#[tauri::command]
+fn save_note(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    note: NoteDocument,
+) -> Result<NoteDocument, String> {
+    run_logged_command("save_note", json!({
+        "bookId": note.book_id.clone(),
+        "noteId": note.id.clone(),
+    }), || with_store(&app, state, |store| {
+        store.save_note(note).map_err(|error| error.to_string())
+    }))
+}
+
+#[tauri::command]
+fn log_note_debug_event(event: String, fields: Value) -> Result<(), String> {
+    crate::debug::action(&event, fields);
+    Ok(())
+}
+
+#[tauri::command]
 fn list_recent_documents(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -457,6 +492,9 @@ pub fn run() {
             remove_from_library,
             open_document,
             save_document_state,
+            get_or_create_note_for_book,
+            save_note,
+            log_note_debug_event,
             list_recent_documents,
             open_library_folder,
             show_document_in_explorer,

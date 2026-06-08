@@ -1,25 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
+import type { PaletteSession } from "../lib/app/palette";
 import { filterPaletteItems } from "../lib/commands";
-import type { PaletteItem } from "../lib/types";
-
-export type PaletteSession =
-  | {
-      kind: "commands" | "select";
-      title: string;
-      query: string;
-      items: PaletteItem[];
-      emptyMessage: string;
-    }
-  | {
-      kind: "input";
-      title: string;
-      query: string;
-      placeholder: string;
-      confirmLabel: string;
-      emptyMessage?: string;
-      onSubmit: (value: string) => void | Promise<void>;
-    };
 
 type CommandPaletteProps = {
   session: PaletteSession | null;
