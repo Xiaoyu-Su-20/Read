@@ -1,19 +1,20 @@
 import type { KeyboardEvent, WheelEvent } from "react";
 import { useEffect, useRef, useState } from "react";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
-import { readDocumentBytes, saveDocumentState } from "../api";
+import { saveDocumentState } from "../api";
 import { debugAction, startDebugProcess } from "../debugLog";
 import type {
   Bookmark,
   DocumentPayload,
   DocumentState,
   OutlineItem,
+  PageTextLayerData,
   ViewerApi,
   ViewerSnapshot
 } from "../types";
 import { createPageCache, makePageCacheKey, type CachedRenderedPage } from "./PageCache";
 import { renderVisiblePdfPage } from "./PdfPageRenderer";
+import { createPdfRuntimeSession, type PdfRuntimeSession } from "./PdfRuntimeSession";
 
 const RENDER_CACHE_SIZE = 20;
 const MIN_ZOOM = 0.7;
@@ -24,13 +25,6 @@ const PRELOAD_DELAY_MS = 150;
 const NAVIGATION_SAVE_DEBOUNCE_MS = 700;
 const BOOKMARK_SAVE_DEBOUNCE_MS = 200;
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/legacy/build/pdf.worker.mjs",
-  import.meta.url
-).toString();
-
-type LoadedPdfTextDocument = Awaited<ReturnType<typeof loadPdfTextDocument>>;
-
 type UseReaderControllerArgs = {
   document: DocumentPayload | null;
   onOutlineChange: (items: OutlineItem[]) => void;
@@ -40,96 +34,11 @@ type UseReaderControllerArgs = {
   registerApi: (api: ViewerApi | null) => void;
 };
 
-function withTrailingSlash(value: string) {
-  return value.endsWith("/") ? value : `${value}/`;
-}
-
-const standardFontDataUrl = withTrailingSlash(
-  new URL("pdfjs-dist/standard_fonts/", import.meta.url).toString()
-);
-const cMapUrl = withTrailingSlash(
-  new URL("pdfjs-dist/cmaps/", import.meta.url).toString()
-);
-const iccUrl = withTrailingSlash(
-  new URL("pdfjs-dist/iccs/", import.meta.url).toString()
-);
-const wasmUrl = withTrailingSlash(
-  new URL("pdfjs-dist/wasm/", import.meta.url).toString()
-);
-
-async function loadPdfTextDocument(data: Uint8Array) {
-  return pdfjsLib.getDocument({
-    data,
-    cMapUrl,
-    cMapPacked: true,
-    iccUrl,
-    standardFontDataUrl,
-    wasmUrl,
-    useWorkerFetch: false,
-    useWasm: false,
-    disableFontFace: false,
-    useSystemFonts: true
-  }).promise;
-}
-
-async function resolveDestinationPage(
-  document: LoadedPdfTextDocument,
-  destination: unknown
-) {
-  if (!destination) {
-    return null;
-  }
-
-  const target =
-    typeof destination === "string"
-      ? await document.getDestination(destination)
-      : destination;
-
-  if (!Array.isArray(target) || target.length === 0) {
-    return null;
-  }
-
-  const reference = target[0];
-  if (typeof reference === "number") {
-    return reference + 1;
-  }
-
-  if (reference && typeof reference === "object") {
-    const index = await document.getPageIndex(
-      reference as Parameters<LoadedPdfTextDocument["getPageIndex"]>[0]
-    );
-    return index + 1;
-  }
-
-  return null;
-}
-
-async function extractOutline(
-  document: LoadedPdfTextDocument,
-  items: unknown[] | null,
-  prefix = "outline"
-): Promise<OutlineItem[]> {
-  if (!items) {
-    return [];
-  }
-
-  const result: OutlineItem[] = [];
-  for (let index = 0; index < items.length; index += 1) {
-    const item = items[index] as {
-      title?: string;
-      dest?: unknown;
-      items?: unknown[];
-    };
-    const page = await resolveDestinationPage(document, item.dest);
-    result.push({
-      id: `${prefix}-${index}`,
-      title: item.title?.trim() || "Untitled section",
-      page,
-      items: await extractOutline(document, item.items ?? null, `${prefix}-${index}`)
-    });
-  }
-  return result;
-}
+type DisplayedPageTextDebugStatus = {
+  itemCount: number;
+  pageNumber: number | null;
+  state: "missing" | "missing-runtime" | "loading" | "loaded" | "empty" | "error";
+};
 
 function clampPage(page: number, pageCount: number) {
   return Math.min(Math.max(Math.round(page), 1), Math.max(pageCount, 1));
@@ -175,10 +84,15 @@ export function useReaderController({
   const [incomingPage, setIncomingPage] = useState<CachedRenderedPage | null>(null);
   const [incomingReady, setIncomingReady] = useState(false);
   const [readerState, setReaderState] = useState<DocumentState | null>(null);
+  const [displayedPageTextLayer, setDisplayedPageTextLayer] = useState<PageTextLayerData | null>(null);
+  const [displayedPageTextDebugStatus, setDisplayedPageTextDebugStatus] =
+    useState<DisplayedPageTextDebugStatus>({
+      itemCount: 0,
+      pageNumber: null,
+      state: "missing"
+    });
 
-  const textDocumentRef = useRef<LoadedPdfTextDocument | null>(null);
-  const textDocumentPromiseRef = useRef<Promise<LoadedPdfTextDocument> | null>(null);
-  const pageTextCache = useRef(new Map<number, string>());
+  const runtimeSessionRef = useRef<PdfRuntimeSession | null>(null);
   const pageCache = useRef(createPageCache(RENDER_CACHE_SIZE));
   const preloadInFlight = useRef(new Set<string>());
   const lastWheelActionAt = useRef(0);
@@ -396,6 +310,13 @@ export function useReaderController({
 
   useEffect(() => {
     if (document?.document.id === initializedDocumentIdRef.current) {
+      if (!runtimeSessionRef.current && document) {
+        runtimeSessionRef.current = createPdfRuntimeSession(document.document.id);
+        debugAction("reader.runtime-session-recreated", {
+          documentId: document.document.id,
+          reason: "strict-mode-remount"
+        });
+      }
       return;
     }
 
@@ -410,11 +331,14 @@ export function useReaderController({
       void persistReaderStateSnapshot(previousDocument, previousState, "document-switch");
     }
 
+    const previousRuntimeSession = runtimeSessionRef.current;
+    runtimeSessionRef.current = document ? createPdfRuntimeSession(document.document.id) : null;
+    if (previousRuntimeSession) {
+      void previousRuntimeSession.dispose();
+    }
+
     initializedDocumentIdRef.current = document?.document.id ?? null;
     currentDocumentRef.current = document;
-    textDocumentRef.current = null;
-    textDocumentPromiseRef.current = null;
-    pageTextCache.current.clear();
     pageCache.current.clear();
     preloadInFlight.current.clear();
     if (preloadTimerRef.current !== null) {
@@ -427,6 +351,12 @@ export function useReaderController({
     outlineLoadedForDocumentIdRef.current = null;
     setDocumentError(null);
     setRenderError(null);
+    setDisplayedPageTextLayer(null);
+    setDisplayedPageTextDebugStatus({
+      itemCount: 0,
+      pageNumber: null,
+      state: "missing"
+    });
     setIsRendering(false);
     setDisplayedPage(null);
     setIncomingPage(null);
@@ -466,6 +396,16 @@ export function useReaderController({
     updateReaderState(nextState);
     onStatusChange(`Opened ${nextPageCount} pages.`);
   }, [document, onOutlineChange, onStateChange, onStatusChange]);
+
+  useEffect(() => {
+    return () => {
+      const runtimeSession = runtimeSessionRef.current;
+      runtimeSessionRef.current = null;
+      if (runtimeSession) {
+        void runtimeSession.dispose();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     function flushOnVisibilityChange() {
@@ -520,43 +460,18 @@ export function useReaderController({
     });
   }, [onSnapshotChange, onStateChange, pageCount, targetPage, zoom]);
 
-  async function ensureTextDocument() {
-    if (textDocumentRef.current) {
-      return textDocumentRef.current;
+  useEffect(() => {
+    if (!document || !displayedPage) {
+      return;
     }
 
-    if (textDocumentPromiseRef.current) {
-      return textDocumentPromiseRef.current;
+    const runtimeSession = runtimeSessionRef.current;
+    if (!runtimeSession) {
+      return;
     }
 
-    if (!document) {
-      throw new Error("No document open.");
-    }
-
-    const process = startDebugProcess("reader.text-document", {
-      documentId: document.document.id
-    });
-
-    const promise = (async () => {
-      const loadedBytes = await readDocumentBytes(document.document.id);
-      process.checkpoint("bytes-loaded", {
-        byteCount: loadedBytes.length
-      });
-      const loadedDocument = await loadPdfTextDocument(Uint8Array.from(loadedBytes));
-      process.finish({
-        pageCount: loadedDocument.numPages
-      });
-      textDocumentRef.current = loadedDocument;
-      return loadedDocument;
-    })();
-
-    textDocumentPromiseRef.current = promise;
-    try {
-      return await promise;
-    } finally {
-      textDocumentPromiseRef.current = null;
-    }
-  }
+    void runtimeSession.load().catch(() => undefined);
+  }, [displayedPage, document]);
 
   useEffect(() => {
     if (!document || !displayedPage) {
@@ -567,30 +482,122 @@ export function useReaderController({
       return;
     }
 
-    let cancelled = false;
+    const runtimeSession = runtimeSessionRef.current;
+    if (!runtimeSession) {
+      return;
+    }
 
-    void (async () => {
-      try {
-        const textDocument = await ensureTextDocument();
-        if (cancelled) {
+    let cancelled = false;
+    void runtimeSession
+      .getOutline()
+      .then((nextOutline) => {
+        if (cancelled || runtimeSessionRef.current !== runtimeSession) {
           return;
         }
-        const nextOutline = await extractOutline(textDocument, await textDocument.getOutline());
-        if (!cancelled) {
-          outlineLoadedForDocumentIdRef.current = document.document.id;
-          onOutlineChange(nextOutline);
-        }
-      } catch {
-        if (!cancelled) {
+
+        outlineLoadedForDocumentIdRef.current = document.document.id;
+        onOutlineChange(nextOutline);
+      })
+      .catch(() => {
+        if (!cancelled && runtimeSessionRef.current === runtimeSession) {
           onOutlineChange([]);
         }
-      }
-    })();
+      });
 
     return () => {
       cancelled = true;
     };
   }, [displayedPage, document, onOutlineChange]);
+
+  useEffect(() => {
+    if (!document || !displayedPage) {
+      debugAction("reader.text-layer-cleared", {
+        displayedPageNumber: displayedPage?.pageNumber ?? null,
+        documentId: document?.document.id ?? null,
+        reason: "missing-document-or-page"
+      });
+      setDisplayedPageTextLayer(null);
+      setDisplayedPageTextDebugStatus({
+        itemCount: 0,
+        pageNumber: displayedPage?.pageNumber ?? null,
+        state: "missing"
+      });
+      return;
+    }
+
+    const runtimeSession = runtimeSessionRef.current;
+    if (!runtimeSession) {
+      debugAction("reader.text-layer-cleared", {
+        displayedPageNumber: displayedPage.pageNumber,
+        documentId: document.document.id,
+        reason: "missing-runtime-session"
+      });
+      setDisplayedPageTextLayer(null);
+      setDisplayedPageTextDebugStatus({
+        itemCount: 0,
+        pageNumber: displayedPage.pageNumber,
+        state: "missing-runtime"
+      });
+      return;
+    }
+
+    let cancelled = false;
+    const pageNumber = displayedPage.pageNumber;
+    debugAction("reader.text-layer-requested", {
+      displayedPageNumber: displayedPage.pageNumber,
+      documentId: document.document.id,
+      renderedHeight: displayedPage.height,
+      renderedWidth: displayedPage.width
+    });
+    setDisplayedPageTextLayer(null);
+    setDisplayedPageTextDebugStatus({
+      itemCount: 0,
+      pageNumber,
+      state: "loading"
+    });
+
+    void runtimeSession
+      .getPageText(pageNumber)
+      .then((nextTextLayer) => {
+        if (cancelled || runtimeSessionRef.current !== runtimeSession) {
+          return;
+        }
+        const itemCount = nextTextLayer.textContent.items.length;
+        debugAction("reader.text-layer-loaded", {
+          displayedPageNumber: displayedPage.pageNumber,
+          documentId: document.document.id,
+          itemCount,
+          textLayerPageNumber: nextTextLayer.pageNumber,
+          viewportHeight: nextTextLayer.viewportHeight,
+          viewportWidth: nextTextLayer.viewportWidth
+        });
+        setDisplayedPageTextLayer(nextTextLayer);
+        setDisplayedPageTextDebugStatus({
+          itemCount,
+          pageNumber: nextTextLayer.pageNumber,
+          state: itemCount > 0 ? "loaded" : "empty"
+        });
+      })
+      .catch((error) => {
+        if (!cancelled && runtimeSessionRef.current === runtimeSession) {
+          debugAction("reader.text-layer-load-failed", {
+            displayedPageNumber: displayedPage.pageNumber,
+            documentId: document.document.id,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          setDisplayedPageTextLayer(null);
+          setDisplayedPageTextDebugStatus({
+            itemCount: 0,
+            pageNumber,
+            state: "error"
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [displayedPage, document]);
 
   useEffect(() => {
     if (!document) {
@@ -795,36 +802,38 @@ export function useReaderController({
             requestPageTurn(clampPage(page, pageCount), "go-to-page");
           },
           search: async (query) => {
-            const normalizedQuery = query.trim().toLowerCase();
+            const normalizedQuery = query.trim();
             if (!normalizedQuery) {
               onStatusChange("Enter a phrase to search.");
               return 0;
             }
 
-            const textDocument = await ensureTextDocument();
-            for (let pageNumber = 1; pageNumber <= textDocument.numPages; pageNumber += 1) {
-              let pageText = pageTextCache.current.get(pageNumber);
-              if (!pageText) {
-                const page = await textDocument.getPage(pageNumber);
-                const content = await page.getTextContent();
-                pageText = content.items
-                  .map((item) =>
-                    "str" in item && typeof item.str === "string" ? item.str : ""
-                  )
-                  .join(" ")
-                  .toLowerCase();
-                pageTextCache.current.set(pageNumber, pageText);
+            const runtimeSession = runtimeSessionRef.current;
+            if (!runtimeSession) {
+              onStatusChange("Search is unavailable for this document.");
+              return 0;
+            }
+
+            try {
+              const pageNumber = await runtimeSession.search(normalizedQuery);
+              if (runtimeSessionRef.current !== runtimeSession) {
+                return 0;
               }
 
-              if (pageText.includes(normalizedQuery)) {
+              if (pageNumber > 0) {
                 requestPageTurn(pageNumber, "search");
                 onStatusChange(`Found "${query}" on page ${pageNumber}.`);
                 return pageNumber;
               }
-            }
 
-            onStatusChange(`No matches found for "${query}".`);
-            return 0;
+              onStatusChange(`No matches found for "${query}".`);
+              return 0;
+            } catch {
+              if (runtimeSessionRef.current === runtimeSession) {
+                onStatusChange("Unable to search this PDF.");
+              }
+              return 0;
+            }
           },
           jumpToOutline: (item) => {
             if (item.page) {
@@ -862,6 +871,8 @@ export function useReaderController({
     zoom,
     displayedPage,
     incomingPage,
+    displayedPageTextLayer,
+    displayedPageTextDebugStatus,
     isRendering,
     loadingDocument,
     documentError,

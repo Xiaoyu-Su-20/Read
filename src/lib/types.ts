@@ -58,6 +58,21 @@ export type RenderedPagePayload = {
   cacheKey: string;
 };
 
+export type PageTextLayerData = {
+  pageNumber: number;
+  textContent: import("pdfjs-dist/types/src/display/api").TextContent;
+  viewportWidth: number;
+  viewportHeight: number;
+  viewportRawDims: {
+    pageWidth: number;
+    pageHeight: number;
+    pageX: number;
+    pageY: number;
+  };
+  viewportTransform: [number, number, number, number, number, number];
+  rotation: 0;
+};
+
 export type FolderTreeNode = {
   folder: FolderRecord;
   folders: FolderTreeNode[];

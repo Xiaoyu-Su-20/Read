@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createFolder,
+  deleteFolder,
   getLibraryRoot,
   importPdf,
   listLibrary,
@@ -246,6 +247,28 @@ export function useWorkspaceController() {
     [refreshLibraryState, syncActiveDocument]
   );
 
+  const deleteCollection = useCallback(
+    async (collectionId: string) => {
+      const deletedIndex = collections.findIndex((collection) => collection.folder.id === collectionId);
+      const nextSelectedCollectionId =
+        deletedIndex === -1
+          ? selectedCollectionId
+          : selectedCollectionId === collectionId
+            ? collections[deletedIndex + 1]?.folder.id ??
+              collections[deletedIndex - 1]?.folder.id ??
+              null
+            : selectedCollectionId;
+
+      const deleted = await deleteFolder(collectionId);
+      await refreshLibraryState({ rescan: true });
+      setSelectedCollectionId(nextSelectedCollectionId);
+      setWorkspaceMode("collection");
+      setStatusMessage(`Deleted collection ${deleted.name}.`);
+      return deleted;
+    },
+    [collections, refreshLibraryState, selectedCollectionId]
+  );
+
   const renameDocumentInLibrary = useCallback(
     async (documentId: string, newName: string) => {
       const renamed = await renameDocument(documentId, newName);
@@ -336,6 +359,7 @@ export function useWorkspaceController() {
     moveActiveDocument,
     renameActiveDocument,
     renameCollection,
+    deleteCollection,
     renameDocumentInLibrary,
     removeActiveDocument,
     rescanLibraryState,

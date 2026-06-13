@@ -64,6 +64,12 @@ export function renameFolder(folderId: string, newName: string) {
   });
 }
 
+export function deleteFolder(folderId: string) {
+  return invokeLogged<FolderRecord>("delete_folder", {
+    folderId
+  });
+}
+
 export function removeFromLibrary(documentId: string, destinationDirectory: string) {
   return invokeLogged<DocumentRecord>("remove_from_library", {
     documentId,

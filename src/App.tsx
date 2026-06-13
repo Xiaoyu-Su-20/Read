@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -32,6 +32,16 @@ function isEditableTarget(target: EventTarget | null) {
   return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
 }
 
+function shouldStartWindowDrag(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return !target.closest(
+    "button, input, textarea, select, [contenteditable='true'], [data-no-window-drag]"
+  );
+}
+
 function ChromeIcon({
   children,
   label
@@ -56,6 +66,8 @@ export default function App() {
   });
   const palette = usePaletteController();
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [isWindowMaximized, setIsWindowMaximized] = useState(false);
+  const [isWindowFullscreen, setIsWindowFullscreen] = useState(false);
   const flows = useLibraryFlows({
     libraryTree: workspace.libraryTree,
     collectionOptions: workspace.collectionOptions,
@@ -123,10 +135,6 @@ export default function App() {
         setOutlineOpen(false);
         return;
       }
-
-      if (originatedFromEditable || palette.paletteOpen || workspace.workspaceMode !== "reader") {
-        return;
-      }
     }
 
     window.addEventListener("keydown", onKeyDown);
@@ -155,6 +163,44 @@ export default function App() {
     setOutlineOpen(false);
   }, [workspace.activeDocumentId]);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlistenResize: (() => void) | undefined;
+
+    async function syncWindowLayoutState() {
+      try {
+        const [maximized, fullscreen] = await Promise.all([
+          appWindow.isMaximized(),
+          appWindow.isFullscreen()
+        ]);
+        if (!disposed) {
+          setIsWindowMaximized(maximized);
+          setIsWindowFullscreen(fullscreen);
+        }
+      } catch (error) {
+        console.error("Failed to read window maximize state:", error);
+      }
+    }
+
+    void syncWindowLayoutState();
+
+    void appWindow.onResized(() => {
+      void syncWindowLayoutState();
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten();
+        return;
+      }
+
+      unlistenResize = unlisten;
+    });
+
+    return () => {
+      disposed = true;
+      unlistenResize?.();
+    };
+  }, []);
+
   const topbarTitle =
     workspace.workspaceMode === "collection"
       ? workspace.selectedCollection?.folder.name ?? "Library"
@@ -168,9 +214,30 @@ export default function App() {
         ? `${workspace.viewerSnapshot.currentPage} / ${workspace.viewerSnapshot.pageCount}`
         : "No document open";
 
+  function handleTopbarMouseDown(event: ReactMouseEvent<HTMLElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    if (!shouldStartWindowDrag(event.target)) {
+      return;
+    }
+
+    appWindow.startDragging().catch((error) => {
+      console.error("startDragging failed:", error);
+    });
+  }
+
   return (
-    <main className="app-shell">
-      <nav className="sidebar" aria-label="Navigation">
+    <main
+      className={`app-shell${
+        isWindowMaximized && !isWindowFullscreen ? " app-shell--maximized" : ""
+      }`}
+    >
+      <nav
+        className={`sidebar${workspace.workspaceMode === "reader" ? " sidebar--reader" : ""}`}
+        aria-label="Navigation"
+      >
         <button
           className="sidebar__icon-button sidebar__icon-button--top"
           type="button"
@@ -235,13 +302,6 @@ export default function App() {
               <path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" />
             </ChromeIcon>
           </button>
-          <button className="sidebar__icon-button" type="button" aria-label="Download">
-            <ChromeIcon label="Download">
-              <path d="M12 4v10" />
-              <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
-              <path d="M5 19.5h14" />
-            </ChromeIcon>
-          </button>
         </div>
 
         <button className="sidebar__icon-button sidebar__icon-button--bottom" type="button" aria-label="Settings">
@@ -259,19 +319,19 @@ export default function App() {
         </button>
       </nav>
 
-      <header className="topbar">
-        <div className="topbar__drag" data-tauri-drag-region>
-          <div className="topbar__brand" data-tauri-drag-region>
+      <header className="topbar" onMouseDown={handleTopbarMouseDown}>
+        <div className="topbar__drag">
+          <div className="topbar__brand">
             <strong>{topbarTitle}</strong>
           </div>
-          <div className="topbar__status" data-tauri-drag-region>
+          <div className="topbar__status">
             <span>{topbarStatus}</span>
             {!isPassiveStatusMessage(workspace.statusMessage) ? (
               <span>{workspace.statusMessage}</span>
             ) : null}
           </div>
         </div>
-        <div className="window-controls">
+        <div className="window-controls" data-no-window-drag>
           <button
             className="window-control"
             type="button"
@@ -338,11 +398,13 @@ export default function App() {
           <CollectionView
             tree={workspace.libraryTree}
             selectedCollectionId={workspace.selectedCollection?.folder.id ?? null}
-            activeDocumentId={workspace.activeDocumentId}
             onSelectCollection={workspace.setSelectedCollectionId}
             onCreateCollection={flows.createCollectionFlow}
             onRenameCollection={async (collectionId, nextName) => {
               await workspace.renameCollection(collectionId, nextName);
+            }}
+            onDeleteCollection={async (collectionId) => {
+              await workspace.deleteCollection(collectionId);
             }}
             onOpenDocument={async (documentId) => {
               setOutlineOpen(false);

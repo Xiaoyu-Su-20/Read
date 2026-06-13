@@ -22,7 +22,6 @@ export type NotesContextMenuState =
       target: "body";
       blockId: string;
       canAddPageLink: boolean;
-      selectedText: string;
       anchor: PanePoint;
     }
   | {

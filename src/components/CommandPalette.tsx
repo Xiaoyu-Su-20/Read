@@ -79,10 +79,6 @@ export default function CommandPalette({
         aria-label={session.title}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="palette__header">
-          <span className="eyebrow">Command</span>
-          <h2>{session.title}</h2>
-        </div>
         <input
           ref={inputRef}
           className="palette__input"
@@ -143,9 +139,8 @@ export default function CommandPalette({
                     }
                   }}
                 >
-                  <span>
+                  <span className="palette__label">
                     <strong>{item.title}</strong>
-                    {item.subtitle ? <small>{item.subtitle}</small> : null}
                   </span>
                   {item.meta ? <em>{item.meta}</em> : null}
                 </button>

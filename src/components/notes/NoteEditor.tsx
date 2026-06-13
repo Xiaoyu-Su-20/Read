@@ -6,6 +6,7 @@ import {
 } from "react";
 
 import {
+  captureBlockEndRange,
   clearSelectedPageLink,
   copyPageLinkReference,
   copySelection,
@@ -25,7 +26,6 @@ import {
   isPointWithinBlockContent,
   isPointWithinPageLinkContent,
   isPointWithinSelectionContent,
-  isSelectionWithinSingleBlock,
   moveCaretAroundPageLink,
   normalizeNoteEditorDom,
   parseNoteBlocksFromEditor,
@@ -33,9 +33,9 @@ import {
   removePageLink,
   renderNoteBlocksHtml,
   replaceBlockElementType,
-  replaceSelectionWithPageLink,
   selectPageLinkToken,
-  updatePageLink
+  insertPageLinkAtRange,
+  updatePageLinkTarget
 } from "../../lib/noteEditorDom";
 import { logNoteDebugEvent } from "../../lib/api";
 import type { NoteBlockType, NoteDocument, NotePageLinkNode } from "../../lib/types";
@@ -45,7 +45,6 @@ export type NoteEditorContextTarget =
       target: "body";
       blockId: string;
       canAddPageLink: boolean;
-      selectedText: string;
     }
   | {
       target: "page-link";
@@ -63,12 +62,12 @@ export type NoteEditorHandle = {
   cutSelection: () => void;
   pasteSelection: () => Promise<void>;
   turnInto: (blockId: string, type: NoteBlockType) => void;
-  addPageLinkFromSelection: () => PageLinkCommandResult;
+  insertPageLink: (pageNumber: number) => PageLinkCommandResult;
   openPageLink: (pageLinkId: string) => NotePageLinkNode | null;
-  editPageLink: (pageLinkId: string, nextText: string) => PageLinkCommandResult;
+  getPageLink: (pageLinkId: string) => NotePageLinkNode | null;
+  editPageLink: (pageLinkId: string, pageNumber: number) => PageLinkCommandResult;
   removePageLink: (pageLinkId: string) => boolean;
   copyPageReference: (pageLinkId: string) => void;
-  getPageLinkText: (pageLinkId: string) => string;
   resolveContextMenuTargetAtPoint: (x: number, y: number) => NoteEditorContextTarget | null;
   clearSelectedBlock: () => void;
 };
@@ -90,6 +89,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
   const appliedNoteIdRef = useRef<string | null>(null);
   const selectedBlockIdRef = useRef<string | null>(null);
   const selectedPageLinkIdRef = useRef<string | null>(null);
+  const pendingPageLinkRangeRef = useRef<Range | null>(null);
 
   function updateSelectedBlock(blockId: string | null) {
     selectedBlockIdRef.current = blockId;
@@ -111,6 +111,32 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     onChangeBlocks(parseNoteBlocksFromEditor(bodyRef.current));
   }
 
+  function readPageLinkNode(pageLinkId: string) {
+    if (!bodyRef.current) {
+      return null;
+    }
+
+    const pageLink = findPageLinkElement(bodyRef.current, pageLinkId);
+    if (!pageLink) {
+      return null;
+    }
+
+    const pdfPageIndex =
+      pageLink.dataset.pdfPageIndex && pageLink.dataset.pdfPageIndex.length > 0
+        ? Number.parseInt(pageLink.dataset.pdfPageIndex, 10)
+        : NaN;
+
+    return {
+      type: "page-link" as const,
+      id: pageLink.dataset.pageLinkId || pageLinkId,
+      text: pageLink.textContent ?? "",
+      documentId: pageLink.dataset.documentId?.trim() || null,
+      pdfPageIndex: Number.isFinite(pdfPageIndex) ? pdfPageIndex : null,
+      bookPageLabel: pageLink.dataset.bookPageLabel?.trim() || "",
+      createdAt: pageLink.dataset.createdAt || new Date().toISOString()
+    };
+  }
+
   function resolveContextMenuTargetAtPoint(x: number, y: number) {
     if (!bodyRef.current) {
       return null;
@@ -120,6 +146,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
 
     const pointPageLink = getPageLinkAtPoint(bodyRef.current, x, y);
     if (pointPageLink && isPointWithinPageLinkContent(bodyRef.current, pointPageLink, x, y)) {
+      pendingPageLinkRangeRef.current = null;
       const block = findClosestBlockElement(bodyRef.current, pointPageLink);
       const pageLinkId = pointPageLink.dataset.pageLinkId ?? null;
       const blockId = block?.dataset.blockId ?? null;
@@ -139,32 +166,38 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     const selectionResolvedBlock = getBlockFromSelection(bodyRef.current);
     const selectionContainsPoint = isPointWithinSelectionContent(bodyRef.current, x, y);
     const pointResolvedBlock = getBlockAtPoint(bodyRef.current, x, y);
-    const pointResolvedContentBlock =
-      pointResolvedBlock && isPointWithinBlockContent(bodyRef.current, pointResolvedBlock, x, y)
-        ? pointResolvedBlock
-        : null;
+    const pointResolvedContentBlock = pointResolvedBlock;
 
     let resolvedBlock = selectionContainsPoint ? selectionResolvedBlock : pointResolvedContentBlock;
     if (!resolvedBlock && pointResolvedContentBlock) {
       resolvedBlock = pointResolvedContentBlock;
     }
 
-    if (!resolvedBlock) {
+    if (!resolvedBlock || !pointResolvedContentBlock) {
+      pendingPageLinkRangeRef.current = null;
       updateSelectedBlock(null);
       return null;
     }
 
     const blockId = resolvedBlock.dataset.blockId ?? null;
     if (!blockId) {
+      pendingPageLinkRangeRef.current = null;
       updateSelectedBlock(null);
       return null;
     }
 
     const selectedText = getSelectedText(bodyRef.current).trim();
-    const canAddPageLink =
-      resolvedBlock.dataset.blockType === "paragraph" &&
-      selectedText.length > 0 &&
-      isSelectionWithinSingleBlock(bodyRef.current);
+    const pointBlockText = pointResolvedContentBlock.textContent?.trim() ?? "";
+    if (pointResolvedContentBlock.dataset.blockType === "paragraph" && pointBlockText.length === 0) {
+      pendingPageLinkRangeRef.current = null;
+      updateSelectedBlock(null);
+      return null;
+    }
+    const canAddPageLink = pointResolvedContentBlock.dataset.blockType === "paragraph";
+
+    pendingPageLinkRangeRef.current = canAddPageLink
+      ? captureBlockEndRange(bodyRef.current, pointResolvedContentBlock)
+      : null;
 
     updateSelectedBlock(blockId);
     void logNoteDebugEvent("notes.turn_into.context_menu_opened", {
@@ -181,8 +214,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     return {
       target: "body",
       blockId,
-      canAddPageLink,
-      selectedText
+      canAddPageLink
     } satisfies NoteEditorContextTarget;
   }
 
@@ -196,6 +228,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       appliedNoteIdRef.current = null;
       selectedBlockIdRef.current = null;
       selectedPageLinkIdRef.current = null;
+      pendingPageLinkRangeRef.current = null;
       return;
     }
 
@@ -207,6 +240,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     appliedNoteIdRef.current = note.id;
     updateSelectedBlock(null);
     updateSelectedPageLink(null);
+    pendingPageLinkRangeRef.current = null;
   }, [note]);
 
   useImperativeHandle(
@@ -279,50 +313,51 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         }
         syncBlocksFromDom();
       },
-      addPageLinkFromSelection() {
+      insertPageLink(pageNumber) {
         if (!bodyRef.current || !note) {
           return {
             ok: false,
-            message: "PageLink must look like (p. 45)."
+            message: "Unable to insert PageLink."
           };
         }
 
-        const result = replaceSelectionWithPageLink(bodyRef.current, note, currentPage);
+        if (currentPage == null || !Number.isInteger(currentPage) || currentPage <= 0) {
+          return {
+            ok: false,
+            message: "Unable to determine the current PDF page for this PageLink."
+          };
+        }
+
+        const insertionRange = pendingPageLinkRangeRef.current;
+        if (!insertionRange) {
+          return {
+            ok: false,
+            message: "Click inside a paragraph before adding a PageLink."
+          };
+        }
+
+        const result = insertPageLinkAtRange(bodyRef.current, insertionRange, note, pageNumber, currentPage);
         if (!result.ok) {
           return result;
         }
 
+        pendingPageLinkRangeRef.current = null;
         updateSelectedPageLink(result.node.id);
         syncBlocksFromDom();
         return result;
       },
       openPageLink(pageLinkId) {
-        if (!bodyRef.current) {
+        const node = readPageLinkNode(pageLinkId);
+        if (!node) {
           return null;
         }
-
-        const pageLink = findPageLinkElement(bodyRef.current, pageLinkId);
-        if (!pageLink) {
-          return null;
-        }
-
-        const pdfPageIndex =
-          pageLink.dataset.pdfPageIndex && pageLink.dataset.pdfPageIndex.length > 0
-            ? Number.parseInt(pageLink.dataset.pdfPageIndex, 10)
-            : NaN;
-        const node: NotePageLinkNode = {
-          type: "page-link",
-          id: pageLink.dataset.pageLinkId || pageLinkId,
-          text: pageLink.textContent ?? "",
-          documentId: pageLink.dataset.documentId?.trim() || null,
-          pdfPageIndex: Number.isFinite(pdfPageIndex) ? pdfPageIndex : null,
-          bookPageLabel: pageLink.dataset.bookPageLabel?.trim() || "",
-          createdAt: pageLink.dataset.createdAt || new Date().toISOString()
-        };
         onOpenPageLink(node);
         return node;
       },
-      editPageLink(pageLinkId, nextText) {
+      getPageLink(pageLinkId) {
+        return readPageLinkNode(pageLinkId);
+      },
+      editPageLink(pageLinkId, pageNumber) {
         if (!bodyRef.current || !note) {
           return {
             ok: false,
@@ -330,7 +365,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           };
         }
 
-        const result = updatePageLink(bodyRef.current, pageLinkId, nextText);
+        const result = updatePageLinkTarget(bodyRef.current, pageLinkId, pageNumber);
         if (!result.ok) {
           return result;
         }
@@ -358,18 +393,13 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         }
         copyPageLinkReference(bodyRef.current, pageLinkId);
       },
-      getPageLinkText(pageLinkId) {
-        if (!bodyRef.current) {
-          return "";
-        }
-        return findPageLinkElement(bodyRef.current, pageLinkId)?.textContent ?? "";
-      },
       clearSelectedBlock() {
         updateSelectedBlock(null);
         updateSelectedPageLink(null);
         if (bodyRef.current) {
           clearSelectedPageLink(bodyRef.current);
         }
+        pendingPageLinkRangeRef.current = null;
       }
     }),
     [currentPage, note, onChangeBlocks, onOpenPageLink]

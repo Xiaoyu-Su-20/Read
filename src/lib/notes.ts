@@ -11,6 +11,7 @@ import type {
 
 export const NOTE_SAVE_DEBOUNCE_MS = 1000;
 export const PAGE_LINK_TEXT_PATTERN = /^\(p\.\s*(\d+)\)$/;
+export const PAGE_LINK_TARGET_INPUT_PATTERN = /^\d+$/;
 
 export function createTextNode(text = "", marks?: Pick<NoteTextNode, "bold" | "italic">): NoteTextNode {
   return {
@@ -236,6 +237,28 @@ export function parsePageLinkText(selectionText: string) {
   return {
     rawText: trimmed,
     bookPageLabel: match[1]
+  };
+}
+
+export function formatPageLinkText(pageNumber: number) {
+  return `(p. ${pageNumber})`;
+}
+
+export function parsePageLinkTargetInput(input: string) {
+  const trimmed = input.trim();
+  if (!PAGE_LINK_TARGET_INPUT_PATTERN.test(trimmed)) {
+    return null;
+  }
+
+  const pageNumber = Number.parseInt(trimmed, 10);
+  if (!Number.isInteger(pageNumber) || pageNumber <= 0) {
+    return null;
+  }
+
+  return {
+    pageNumber,
+    bookPageLabel: trimmed,
+    text: formatPageLinkText(pageNumber)
   };
 }
 

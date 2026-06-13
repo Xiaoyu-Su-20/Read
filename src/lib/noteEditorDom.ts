@@ -2,9 +2,9 @@ import {
   createEmptyNoteBlock,
   createPageLinkNode,
   createTextNode,
+  formatPageLinkText,
   normalizeNoteBlocks,
-  normalizeNoteInlineNodes,
-  parsePageLinkText
+  normalizeNoteInlineNodes
 } from "./notes";
 import type {
   NoteBlock,
@@ -360,6 +360,100 @@ export function getPageLinkAtPoint(root: HTMLElement, x: number, y: number) {
   return pageLink && root.contains(pageLink) ? pageLink : null;
 }
 
+function getRangeAtPoint(root: HTMLElement, x: number, y: number) {
+  const ownerDocument = root.ownerDocument as CaretRangeDocument;
+
+  if (ownerDocument.caretPositionFromPoint) {
+    const position = ownerDocument.caretPositionFromPoint(x, y);
+    if (position?.offsetNode) {
+      const range = ownerDocument.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+      return range;
+    }
+  }
+
+  if (ownerDocument.caretRangeFromPoint) {
+    const range = ownerDocument.caretRangeFromPoint(x, y);
+    if (range) {
+      range.collapse(true);
+      return range;
+    }
+  }
+
+  return null;
+}
+
+function findBlockFromRange(root: HTMLElement, range: Range) {
+  const candidateNodes: Array<Node | null> = [
+    range.startContainer,
+    range.endContainer,
+    range.commonAncestorContainer
+  ];
+
+  for (const node of candidateNodes) {
+    const block = findClosestBlockElement(root, node);
+    if (block) {
+      return block;
+    }
+  }
+
+  return null;
+}
+
+export function captureCollapsedRangeAtPoint(root: HTMLElement, x: number, y: number) {
+  const rangeAtPoint = getRangeAtPoint(root, x, y);
+  if (rangeAtPoint) {
+    const block = findBlockFromRange(root, rangeAtPoint);
+    if (!block || !root.contains(block)) {
+      return null;
+    }
+
+    const selection = window.getSelection();
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(rangeAtPoint);
+    }
+
+    return rangeAtPoint.cloneRange();
+  }
+
+  const blockAtPoint = getBlockAtPoint(root, x, y);
+  if (!blockAtPoint || !root.contains(blockAtPoint)) {
+    return null;
+  }
+
+  const fallbackRange = root.ownerDocument.createRange();
+  fallbackRange.selectNodeContents(blockAtPoint);
+  fallbackRange.collapse(false);
+
+  const selection = window.getSelection();
+  if (selection) {
+    selection.removeAllRanges();
+    selection.addRange(fallbackRange);
+  }
+
+  return fallbackRange.cloneRange();
+}
+
+export function captureBlockEndRange(root: HTMLElement, block: HTMLElement) {
+  if (!root.contains(block)) {
+    return null;
+  }
+
+  const range = root.ownerDocument.createRange();
+  range.selectNodeContents(block);
+  range.collapse(false);
+
+  const selection = window.getSelection();
+  if (selection) {
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  return range.cloneRange();
+}
+
 function getSelectionInRoot(root: HTMLElement) {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) {
@@ -520,39 +614,71 @@ function placeCaretBeforeNode(node: Node) {
   selection.addRange(range);
 }
 
-export function replaceSelectionWithPageLink(
+function focusElementWithoutScroll(element: HTMLElement) {
+  try {
+    element.focus({ preventScroll: true });
+  } catch {
+    element.focus();
+  }
+}
+
+function shouldInsertLeadingSpace(root: HTMLElement, insertionRange: Range) {
+  const block = findBlockFromRange(root, insertionRange);
+  if (!block) {
+    return false;
+  }
+
+  const prefixRange = root.ownerDocument.createRange();
+  prefixRange.selectNodeContents(block);
+  prefixRange.setEnd(insertionRange.endContainer, insertionRange.endOffset);
+
+  const prefixText = prefixRange.toString();
+  if (prefixText.length === 0) {
+    return false;
+  }
+
+  return !/\s$/.test(prefixText);
+}
+
+export function insertPageLinkAtRange(
   root: HTMLElement,
+  insertionRange: Range,
   note: NoteDocument,
+  pageNumber: number,
   currentPdfPageIndex: number | null
 ) {
-  const selection = getSelectionInRoot(root);
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed || !isSelectionWithinSingleBlock(root)) {
+  if (!root.contains(insertionRange.commonAncestorContainer)) {
     return {
       ok: false as const,
-      message: "PageLink must look like (p. 45)."
+      message: "Click inside a paragraph before adding a PageLink."
     };
   }
 
-  const selectedText = selection.toString();
-  const parsed = parsePageLinkText(selectedText);
-  if (!parsed) {
+  const block = findBlockFromRange(root, insertionRange);
+  if (!block || block.dataset.blockType !== "paragraph") {
     return {
       ok: false as const,
-      message: "PageLink must look like (p. 45)."
+      message: "PageLinks can only be inserted into paragraphs."
     };
   }
 
-  const range = selection.getRangeAt(0);
   const node = createPageLinkNode({
-    text: parsed.rawText,
-    bookPageLabel: parsed.bookPageLabel,
+    text: formatPageLinkText(pageNumber),
+    bookPageLabel: String(pageNumber),
     documentId: note.bookId,
     pdfPageIndex: currentPdfPageIndex
   });
   const element = createPageLinkElement(node);
 
-  range.deleteContents();
-  range.insertNode(element);
+  focusElementWithoutScroll(root);
+  const nextRange = insertionRange.cloneRange();
+  nextRange.collapse(true);
+  const fragment = root.ownerDocument.createDocumentFragment();
+  if (shouldInsertLeadingSpace(root, nextRange)) {
+    fragment.appendChild(root.ownerDocument.createTextNode(" "));
+  }
+  fragment.appendChild(element);
+  nextRange.insertNode(fragment);
   placeCaretAfterNode(element);
 
   return {
@@ -561,7 +687,7 @@ export function replaceSelectionWithPageLink(
   };
 }
 
-export function updatePageLink(root: HTMLElement, pageLinkId: string, nextText: string) {
+export function updatePageLinkTarget(root: HTMLElement, pageLinkId: string, pageNumber: number) {
   const pageLink = findPageLinkElement(root, pageLinkId);
   if (!pageLink) {
     return {
@@ -570,27 +696,20 @@ export function updatePageLink(root: HTMLElement, pageLinkId: string, nextText: 
     };
   }
 
-  const parsed = parsePageLinkText(nextText);
-  if (!parsed) {
-    return {
-      ok: false as const,
-      message: "PageLink must look like (p. 45)."
-    };
-  }
-
   const pdfPageIndex =
     pageLink.dataset.pdfPageIndex && pageLink.dataset.pdfPageIndex.length > 0
       ? Number.parseInt(pageLink.dataset.pdfPageIndex, 10)
       : null;
   const nextNode = createPageLinkNode({
-    text: parsed.rawText,
-    bookPageLabel: parsed.bookPageLabel,
+    text: formatPageLinkText(pageNumber),
+    bookPageLabel: String(pageNumber),
     documentId: pageLink.dataset.documentId?.trim() || null,
     pdfPageIndex
   });
   nextNode.id = pageLinkId;
   nextNode.createdAt = pageLink.dataset.createdAt || nextNode.createdAt;
   const replacement = createPageLinkElement(nextNode);
+  focusElementWithoutScroll(root);
   pageLink.replaceWith(replacement);
   placeCaretAfterNode(replacement);
 

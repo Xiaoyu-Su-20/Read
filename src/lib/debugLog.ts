@@ -1,6 +1,7 @@
 type DebugFields = Record<string, unknown>;
 
-const isDebugEnabled = import.meta.env.DEV;
+export const isDebugModeEnabled =
+  import.meta.env.VITE_DEBUG_UI === "true";
 
 function normalizeError(error: unknown) {
   if (error instanceof Error) {
@@ -16,7 +17,7 @@ function normalizeError(error: unknown) {
 }
 
 function emit(level: "info" | "error", event: string, fields: DebugFields = {}) {
-  if (!isDebugEnabled) {
+  if (!isDebugModeEnabled) {
     return;
   }
 
@@ -47,7 +48,7 @@ export function debugError(event: string, error: unknown, fields: DebugFields = 
 }
 
 export function startDebugProcess(event: string, fields: DebugFields = {}) {
-  if (!isDebugEnabled) {
+  if (!isDebugModeEnabled) {
     return {
       checkpoint(_checkpointEvent: string, _checkpointFields?: DebugFields) {},
       finish(_finishFields?: DebugFields) {},

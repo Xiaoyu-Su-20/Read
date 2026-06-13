@@ -417,6 +417,43 @@ impl LibraryStore {
         Ok(self.folder_record_for_relative(&relative_path))
     }
 
+    pub fn delete_folder(&self, folder_id: &str) -> AppResult<FolderRecord> {
+        self.ensure_ready()?;
+
+        if folder_id == ROOT_FOLDER_ID {
+            return Err(AppError::InvalidInput(
+                "The library root cannot be deleted.".to_string(),
+            ));
+        }
+        self.ensure_collection_id(folder_id)?;
+
+        let index = self.load_index()?;
+        let folder_prefix = format!("{folder_id}/");
+        if index
+            .documents
+            .iter()
+            .any(|document| document.folder_id == folder_id || document.folder_id.starts_with(&folder_prefix))
+        {
+            return Err(AppError::InvalidInput(
+                "Collections with PDFs inside cannot be deleted.".to_string(),
+            ));
+        }
+
+        let root = self.library_root_path();
+        let folder_path = self.resolve_folder_path(&root, folder_id)?;
+        let deleted = self.folder_record_for_relative(folder_id);
+
+        fs::remove_dir(&folder_path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::DirectoryNotEmpty {
+                AppError::InvalidInput("Only empty collections can be deleted.".to_string())
+            } else {
+                AppError::Io(error)
+            }
+        })?;
+
+        Ok(deleted)
+    }
+
     pub fn remove_from_library(
         &self,
         document_id: &str,
@@ -2501,6 +2538,45 @@ mod tests {
         assert_eq!(renamed.id, "Archive");
         assert_eq!(reopened.document.folder_id, "Archive");
         assert_eq!(reopened.document.relative_path, "Archive/foldered.pdf");
+    }
+
+    #[test]
+    fn delete_folder_removes_empty_collection() {
+        let temp = tempdir().unwrap();
+        let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+        let folder = store.create_folder("Shelf", Some(ROOT_FOLDER_ID)).unwrap();
+
+        let deleted = store.delete_folder(&folder.id).unwrap();
+        let library = store.list_library().unwrap();
+
+        assert_eq!(deleted.id, "Shelf");
+        assert!(!temp.path().join("Reader").join("Shelf").exists());
+        assert!(library.folders.iter().all(|collection| collection.folder.id != "Shelf"));
+    }
+
+    #[test]
+    fn delete_folder_rejects_non_empty_collection() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("occupied.pdf");
+        write_sample_pdf(&source, "occupied");
+
+        let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+        let folder = store.create_folder("Shelf", Some(ROOT_FOLDER_ID)).unwrap();
+        store.import_pdf(&source, Some(&folder.id)).unwrap();
+
+        let error = store.delete_folder(&folder.id).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Collections with PDFs inside cannot be deleted"));
+    }
+
+    #[test]
+    fn delete_folder_rejects_library_root() {
+        let temp = tempdir().unwrap();
+        let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+
+        let error = store.delete_folder(ROOT_FOLDER_ID).unwrap_err();
+        assert!(error.to_string().contains("library root cannot be deleted"));
     }
 
     #[test]

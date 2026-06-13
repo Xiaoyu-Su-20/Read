@@ -271,6 +271,21 @@ fn rename_folder(
 }
 
 #[tauri::command]
+fn delete_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    folder_id: String,
+) -> Result<FolderRecord, String> {
+    run_logged_command("delete_folder", json!({
+        "folderId": folder_id,
+    }), || with_store(&app, state, |store| {
+        store
+            .delete_folder(&folder_id)
+            .map_err(|error| error.to_string())
+    }))
+}
+
+#[tauri::command]
 fn remove_from_library(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -489,6 +504,7 @@ pub fn run() {
             move_document,
             rename_document,
             rename_folder,
+            delete_folder,
             remove_from_library,
             open_document,
             save_document_state,

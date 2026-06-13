@@ -5,10 +5,10 @@ import type { DocumentRecord, FolderTreeNode } from "../lib/types";
 type CollectionViewProps = {
   tree: FolderTreeNode | null;
   selectedCollectionId: string | null;
-  activeDocumentId: string | null;
   onSelectCollection: (collectionId: string) => void;
   onCreateCollection: () => void | Promise<void>;
   onRenameCollection: (collectionId: string, nextName: string) => void | Promise<void>;
+  onDeleteCollection: (collectionId: string) => void | Promise<void>;
   onOpenDocument: (documentId: string) => void | Promise<void>;
   onRenameDocument: (documentId: string, nextName: string) => void | Promise<void>;
 };
@@ -29,10 +29,10 @@ function nextDocumentName(value: string, originalFileName: string) {
 export default function CollectionView({
   tree,
   selectedCollectionId,
-  activeDocumentId,
   onSelectCollection,
   onCreateCollection,
   onRenameCollection,
+  onDeleteCollection,
   onOpenDocument,
   onRenameDocument
 }: CollectionViewProps) {
@@ -47,34 +47,13 @@ export default function CollectionView({
   const [editingCollectionValue, setEditingCollectionValue] = useState("");
   const [editingDocumentId, setEditingDocumentId] = useState<string | null>(null);
   const [editingDocumentValue, setEditingDocumentValue] = useState("");
-
-  const clickTimerRef = useRef<number | null>(null);
+  const [openCollectionMenuId, setOpenCollectionMenuId] = useState<string | null>(null);
+  const [confirmDeleteCollectionId, setConfirmDeleteCollectionId] = useState<string | null>(null);
   const suppressBookActivationUntilRef = useRef(0);
-
-  useEffect(() => {
-    return () => {
-      if (clickTimerRef.current !== null) {
-        window.clearTimeout(clickTimerRef.current);
-      }
-    };
-  }, []);
+  const skipNextCollectionSelectionRef = useRef(false);
+  const skipNextDocumentActivationRef = useRef(false);
 
   const visibleBooks = useMemo(() => books.slice(0, 14), [books]);
-
-  function clearPendingClick() {
-    if (clickTimerRef.current !== null) {
-      window.clearTimeout(clickTimerRef.current);
-      clickTimerRef.current = null;
-    }
-  }
-
-  function queueSingleClick(action: () => void) {
-    clearPendingClick();
-    clickTimerRef.current = window.setTimeout(() => {
-      clickTimerRef.current = null;
-      action();
-    }, 180);
-  }
 
   function suppressBookActivation() {
     suppressBookActivationUntilRef.current = window.performance.now() + 250;
@@ -84,30 +63,80 @@ export default function CollectionView({
     return window.performance.now() < suppressBookActivationUntilRef.current;
   }
 
-  async function commitCollectionRename() {
+  function closeCollectionMenu() {
+    setOpenCollectionMenuId(null);
+    setConfirmDeleteCollectionId(null);
+  }
+
+  async function commitCollectionRename(options?: { skipNextSelection?: boolean }) {
     if (!editingCollectionId) {
       return;
     }
 
+    const currentCollection =
+      collections.find((collection) => collection.folder.id === editingCollectionId) ?? null;
     const nextName = editingCollectionValue.trim();
     const targetId = editingCollectionId;
     setEditingCollectionId(null);
+    if (options?.skipNextSelection) {
+      skipNextCollectionSelectionRef.current = true;
+    }
     if (!nextName) {
+      return;
+    }
+    if (currentCollection && nextName === currentCollection.folder.name) {
       return;
     }
     await onRenameCollection(targetId, nextName);
   }
 
-  async function commitDocumentRename(document: DocumentRecord) {
+  async function commitDocumentRename(
+    document: DocumentRecord,
+    options?: { skipNextActivation?: boolean }
+  ) {
     if (editingDocumentId !== document.id) {
       return;
     }
 
     const nextName = nextDocumentName(editingDocumentValue, document.fileName);
     suppressBookActivation();
+    if (options?.skipNextActivation) {
+      skipNextDocumentActivationRef.current = true;
+    }
     setEditingDocumentId(null);
+    if (nextName === document.fileName) {
+      return;
+    }
     await onRenameDocument(document.id, nextName);
   }
+
+  useEffect(() => {
+    function handleWindowPointerDown(event: PointerEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".collection-row__actions, .collection-row__menu")) {
+        return;
+      }
+
+      closeCollectionMenu();
+    }
+
+    function handleWindowKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeCollectionMenu();
+      }
+    }
+
+    window.addEventListener("pointerdown", handleWindowPointerDown, true);
+    window.addEventListener("keydown", handleWindowKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", handleWindowPointerDown, true);
+      window.removeEventListener("keydown", handleWindowKeyDown, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    closeCollectionMenu();
+  }, [selectedCollectionId]);
 
   return (
     <section className="collection-view">
@@ -130,21 +159,32 @@ export default function CollectionView({
           {collections.map((collection) => {
             const isActive = collection.folder.id === selectedCollection?.folder.id;
             const isEditing = collection.folder.id === editingCollectionId;
+            const isMenuOpen = collection.folder.id === openCollectionMenuId;
+            const isDeleteConfirming = collection.folder.id === confirmDeleteCollectionId;
+            const collectionHasDocuments = collection.documents.length > 0;
 
             return (
-              <button
+              <div
                 key={collection.folder.id}
                 className={`collection-row${isActive ? " collection-row--active" : ""}`}
-                type="button"
+                role="button"
+                tabIndex={isEditing ? -1 : 0}
                 onClick={() => {
-                  queueSingleClick(() => onSelectCollection(collection.folder.id));
-                }}
-                onDoubleClick={() => {
-                  clearPendingClick();
-                  setEditingDocumentId(null);
-                  setEditingCollectionId(collection.folder.id);
-                  setEditingCollectionValue(collection.folder.name);
+                  if (skipNextCollectionSelectionRef.current) {
+                    skipNextCollectionSelectionRef.current = false;
+                    return;
+                  }
                   onSelectCollection(collection.folder.id);
+                }}
+                onKeyDown={(event) => {
+                  if (isEditing) {
+                    return;
+                  }
+
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelectCollection(collection.folder.id);
+                  }
                 }}
               >
                 {isEditing ? (
@@ -154,7 +194,7 @@ export default function CollectionView({
                     value={editingCollectionValue}
                     onChange={(event) => setEditingCollectionValue(event.target.value)}
                     onBlur={() => {
-                      void commitCollectionRename();
+                      void commitCollectionRename({ skipNextSelection: true });
                     }}
                     onClick={(event) => event.stopPropagation()}
                     onDoubleClick={(event) => event.stopPropagation()}
@@ -172,9 +212,138 @@ export default function CollectionView({
                     }}
                   />
                 ) : (
-                  <span className="collection-row__name">{collection.folder.name}</span>
+                  <>
+                    <span className="collection-row__icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                        <path d="M3.75 7.25A2.25 2.25 0 0 1 6 5h3.1c.6 0 1.18.24 1.6.66l1.15 1.14c.42.42 1 .66 1.6.66H18A2.25 2.25 0 0 1 20.25 9.7v7.05A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25V7.25Z" />
+                      </svg>
+                    </span>
+                    <span className="collection-row__name">{collection.folder.name}</span>
+                    <span className="collection-row__actions">
+                      <span className="collection-row__count" aria-label={`${collection.documents.length} documents`}>
+                        {collection.documents.length}
+                      </span>
+                      <button
+                        className="row-action-button"
+                        type="button"
+                        aria-label={`Open actions for ${collection.folder.name}`}
+                        onKeyDown={(event) => {
+                          event.stopPropagation();
+                        }}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setOpenCollectionMenuId((current) =>
+                            current === collection.folder.id ? null : collection.folder.id
+                          );
+                          setConfirmDeleteCollectionId(null);
+                        }}
+                      >
+                        <svg
+                          className="row-action-button__icon"
+                          viewBox="0 0 24 24"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        >
+                          <circle cx="6.5" cy="12" r="1.8" />
+                          <circle cx="12" cy="12" r="1.8" />
+                          <circle cx="17.5" cy="12" r="1.8" />
+                        </svg>
+                      </button>
+                      {isMenuOpen ? (
+                        <div
+                          className="notes-popover collection-row__menu"
+                          role="menu"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          {isDeleteConfirming ? (
+                            <>
+                              <strong className="collection-row__menu-title">Delete collection?</strong>
+                              <p className="collection-row__menu-help">
+                                {`This will delete "${collection.folder.name}" permanently.`}
+                              </p>
+                              <div className="collection-row__menu-footer">
+                                <button
+                                  className="collection-row__menu-button collection-row__menu-button--ghost"
+                                  type="button"
+                                  onClick={() => {
+                                    setConfirmDeleteCollectionId(null);
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  className="collection-row__menu-button collection-row__menu-button--danger"
+                                  type="button"
+                                  onClick={() => {
+                                    closeCollectionMenu();
+                                    void onDeleteCollection(collection.folder.id);
+                                  }}
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                className="notes-popover__action collection-row__menu-action"
+                                type="button"
+                                onClick={() => {
+                                  closeCollectionMenu();
+                                  setEditingDocumentId(null);
+                                  setEditingCollectionId(collection.folder.id);
+                                  setEditingCollectionValue(collection.folder.name);
+                                  onSelectCollection(collection.folder.id);
+                                }}
+                              >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                                  <path d="M4 20h4l10-10-4-4L4 16v4Z" />
+                                  <path d="m12.5 7.5 4 4" />
+                                </svg>
+                                  <span>Rename</span>
+                                </button>
+                              {collectionHasDocuments ? (
+                                <div className="collection-row__menu-disabled">
+                                  <button
+                                    className="notes-popover__action collection-row__menu-action collection-row__menu-action--danger"
+                                    type="button"
+                                    disabled
+                                  >
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                                      <path d="M6 7h12" />
+                                      <path d="M9 7V5.5h6V7" />
+                                      <path d="M8.2 7l.6 11h6.4l.6-11" />
+                                    </svg>
+                                    <span>Delete</span>
+                                  </button>
+                                  <div className="collection-row__menu-tooltip" role="note">
+                                    Collections with PDFs inside cannot be deleted.
+                                  </div>
+                                </div>
+                              ) : (
+                                <button
+                                  className="notes-popover__action collection-row__menu-action collection-row__menu-action--danger"
+                                  type="button"
+                                  onClick={() => {
+                                    setConfirmDeleteCollectionId(collection.folder.id);
+                                  }}
+                                >
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                                    <path d="M6 7h12" />
+                                    <path d="M9 7V5.5h6V7" />
+                                    <path d="M8.2 7l.6 11h6.4l.6-11" />
+                                  </svg>
+                                  <span>Delete</span>
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      ) : null}
+                    </span>
+                  </>
                 )}
-              </button>
+              </div>
             );
           })}
         </div>
@@ -185,24 +354,29 @@ export default function CollectionView({
           <div className="collection-book-list">
             {visibleBooks.map((document) => {
               const isEditing = editingDocumentId === document.id;
-              const isActive = activeDocumentId === document.id;
 
-            return (
+              return (
                 <div
                   key={document.id}
-                  className={`book-row${isActive ? " book-row--active" : ""}`}
+                  className="book-row"
                   role="button"
                   tabIndex={isEditing ? -1 : 0}
                   onClick={() => {
                     if (isEditing || shouldSuppressBookActivation()) {
                       return;
                     }
-                    queueSingleClick(() => {
-                      void onOpenDocument(document.id);
-                    });
+                    if (skipNextDocumentActivationRef.current) {
+                      skipNextDocumentActivationRef.current = false;
+                      return;
+                    }
+                    void onOpenDocument(document.id);
                   }}
                   onKeyDown={(event) => {
                     if (isEditing || shouldSuppressBookActivation()) {
+                      return;
+                    }
+                    if (skipNextDocumentActivationRef.current) {
+                      skipNextDocumentActivationRef.current = false;
                       return;
                     }
 
@@ -210,13 +384,6 @@ export default function CollectionView({
                       event.preventDefault();
                       void onOpenDocument(document.id);
                     }
-                  }}
-                  onDoubleClick={() => {
-                    clearPendingClick();
-                    suppressBookActivation();
-                    setEditingCollectionId(null);
-                    setEditingDocumentId(document.id);
-                    setEditingDocumentValue(document.fileName);
                   }}
                 >
                   {isEditing ? (
@@ -226,7 +393,7 @@ export default function CollectionView({
                       value={editingDocumentValue}
                       onChange={(event) => setEditingDocumentValue(event.target.value)}
                       onBlur={() => {
-                        void commitDocumentRename(document);
+                        void commitDocumentRename(document, { skipNextActivation: true });
                       }}
                       onClick={(event) => event.stopPropagation()}
                       onDoubleClick={(event) => event.stopPropagation()}
@@ -249,7 +416,37 @@ export default function CollectionView({
                       }}
                     />
                   ) : (
-                    <span className="book-row__name">{document.title}</span>
+                    <>
+                      <span className="book-row__name">{document.title}</span>
+                      <span className="book-row__actions">
+                        <button
+                          className="row-action-button"
+                          type="button"
+                          aria-label={`Rename ${document.title}`}
+                          onKeyDown={(event) => {
+                            event.stopPropagation();
+                          }}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            suppressBookActivation();
+                            setEditingCollectionId(null);
+                            setEditingDocumentId(document.id);
+                            setEditingDocumentValue(document.fileName);
+                          }}
+                        >
+                          <svg
+                            className="row-action-button__icon"
+                            viewBox="0 0 24 24"
+                            fill="currentColor"
+                            aria-hidden="true"
+                          >
+                            <circle cx="6.5" cy="12" r="1.8" />
+                            <circle cx="12" cy="12" r="1.8" />
+                            <circle cx="17.5" cy="12" r="1.8" />
+                          </svg>
+                        </button>
+                      </span>
+                    </>
                   )}
                 </div>
               );

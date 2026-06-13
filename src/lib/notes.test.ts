@@ -5,10 +5,12 @@ import {
   createSaveScheduler,
   createTextNode,
   deriveNoteNavigationItems,
+  formatPageLinkText,
   normalizeNoteBlocks,
   normalizeNoteDocument,
   normalizeNoteSpans,
   parsePageLinkText,
+  parsePageLinkTargetInput,
   replaceBlockType
 } from "./notes";
 import type { NoteBlock, NoteDocument } from "./types";
@@ -155,6 +157,24 @@ describe("notes helpers", () => {
       bookPageLabel: "45"
     });
     expect(parsePageLinkText("page 45")).toBeNull();
+  });
+
+  it("parses positive integer page-link targets and formats them consistently", () => {
+    expect(parsePageLinkTargetInput("40")).toEqual({
+      pageNumber: 40,
+      bookPageLabel: "40",
+      text: "(p. 40)"
+    });
+    expect(parsePageLinkTargetInput(" 007 ")).toEqual({
+      pageNumber: 7,
+      bookPageLabel: "007",
+      text: "(p. 7)"
+    });
+    expect(parsePageLinkTargetInput("0")).toBeNull();
+    expect(parsePageLinkTargetInput("-4")).toBeNull();
+    expect(parsePageLinkTargetInput("4.5")).toBeNull();
+    expect(parsePageLinkTargetInput("page 40")).toBeNull();
+    expect(formatPageLinkText(88)).toBe("(p. 88)");
   });
 
   it("debounces saves and flushes immediately when requested", () => {
