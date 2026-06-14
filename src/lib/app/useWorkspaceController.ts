@@ -36,7 +36,7 @@ export function useWorkspaceController() {
   });
   const [outlineItems, setOutlineItems] = useState<OutlineItem[]>([]);
   const [statusMessage, setStatusMessage] = useState("Ready");
-  const [workspaceMode, setWorkspaceMode] = useState<"reader" | "collection">("reader");
+  const [workspaceMode, setWorkspaceMode] = useState<"reader" | "collection">("collection");
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
 
   const viewerApiRef = useRef<ViewerApi | null>(null);
@@ -80,6 +80,7 @@ export function useWorkspaceController() {
     setActiveDocument(null);
     setReaderState(null);
     setOutlineItems([]);
+    setWorkspaceMode("collection");
     setViewerSnapshot({
       currentPage: 1,
       pageCount: 0,

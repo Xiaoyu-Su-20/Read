@@ -6,11 +6,7 @@ import CommandPalette from "./components/CommandPalette";
 import CollectionView from "./components/CollectionView";
 import OutlineOverlay from "./components/OutlineOverlay";
 import ReaderWorkspace from "./components/ReaderWorkspace";
-import {
-  openLibraryFolder,
-  showDocumentInExplorer,
-  showFolderInExplorer
-} from "./lib/api";
+import { openLibraryFolder } from "./lib/api";
 import { isPassiveStatusMessage } from "./lib/app/helpers";
 import { useCommandRegistry } from "./lib/app/useCommandRegistry";
 import { useLibraryFlows } from "./lib/app/useLibraryFlows";
@@ -66,8 +62,6 @@ export default function App() {
   });
   const palette = usePaletteController();
   const [outlineOpen, setOutlineOpen] = useState(false);
-  const [isWindowMaximized, setIsWindowMaximized] = useState(false);
-  const [isWindowFullscreen, setIsWindowFullscreen] = useState(false);
   const flows = useLibraryFlows({
     libraryTree: workspace.libraryTree,
     collectionOptions: workspace.collectionOptions,
@@ -102,16 +96,12 @@ export default function App() {
     setOutlineOpen,
     viewerOrStatus: workspace.viewerOrStatus,
     promptImportFlow: flows.promptImportFlow,
-    moveDocumentFlow: flows.moveDocumentFlow,
-    removeFromLibraryFlow: flows.removeFromLibraryFlow,
     rescanLibraryFlow: flows.rescanLibraryFlow,
     openLibraryFolder,
     openDocumentById: async (documentId) => {
       setOutlineOpen(false);
       await workspace.handleOpenDocument(documentId);
-    },
-    showDocumentInExplorer,
-    showFolderInExplorer
+    }
   });
 
   useEffect(() => {
@@ -163,44 +153,6 @@ export default function App() {
     setOutlineOpen(false);
   }, [workspace.activeDocumentId]);
 
-  useEffect(() => {
-    let disposed = false;
-    let unlistenResize: (() => void) | undefined;
-
-    async function syncWindowLayoutState() {
-      try {
-        const [maximized, fullscreen] = await Promise.all([
-          appWindow.isMaximized(),
-          appWindow.isFullscreen()
-        ]);
-        if (!disposed) {
-          setIsWindowMaximized(maximized);
-          setIsWindowFullscreen(fullscreen);
-        }
-      } catch (error) {
-        console.error("Failed to read window maximize state:", error);
-      }
-    }
-
-    void syncWindowLayoutState();
-
-    void appWindow.onResized(() => {
-      void syncWindowLayoutState();
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten();
-        return;
-      }
-
-      unlistenResize = unlisten;
-    });
-
-    return () => {
-      disposed = true;
-      unlistenResize?.();
-    };
-  }, []);
-
   const topbarTitle =
     workspace.workspaceMode === "collection"
       ? workspace.selectedCollection?.folder.name ?? "Library"
@@ -229,11 +181,7 @@ export default function App() {
   }
 
   return (
-    <main
-      className={`app-shell${
-        isWindowMaximized && !isWindowFullscreen ? " app-shell--maximized" : ""
-      }`}
-    >
+    <main className="app-shell">
       <nav
         className={`sidebar${workspace.workspaceMode === "reader" ? " sidebar--reader" : ""}`}
         aria-label="Navigation"
@@ -280,9 +228,9 @@ export default function App() {
             }}
           >
             <ChromeIcon label="Documents">
-              <path d="M11.6 6.1c-1.2-.95-2.7-1.45-4.5-1.45H6.2c-.7 0-1.2.55-1.2 1.2v11.05c0 .7.58 1.25 1.28 1.22 1.95-.08 3.58.34 4.98 1.27.18.12.34.18.34.18Z" />
-              <path d="M12.4 6.1c1.2-.95 2.7-1.45 4.5-1.45h.9c.7 0 1.2.55 1.2 1.2v11.05c0 .7-.58 1.25-1.28 1.22-1.95-.08-3.58.34-4.98 1.27-.18.12-.34.18-.34.18Z" />
-              <path d="M12 6.15v13.2" />
+              <path d="M12 7.45C10.35 5.9 8.42 5.23 6.1 5.23H4.45A1.16 1.16 0 0 0 3.29 6.39v10.26a1.16 1.16 0 0 0 1.16 1.16H6.1c2.32 0 4.25.68 5.9 2.23" />
+              <path d="M12 7.45c1.65-1.55 3.58-2.22 5.9-2.22h1.65a1.16 1.16 0 0 1 1.16 1.16v10.26a1.16 1.16 0 0 1-1.16 1.16H17.9c-2.32 0-4.25.68-5.9 2.23" />
+              <path d="M12 7.45v12.58" />
             </ChromeIcon>
           </button>
           <button className="sidebar__icon-button" type="button" aria-label="Annotate">

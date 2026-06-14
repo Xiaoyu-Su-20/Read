@@ -86,8 +86,8 @@ fn run_or_join_in_flight_render(
             .ok_or_else(|| "Unable to resolve in-flight render result.".to_string())?;
     }
 
-    let result =
-        LibraryStore::render_pdf_page_blocking(request, render_cache).map_err(|error| error.to_string());
+    let result = LibraryStore::render_pdf_page_blocking(request, render_cache)
+        .map_err(|error| error.to_string());
 
     {
         let mut guard = entry
@@ -163,9 +163,13 @@ fn open_in_explorer(path: &str, select: bool) -> Result<(), String> {
 
 #[tauri::command]
 fn get_library_root(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
-    run_logged_command("get_library_root", json!({}), || with_store(&app, state, |store| {
-        store.library_root_string().map_err(|error| error.to_string())
-    }))
+    run_logged_command("get_library_root", json!({}), || {
+        with_store(&app, state, |store| {
+            store
+                .library_root_string()
+                .map_err(|error| error.to_string())
+        })
+    })
 }
 
 #[tauri::command]
@@ -175,31 +179,41 @@ fn import_pdf(
     source_path: String,
     destination_folder_id: Option<String>,
 ) -> Result<DocumentRecord, String> {
-    run_logged_command("import_pdf", json!({
-        "destinationFolderId": destination_folder_id,
-        "sourcePath": source_path,
-    }), || with_store(&app, state, |store| {
-        store
-            .import_pdf(
-                PathBuf::from(source_path).as_path(),
-                destination_folder_id.as_deref(),
-            )
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "import_pdf",
+        json!({
+            "destinationFolderId": destination_folder_id,
+            "sourcePath": source_path,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .import_pdf(
+                        PathBuf::from(source_path).as_path(),
+                        destination_folder_id.as_deref(),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
 fn list_library(app: AppHandle, state: State<'_, AppState>) -> Result<FolderTreeNode, String> {
-    run_logged_command("list_library", json!({}), || with_store(&app, state, |store| {
-        store.list_library().map_err(|error| error.to_string())
-    }))
+    run_logged_command("list_library", json!({}), || {
+        with_store(&app, state, |store| {
+            store.list_library().map_err(|error| error.to_string())
+        })
+    })
 }
 
 #[tauri::command]
 fn rescan_library(app: AppHandle, state: State<'_, AppState>) -> Result<FolderTreeNode, String> {
-    run_logged_command("rescan_library", json!({}), || with_store(&app, state, |store| {
-        store.rescan_library().map_err(|error| error.to_string())
-    }))
+    run_logged_command("rescan_library", json!({}), || {
+        with_store(&app, state, |store| {
+            store.rescan_library().map_err(|error| error.to_string())
+        })
+    })
 }
 
 #[tauri::command]
@@ -209,14 +223,20 @@ fn create_folder(
     name: String,
     parent_folder_id: Option<String>,
 ) -> Result<FolderRecord, String> {
-    run_logged_command("create_folder", json!({
-        "name": name,
-        "parentFolderId": parent_folder_id,
-    }), || with_store(&app, state, |store| {
-        store
-            .create_folder(&name, parent_folder_id.as_deref())
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "create_folder",
+        json!({
+            "name": name,
+            "parentFolderId": parent_folder_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .create_folder(&name, parent_folder_id.as_deref())
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -226,14 +246,20 @@ fn move_document(
     document_id: String,
     destination_folder_id: String,
 ) -> Result<DocumentRecord, String> {
-    run_logged_command("move_document", json!({
-        "destinationFolderId": destination_folder_id,
-        "documentId": document_id,
-    }), || with_store(&app, state, |store| {
-        store
-            .move_document(&document_id, &destination_folder_id)
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "move_document",
+        json!({
+            "destinationFolderId": destination_folder_id,
+            "documentId": document_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .move_document(&document_id, &destination_folder_id)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -243,14 +269,20 @@ fn rename_document(
     document_id: String,
     new_name: String,
 ) -> Result<DocumentRecord, String> {
-    run_logged_command("rename_document", json!({
-        "documentId": document_id,
-        "newName": new_name,
-    }), || with_store(&app, state, |store| {
-        store
-            .rename_document(&document_id, &new_name)
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "rename_document",
+        json!({
+            "documentId": document_id,
+            "newName": new_name,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .rename_document(&document_id, &new_name)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -260,14 +292,20 @@ fn rename_folder(
     folder_id: String,
     new_name: String,
 ) -> Result<FolderRecord, String> {
-    run_logged_command("rename_folder", json!({
-        "folderId": folder_id,
-        "newName": new_name,
-    }), || with_store(&app, state, |store| {
-        store
-            .rename_folder(&folder_id, &new_name)
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "rename_folder",
+        json!({
+            "folderId": folder_id,
+            "newName": new_name,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .rename_folder(&folder_id, &new_name)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -276,13 +314,19 @@ fn delete_folder(
     state: State<'_, AppState>,
     folder_id: String,
 ) -> Result<FolderRecord, String> {
-    run_logged_command("delete_folder", json!({
-        "folderId": folder_id,
-    }), || with_store(&app, state, |store| {
-        store
-            .delete_folder(&folder_id)
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "delete_folder",
+        json!({
+            "folderId": folder_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .delete_folder(&folder_id)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -292,14 +336,23 @@ fn remove_from_library(
     document_id: String,
     destination_directory: String,
 ) -> Result<DocumentRecord, String> {
-    run_logged_command("remove_from_library", json!({
-        "destinationDirectory": destination_directory,
-        "documentId": document_id,
-    }), || with_store(&app, state, |store| {
-        store
-            .remove_from_library(&document_id, PathBuf::from(destination_directory).as_path())
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "remove_from_library",
+        json!({
+            "destinationDirectory": destination_directory,
+            "documentId": document_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .remove_from_library(
+                        &document_id,
+                        PathBuf::from(destination_directory).as_path(),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -308,13 +361,19 @@ fn open_document(
     state: State<'_, AppState>,
     document_id: String,
 ) -> Result<DocumentPayload, String> {
-    run_logged_command("open_document", json!({
-        "documentId": document_id,
-    }), || with_store(&app, state, |store| {
-        store
-            .open_document(&document_id)
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "open_document",
+        json!({
+            "documentId": document_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .open_document(&document_id)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -324,15 +383,21 @@ fn save_document_state(
     document_id: String,
     reader_state: DocumentState,
 ) -> Result<(), String> {
-    run_logged_command("save_document_state", json!({
-        "documentId": document_id,
-        "page": reader_state.last_page,
-        "zoom": reader_state.zoom,
-    }), || with_store(&app, state, |store| {
-        store
-            .save_document_state(&document_id, reader_state)
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "save_document_state",
+        json!({
+            "documentId": document_id,
+            "page": reader_state.last_page,
+            "zoom": reader_state.zoom,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .save_document_state(&document_id, reader_state)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -341,13 +406,19 @@ fn get_or_create_note_for_book(
     state: State<'_, AppState>,
     document_id: String,
 ) -> Result<NoteDocument, String> {
-    run_logged_command("get_or_create_note_for_book", json!({
-        "documentId": document_id,
-    }), || with_store(&app, state, |store| {
-        store
-            .get_or_create_note_for_book(&document_id)
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "get_or_create_note_for_book",
+        json!({
+            "documentId": document_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .get_or_create_note_for_book(&document_id)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -356,12 +427,18 @@ fn save_note(
     state: State<'_, AppState>,
     note: NoteDocument,
 ) -> Result<NoteDocument, String> {
-    run_logged_command("save_note", json!({
-        "bookId": note.book_id.clone(),
-        "noteId": note.id.clone(),
-    }), || with_store(&app, state, |store| {
-        store.save_note(note).map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "save_note",
+        json!({
+            "bookId": note.book_id.clone(),
+            "noteId": note.id.clone(),
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store.save_note(note).map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -375,19 +452,25 @@ fn list_recent_documents(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<DocumentRecord>, String> {
-    run_logged_command("list_recent_documents", json!({}), || with_store(&app, state, |store| {
-        store
-            .list_recent_documents()
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command("list_recent_documents", json!({}), || {
+        with_store(&app, state, |store| {
+            store
+                .list_recent_documents()
+                .map_err(|error| error.to_string())
+        })
+    })
 }
 
 #[tauri::command]
 fn open_library_folder(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    run_logged_command("open_library_folder", json!({}), || with_store(&app, state, |store| {
-        let path = store.folder_path_string(None).map_err(|error| error.to_string())?;
-        open_in_explorer(&path, false)
-    }))
+    run_logged_command("open_library_folder", json!({}), || {
+        with_store(&app, state, |store| {
+            let path = store
+                .folder_path_string(None)
+                .map_err(|error| error.to_string())?;
+            open_in_explorer(&path, false)
+        })
+    })
 }
 
 #[tauri::command]
@@ -396,14 +479,20 @@ fn show_document_in_explorer(
     state: State<'_, AppState>,
     document_id: String,
 ) -> Result<(), String> {
-    run_logged_command("show_document_in_explorer", json!({
-        "documentId": document_id,
-    }), || with_store(&app, state, |store| {
-        let path = store
-            .document_path_string(&document_id)
-            .map_err(|error| error.to_string())?;
-        open_in_explorer(&path, true)
-    }))
+    run_logged_command(
+        "show_document_in_explorer",
+        json!({
+            "documentId": document_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                let path = store
+                    .document_path_string(&document_id)
+                    .map_err(|error| error.to_string())?;
+                open_in_explorer(&path, true)
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -412,14 +501,20 @@ fn show_folder_in_explorer(
     state: State<'_, AppState>,
     folder_id: Option<String>,
 ) -> Result<(), String> {
-    run_logged_command("show_folder_in_explorer", json!({
-        "folderId": folder_id,
-    }), || with_store(&app, state, |store| {
-        let path = store
-            .folder_path_string(folder_id.as_deref())
-            .map_err(|error| error.to_string())?;
-        open_in_explorer(&path, false)
-    }))
+    run_logged_command(
+        "show_folder_in_explorer",
+        json!({
+            "folderId": folder_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                let path = store
+                    .folder_path_string(folder_id.as_deref())
+                    .map_err(|error| error.to_string())?;
+                open_in_explorer(&path, false)
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -428,13 +523,19 @@ fn read_document_bytes(
     state: State<'_, AppState>,
     document_id: String,
 ) -> Result<Vec<u8>, String> {
-    run_logged_command("read_document_bytes", json!({
-        "documentId": document_id,
-    }), || with_store(&app, state, |store| {
-        store
-            .read_document_bytes(&document_id)
-            .map_err(|error| error.to_string())
-    }))
+    run_logged_command(
+        "read_document_bytes",
+        json!({
+            "documentId": document_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .read_document_bytes(&document_id)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]

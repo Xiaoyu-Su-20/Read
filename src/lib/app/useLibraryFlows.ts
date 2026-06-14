@@ -82,6 +82,7 @@ export function useLibraryFlows({
         id: folder.id,
         title: folder.pathLabel,
         subtitle: "Collection",
+        glyph: "folder" as const,
         onSelect: async () => {
           await importDocumentToCollection(selection, folder.id);
           closePalette();
@@ -115,6 +116,7 @@ export function useLibraryFlows({
         id: folder.id,
         title: folder.pathLabel,
         subtitle: activeDocument.document.title,
+        glyph: "folder" as const,
         onSelect: async () => {
           await moveActiveDocument(folder.id);
           closePalette();

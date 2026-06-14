@@ -164,11 +164,30 @@ export type ViewerApi = {
   setBookmarks: (bookmarks: Bookmark[]) => void;
 };
 
+export type PaletteGlyph =
+  | "bookmark"
+  | "book"
+  | "file-plus"
+  | "folder"
+  | "folder-open"
+  | "history"
+  | "move"
+  | "page"
+  | "panel"
+  | "refresh"
+  | "search"
+  | "spark"
+  | "trash";
+
+export type PaletteGroup = "navigation" | "bookmarks" | "library" | "view";
+
 export type PaletteItem = {
   id: string;
   title: string;
   subtitle?: string;
   meta?: string;
+  glyph?: PaletteGlyph;
+  group?: PaletteGroup;
   keywords?: string[];
   onSelect: () => void | Promise<void>;
 };

@@ -15,6 +15,14 @@ import type {
 import { createPageCache, makePageCacheKey, type CachedRenderedPage } from "./PageCache";
 import { renderVisiblePdfPage } from "./PdfPageRenderer";
 import { createPdfRuntimeSession, type PdfRuntimeSession } from "./PdfRuntimeSession";
+import {
+  makeRapidTurnOverlayModel,
+  shouldActivateRapidTurn,
+  type NavigationDirection,
+  type RapidTurnIntent,
+  type RapidTurnLastInput,
+  type RapidTurnOverlayModel
+} from "./rapidTurn";
 
 const RENDER_CACHE_SIZE = 20;
 const MIN_ZOOM = 0.7;
@@ -24,6 +32,8 @@ const PAGE_TURN_COMMIT_THROTTLE_MS = 150;
 const PRELOAD_DELAY_MS = 150;
 const NAVIGATION_SAVE_DEBOUNCE_MS = 700;
 const BOOKMARK_SAVE_DEBOUNCE_MS = 200;
+const KEYBOARD_RAPID_TURN_WINDOW_MS = 220;
+const WHEEL_RAPID_TURN_WINDOW_MS = 180;
 
 type UseReaderControllerArgs = {
   document: DocumentPayload | null;
@@ -38,6 +48,13 @@ type DisplayedPageTextDebugStatus = {
   itemCount: number;
   pageNumber: number | null;
   state: "missing" | "missing-runtime" | "loading" | "loaded" | "empty" | "error";
+};
+
+type RapidTurnSession = {
+  active: boolean;
+  direction: NavigationDirection | null;
+  source: RapidTurnIntent["source"] | null;
+  targetPage: number;
 };
 
 function clampPage(page: number, pageCount: number) {
@@ -91,11 +108,11 @@ export function useReaderController({
       pageNumber: null,
       state: "missing"
     });
+  const [rapidTurnOverlay, setRapidTurnOverlay] = useState<RapidTurnOverlayModel | null>(null);
 
   const runtimeSessionRef = useRef<PdfRuntimeSession | null>(null);
   const pageCache = useRef(createPageCache(RENDER_CACHE_SIZE));
   const preloadInFlight = useRef(new Set<string>());
-  const lastWheelActionAt = useRef(0);
   const renderSequenceRef = useRef(0);
   const incomingPageKeyRef = useRef<string | null>(null);
   const initializedDocumentIdRef = useRef<string | null>(null);
@@ -110,6 +127,21 @@ export function useReaderController({
   const pageCommitTimerRef = useRef<number | null>(null);
   const pendingCommittedPageRef = useRef<number | null>(null);
   const lastPageCommitAtRef = useRef(0);
+  const rapidTurnWheelFinalizeTimerRef = useRef<number | null>(null);
+  const rapidTurnLastInputRef = useRef<RapidTurnLastInput | null>(null);
+  const rapidTurnSessionRef = useRef<RapidTurnSession>({
+    active: false,
+    direction: null,
+    source: null,
+    targetPage: 1
+  });
+
+  function clearRapidTurnWheelFinalizeTimer() {
+    if (rapidTurnWheelFinalizeTimerRef.current !== null) {
+      window.clearTimeout(rapidTurnWheelFinalizeTimerRef.current);
+      rapidTurnWheelFinalizeTimerRef.current = null;
+    }
+  }
 
   function clearPageCommitTimer() {
     if (pageCommitTimerRef.current !== null) {
@@ -123,6 +155,27 @@ export function useReaderController({
       window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
+  }
+
+  function hideRapidTurnOverlay(reason: string) {
+    const activeSession = rapidTurnSessionRef.current;
+    if (!activeSession.active && !rapidTurnOverlay) {
+      return;
+    }
+
+    debugAction("reader.rapid-turn-hidden", {
+      reason,
+      source: activeSession.source,
+      targetPage: activeSession.targetPage
+    });
+    rapidTurnSessionRef.current = {
+      active: false,
+      direction: null,
+      source: null,
+      targetPage
+    };
+    clearRapidTurnWheelFinalizeTimer();
+    setRapidTurnOverlay(null);
   }
 
   function updateReaderState(nextState: DocumentState | null) {
@@ -253,6 +306,17 @@ export function useReaderController({
     }
   }
 
+  function commitPageTurnImmediately(nextPage: number, reason: string) {
+    clearPageCommitTimer();
+    pendingCommittedPageRef.current = null;
+    lastPageCommitAtRef.current = Date.now();
+    debugAction("reader.page-commit", {
+      page: nextPage,
+      reason
+    });
+    setCurrentPage((page) => (page === nextPage ? page : nextPage));
+  }
+
   function commitPageTurn(nextPage: number, reason: string) {
     pendingCommittedPageRef.current = nextPage;
 
@@ -292,10 +356,106 @@ export function useReaderController({
     pageCommitTimerRef.current = window.setTimeout(runCommit, remainingDelay);
   }
 
-  function requestPageTurn(nextPage: number, reason: string) {
+  function startRapidTurnSession(intent: RapidTurnIntent, nextPage: number) {
+    rapidTurnSessionRef.current = {
+      active: true,
+      direction: intent.direction,
+      source: intent.source,
+      targetPage: nextPage
+    };
+    debugAction("reader.rapid-turn-started", {
+      page: nextPage,
+      pageCount,
+      source: intent.source
+    });
+    setRapidTurnOverlay(makeRapidTurnOverlayModel(nextPage, pageCount, false));
+  }
+
+  function updateRapidTurnSession(nextPage: number, isFinalizing: boolean) {
+    const activeSession = rapidTurnSessionRef.current;
+    if (!activeSession.active) {
+      return;
+    }
+
+    rapidTurnSessionRef.current = {
+      ...activeSession,
+      targetPage: nextPage
+    };
+    setRapidTurnOverlay(makeRapidTurnOverlayModel(nextPage, pageCount, isFinalizing));
+  }
+
+  function finalizeRapidTurn(reason: string) {
+    const activeSession = rapidTurnSessionRef.current;
+    if (!activeSession.active) {
+      return;
+    }
+
+    clearRapidTurnWheelFinalizeTimer();
+
+    const nextPage = activeSession.targetPage;
+    debugAction("reader.rapid-turn-finalize", {
+      currentPage,
+      reason,
+      source: activeSession.source,
+      targetPage: nextPage
+    });
+
+    if (currentPage !== nextPage || pendingCommittedPageRef.current !== null) {
+      updateRapidTurnSession(nextPage, true);
+      commitPageTurnImmediately(nextPage, `${reason}:finalize`);
+      return;
+    }
+
+    if (displayedPage?.pageNumber === nextPage && !incomingPage && !isRendering) {
+      hideRapidTurnOverlay(`${reason}:ready`);
+      return;
+    }
+
+    updateRapidTurnSession(nextPage, true);
+  }
+
+  function noteRapidTurnIntent(intent: RapidTurnIntent, nextPage: number) {
+    const now = Date.now();
+    const shouldActivate = shouldActivateRapidTurn(rapidTurnLastInputRef.current, intent, now);
+    const activeSession = rapidTurnSessionRef.current;
+
+    rapidTurnLastInputRef.current = {
+      at: now,
+      direction: intent.direction,
+      source: intent.source
+    };
+
+    if (activeSession.active) {
+      rapidTurnSessionRef.current = {
+        ...rapidTurnSessionRef.current,
+        direction: intent.direction,
+        source: intent.source
+      };
+      updateRapidTurnSession(nextPage, false);
+    } else if (shouldActivate) {
+      startRapidTurnSession(intent, nextPage);
+    }
+
+    if (intent.source === "wheel" && rapidTurnSessionRef.current.active) {
+      clearRapidTurnWheelFinalizeTimer();
+      rapidTurnWheelFinalizeTimerRef.current = window.setTimeout(() => {
+        finalizeRapidTurn("wheel-idle");
+      }, WHEEL_RAPID_TURN_WINDOW_MS);
+    }
+  }
+
+  function requestPageTurnWithIntent(
+    nextPage: number,
+    reason: string,
+    intent?: RapidTurnIntent
+  ) {
     setTargetPage((currentTargetPage) => {
       if (currentTargetPage === nextPage) {
         return currentTargetPage;
+      }
+
+      if (intent) {
+        noteRapidTurnIntent(intent, nextPage);
       }
 
       debugAction("reader.page-request", {
@@ -346,8 +506,16 @@ export function useReaderController({
       preloadTimerRef.current = null;
     }
     clearPageCommitTimer();
+    clearRapidTurnWheelFinalizeTimer();
     pendingCommittedPageRef.current = null;
     lastPageCommitAtRef.current = 0;
+    rapidTurnLastInputRef.current = null;
+    rapidTurnSessionRef.current = {
+      active: false,
+      direction: null,
+      source: null,
+      targetPage: 1
+    };
     outlineLoadedForDocumentIdRef.current = null;
     setDocumentError(null);
     setRenderError(null);
@@ -361,6 +529,7 @@ export function useReaderController({
     setDisplayedPage(null);
     setIncomingPage(null);
     setIncomingReady(false);
+    setRapidTurnOverlay(null);
     incomingPageKeyRef.current = null;
     onOutlineChange([]);
 
@@ -415,6 +584,7 @@ export function useReaderController({
     }
 
     function flushOnWindowBlur() {
+      finalizeRapidTurn("window-blur");
       flushReaderState("window-blur");
     }
 
@@ -430,6 +600,7 @@ export function useReaderController({
       window.document.removeEventListener("visibilitychange", flushOnVisibilityChange);
       window.removeEventListener("blur", flushOnWindowBlur);
       window.removeEventListener("beforeunload", flushOnBeforeUnload);
+      finalizeRapidTurn("controller-unmount");
       flushReaderState("controller-unmount");
     };
   }, []);
@@ -711,6 +882,16 @@ export function useReaderController({
   }, [incomingPage, incomingReady]);
 
   useEffect(() => {
+    if (!rapidTurnOverlay?.isFinalizing) {
+      return;
+    }
+
+    if (displayedPage?.pageNumber === targetPage && !incomingPage && !isRendering) {
+      hideRapidTurnOverlay("final-page-visible");
+    }
+  }, [displayedPage, incomingPage, isRendering, rapidTurnOverlay, targetPage]);
+
+  useEffect(() => {
     if (preloadTimerRef.current !== null) {
       window.clearTimeout(preloadTimerRef.current);
       preloadTimerRef.current = null;
@@ -792,14 +973,14 @@ export function useReaderController({
       ? {
           nextPage: () => {
             const nextPage = clampPage(targetPage + 1, pageCount);
-            requestPageTurn(nextPage, "next-page");
+            requestPageTurnWithIntent(nextPage, "next-page");
           },
           previousPage: () => {
             const nextPage = clampPage(targetPage - 1, pageCount);
-            requestPageTurn(nextPage, "previous-page");
+            requestPageTurnWithIntent(nextPage, "previous-page");
           },
           goToPage: (page) => {
-            requestPageTurn(clampPage(page, pageCount), "go-to-page");
+            requestPageTurnWithIntent(clampPage(page, pageCount), "go-to-page");
           },
           search: async (query) => {
             const normalizedQuery = query.trim();
@@ -821,7 +1002,7 @@ export function useReaderController({
               }
 
               if (pageNumber > 0) {
-                requestPageTurn(pageNumber, "search");
+                requestPageTurnWithIntent(pageNumber, "search");
                 onStatusChange(`Found "${query}" on page ${pageNumber}.`);
                 return pageNumber;
               }
@@ -837,7 +1018,7 @@ export function useReaderController({
           },
           jumpToOutline: (item) => {
             if (item.page) {
-              requestPageTurn(item.page, "outline");
+              requestPageTurnWithIntent(item.page, "outline");
             }
           },
           getCurrentPage: () => targetPage,
@@ -871,6 +1052,7 @@ export function useReaderController({
     zoom,
     displayedPage,
     incomingPage,
+    rapidTurnOverlay,
     displayedPageTextLayer,
     displayedPageTextDebugStatus,
     isRendering,
@@ -886,19 +1068,48 @@ export function useReaderController({
         event.preventDefault();
         debugAction("reader.navigate-keyboard", {
           key: event.key,
-          direction: "next"
+          direction: "next",
+          repeat: event.repeat
         });
-        requestPageTurn(clampPage(targetPage + 1, pageCount || targetPage), "keyboard-next");
+        requestPageTurnWithIntent(clampPage(targetPage + 1, pageCount || targetPage), "keyboard-next", {
+          source: "keyboard",
+          direction: "next",
+          activationWindowMs: KEYBOARD_RAPID_TURN_WINDOW_MS,
+          isRepeat: event.repeat
+        });
       }
 
       if (event.key === "PageUp" || event.key === "ArrowLeft") {
         event.preventDefault();
         debugAction("reader.navigate-keyboard", {
           key: event.key,
-          direction: "previous"
+          direction: "previous",
+          repeat: event.repeat
         });
-        requestPageTurn(clampPage(targetPage - 1, pageCount), "keyboard-previous");
+        requestPageTurnWithIntent(clampPage(targetPage - 1, pageCount), "keyboard-previous", {
+          source: "keyboard",
+          direction: "previous",
+          activationWindowMs: KEYBOARD_RAPID_TURN_WINDOW_MS,
+          isRepeat: event.repeat
+        });
       }
+    },
+    handleNavigationKeyUp(event: KeyboardEvent<HTMLDivElement>) {
+      if (
+        event.key !== "PageDown" &&
+        event.key !== "ArrowRight" &&
+        event.key !== "PageUp" &&
+        event.key !== "ArrowLeft"
+      ) {
+        return;
+      }
+
+      const activeSession = rapidTurnSessionRef.current;
+      if (activeSession.source !== "keyboard" || !activeSession.active) {
+        return;
+      }
+
+      finalizeRapidTurn("keyboard-keyup");
     },
     handleWheel(event: WheelEvent<HTMLDivElement>) {
       event.preventDefault();
@@ -921,11 +1132,6 @@ export function useReaderController({
         return;
       }
 
-      const now = Date.now();
-      if (now - lastWheelActionAt.current < 180) {
-        return;
-      }
-
       const primaryDelta =
         Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
 
@@ -934,16 +1140,22 @@ export function useReaderController({
           direction: "previous",
           currentPage: targetPage
         });
-        requestPageTurn(clampPage(targetPage - 1, pageCount), "wheel-previous");
+        requestPageTurnWithIntent(clampPage(targetPage - 1, pageCount), "wheel-previous", {
+          source: "wheel",
+          direction: "previous",
+          activationWindowMs: WHEEL_RAPID_TURN_WINDOW_MS
+        });
       } else if (primaryDelta > 0) {
         debugAction("reader.navigate-wheel", {
           direction: "next",
           currentPage: targetPage
         });
-        requestPageTurn(clampPage(targetPage + 1, pageCount || targetPage), "wheel-next");
+        requestPageTurnWithIntent(clampPage(targetPage + 1, pageCount || targetPage), "wheel-next", {
+          source: "wheel",
+          direction: "next",
+          activationWindowMs: WHEEL_RAPID_TURN_WINDOW_MS
+        });
       }
-
-      lastWheelActionAt.current = now;
     },
     markIncomingReady(requestKey: string) {
       if (requestKey !== incomingPageKeyRef.current) {

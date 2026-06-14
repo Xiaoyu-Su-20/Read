@@ -5,6 +5,7 @@ import { computePageShellOffsets } from "../lib/reader/pageLayout";
 import { useReaderController } from "../lib/reader/useReaderController";
 import type { DocumentPayload, DocumentState, OutlineItem, ViewerApi, ViewerSnapshot } from "../lib/types";
 import PdfTextLayer from "./PdfTextLayer";
+import RapidTurnOverlay from "./RapidTurnOverlay";
 
 type PdfViewerProps = {
   document: DocumentPayload | null;
@@ -34,7 +35,9 @@ const PdfViewer = memo(function PdfViewer({
     renderError,
     displayedPageTextLayer,
     displayedPageTextDebugStatus,
+    rapidTurnOverlay,
     handleKeyDown,
+    handleNavigationKeyUp,
     handleWheel,
     markIncomingReady
   } = useReaderController({
@@ -122,6 +125,7 @@ const PdfViewer = memo(function PdfViewer({
         className="reader-scroll-surface"
         tabIndex={0}
         onKeyDown={handleKeyDown}
+        onKeyUp={handleNavigationKeyUp}
         onPointerDown={(event) => {
           if ((event.target as HTMLElement | null)?.closest(".reader-page__text-layer")) {
             return;
@@ -187,6 +191,8 @@ const PdfViewer = memo(function PdfViewer({
           {renderError}
         </div>
       ) : null}
+
+      {rapidTurnOverlay?.visible ? <RapidTurnOverlay overlay={rapidTurnOverlay} /> : null}
 
       {isDebugModeEnabled && displayedPage ? (
         <div className="reader-page__status reader-page__status--debug" role="status">
