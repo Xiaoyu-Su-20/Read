@@ -1033,38 +1033,13 @@ export function useReaderController({
           goToPage: (page) => {
             requestPageTurnWithIntent(clampPage(page, pageCount), "go-to-page");
           },
-          search: async (query) => {
-            const normalizedQuery = query.trim();
-            if (!normalizedQuery) {
-              onStatusChange("Enter a phrase to search.");
-              return 0;
-            }
-
-            const runtimeSession = runtimeSessionRef.current;
-            if (!runtimeSession) {
-              onStatusChange("Search is unavailable for this document.");
-              return 0;
-            }
-
-            try {
-              const pageNumber = await runtimeSession.search(normalizedQuery);
-              if (runtimeSessionRef.current !== runtimeSession) {
-                return 0;
-              }
-
-              if (pageNumber > 0) {
-                requestPageTurnWithIntent(pageNumber, "search");
-                onStatusChange(`Found "${query}" on page ${pageNumber}.`);
-                return pageNumber;
-              }
-
-              onStatusChange(`No matches found for "${query}".`);
-              return 0;
-            } catch {
-              if (runtimeSessionRef.current === runtimeSession) {
-                onStatusChange("Unable to search this PDF.");
-              }
-              return 0;
+          searchPort: {
+            getExtractedPageNumbers: () =>
+              runtimeSessionRef.current?.getExtractedPageNumbers() ?? new Set<number>(),
+            getPageSearchText: async (pageNumber, signal) => {
+              const runtimeSession = runtimeSessionRef.current;
+              if (!runtimeSession) throw new Error("Search is unavailable for this document.");
+              return runtimeSession.getPageSearchText(pageNumber, signal);
             }
           },
           jumpToOutline: (item) => {

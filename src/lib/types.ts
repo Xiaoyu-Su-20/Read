@@ -161,16 +161,42 @@ export type NoteNavigationItem = {
   level: 1 | 2 | 3;
 };
 
+export type NoteEditorSelectionPoint = {
+  path: number[];
+  offset: number;
+};
+
+export type NoteEditorSelectionSnapshot = {
+  anchor: NoteEditorSelectionPoint;
+  focus: NoteEditorSelectionPoint;
+  isCollapsed: boolean;
+};
+
+export type NoteHistoryMergeKey =
+  | "typing"
+  | "delete"
+  | "paste"
+  | "insert-page-link"
+  | "edit-page-link"
+  | "remove-page-link"
+  | "format"
+  | "turn-into";
+
 export type ViewerApi = {
   nextPage: () => void;
   previousPage: () => void;
   goToPage: (page: number) => void;
-  search: (query: string) => Promise<number>;
+  searchPort: import("../search/model/SearchRequest").PdfSearchPort;
   jumpToOutline: (item: OutlineItem) => void;
   getCurrentPage: () => number;
   getPageCount: () => number;
   getReaderState: () => DocumentState | null;
   setBookmarks: (bookmarks: Bookmark[]) => void;
+};
+
+export type NoteRevealRequest = {
+  blockId: string;
+  sequence: number;
 };
 
 export type PaletteGlyph =

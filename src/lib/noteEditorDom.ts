@@ -10,12 +10,15 @@ import type {
   NoteBlock,
   NoteBlockType,
   NoteDocument,
+  NoteEditorSelectionPoint,
+  NoteEditorSelectionSnapshot,
   NoteInlineNode,
   NotePageLinkNode,
   NoteTextNode
 } from "./types";
 
 const NOTE_CLIPBOARD_MIME = "application/x-calmreader-note-fragment";
+const PAGE_LINK_CARET_ANCHOR = "\u200B";
 
 type CaretRangeDocument = Document & {
   caretRangeFromPoint?: (x: number, y: number) => Range | null;
@@ -38,6 +41,26 @@ type NoteClipboardPayload = {
 };
 
 let internalClipboardPayload: NoteClipboardPayload | null = null;
+
+function stripPageLinkCaretAnchors(value: string) {
+  return value.replaceAll(PAGE_LINK_CARET_ANCHOR, "");
+}
+
+function isPageLinkCaretAnchorValue(value: string) {
+  return value.length > 0 && stripPageLinkCaretAnchors(value).length === 0;
+}
+
+function isPageLinkCaretAnchorNode(node: Node | null): node is Text {
+  return node?.nodeType === Node.TEXT_NODE && isPageLinkCaretAnchorValue(node.textContent ?? "");
+}
+
+function createPageLinkCaretAnchor(ownerDocument: Document) {
+  return ownerDocument.createTextNode(PAGE_LINK_CARET_ANCHOR);
+}
+
+function normalizePageLinkCaretAnchorNode(node: Text) {
+  node.textContent = PAGE_LINK_CARET_ANCHOR;
+}
 
 function escapeHtml(value: string) {
   return value
@@ -153,8 +176,13 @@ function pageLinkNodeFromElement(element: HTMLElement): NotePageLinkNode {
 
 function inlineNodesFromNode(node: Node, activeMarks: MarkState): NoteInlineNode[] {
   if (node.nodeType === Node.TEXT_NODE) {
+    const text = stripPageLinkCaretAnchors(node.textContent ?? "");
+    if (text.length === 0) {
+      return [];
+    }
+
     return [
-      createTextNode(node.textContent ?? "", {
+      createTextNode(text, {
         ...(activeMarks.bold ? { bold: true } : {}),
         ...(activeMarks.italic ? { italic: true } : {})
       })
@@ -190,7 +218,7 @@ function inlineNodesFromNode(node: Node, activeMarks: MarkState): NoteInlineNode
 export function parseNoteBlocksFromEditor(root: HTMLElement): NoteBlock[] {
   const blocks = Array.from(root.childNodes).flatMap((childNode) => {
     if (childNode.nodeType === Node.TEXT_NODE) {
-      const text = childNode.textContent ?? "";
+      const text = stripPageLinkCaretAnchors(childNode.textContent ?? "");
       return text.trim().length > 0
         ? [
             {
@@ -225,13 +253,83 @@ function configurePageLinkElement(element: HTMLElement) {
   element.tabIndex = 0;
 }
 
+function isPageLinkElementNode(node: Node | null): node is HTMLElement {
+  return (
+    node instanceof HTMLElement &&
+    node.dataset.inlineType === "page-link"
+  );
+}
+
+function removeAdjacentAnchorDuplicates(anchorNode: Text, direction: "backward" | "forward") {
+  let sibling =
+    direction === "backward" ? anchorNode.previousSibling : anchorNode.nextSibling;
+
+  while (isPageLinkCaretAnchorNode(sibling)) {
+    const nextSibling =
+      direction === "backward" ? sibling.previousSibling : sibling.nextSibling;
+    sibling.remove();
+    sibling = nextSibling;
+  }
+}
+
+function ensurePageLinkCaretAnchors(pageLink: HTMLElement) {
+  const ownerDocument = pageLink.ownerDocument;
+  const previousSibling = pageLink.previousSibling;
+  const nextSibling = pageLink.nextSibling;
+
+  let leadingAnchor: Text;
+  if (isPageLinkCaretAnchorNode(previousSibling)) {
+    leadingAnchor = previousSibling;
+    normalizePageLinkCaretAnchorNode(leadingAnchor);
+  } else {
+    leadingAnchor = createPageLinkCaretAnchor(ownerDocument);
+    pageLink.before(leadingAnchor);
+  }
+
+  let trailingAnchor: Text;
+  if (isPageLinkCaretAnchorNode(nextSibling)) {
+    trailingAnchor = nextSibling;
+    normalizePageLinkCaretAnchorNode(trailingAnchor);
+  } else {
+    trailingAnchor = createPageLinkCaretAnchor(ownerDocument);
+    pageLink.after(trailingAnchor);
+  }
+
+  removeAdjacentAnchorDuplicates(leadingAnchor, "backward");
+  removeAdjacentAnchorDuplicates(trailingAnchor, "forward");
+}
+
+function removeOrphanPageLinkCaretAnchors(root: HTMLElement) {
+  const ownerDocument = root.ownerDocument;
+  const walker = ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const anchorsToRemove: Text[] = [];
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!isPageLinkCaretAnchorNode(node)) {
+      continue;
+    }
+
+    const hasAdjacentPageLink =
+      isPageLinkElementNode(node.previousSibling) || isPageLinkElementNode(node.nextSibling);
+
+    if (!hasAdjacentPageLink) {
+      anchorsToRemove.push(node);
+    }
+  }
+
+  for (const anchor of anchorsToRemove) {
+    anchor.remove();
+  }
+}
+
 export function normalizeNoteEditorDom(root: HTMLElement) {
   const children = Array.from(root.childNodes);
   const seenBlockIds = new Set<string>();
 
   for (const child of children) {
     if (child.nodeType === Node.TEXT_NODE) {
-      const text = child.textContent ?? "";
+      const text = stripPageLinkCaretAnchors(child.textContent ?? "");
       if (text.length === 0) {
         root.removeChild(child);
         continue;
@@ -263,7 +361,10 @@ export function normalizeNoteEditorDom(root: HTMLElement) {
 
     child.querySelectorAll<HTMLElement>("[data-inline-type='page-link']").forEach((pageLink) => {
       configurePageLinkElement(pageLink);
+      ensurePageLinkCaretAnchors(pageLink);
     });
+
+    removeOrphanPageLinkCaretAnchors(child);
   }
 }
 
@@ -473,9 +574,126 @@ function getSelectionInRoot(root: HTMLElement) {
   return selection;
 }
 
+function serializeSelectionNodePath(root: HTMLElement, node: Node | null): number[] | null {
+  if (!node) {
+    return null;
+  }
+
+  const path: number[] = [];
+  let current: Node | null = node;
+
+  while (current && current !== root) {
+    const parent: Node | null = current.parentNode;
+    if (!parent || !root.contains(parent)) {
+      return null;
+    }
+
+    const index = Array.prototype.indexOf.call(parent.childNodes, current);
+    if (index < 0) {
+      return null;
+    }
+    path.unshift(index);
+    current = parent;
+  }
+
+  return current === root ? path : null;
+}
+
+function resolveSelectionNodePath(root: HTMLElement, path: number[]) {
+  let current: Node = root;
+
+  for (const index of path) {
+    const nextNode = current.childNodes[index];
+    if (!nextNode) {
+      return null;
+    }
+    current = nextNode;
+  }
+
+  return current;
+}
+
+function clampSelectionOffset(node: Node, offset: number) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return Math.max(0, Math.min(offset, node.textContent?.length ?? 0));
+  }
+
+  return Math.max(0, Math.min(offset, node.childNodes.length));
+}
+
+function pointSnapshotFromNode(
+  root: HTMLElement,
+  node: Node | null,
+  offset: number
+): NoteEditorSelectionPoint | null {
+  if (!node) {
+    return null;
+  }
+
+  const path = serializeSelectionNodePath(root, node);
+  if (!path) {
+    return null;
+  }
+
+  return {
+    path,
+    offset: clampSelectionOffset(node, offset)
+  };
+}
+
+export function captureEditorSelection(root: HTMLElement): NoteEditorSelectionSnapshot | null {
+  const selection = getSelectionInRoot(root);
+  if (!selection) {
+    return null;
+  }
+
+  const anchor = pointSnapshotFromNode(root, selection.anchorNode, selection.anchorOffset);
+  const focus = pointSnapshotFromNode(root, selection.focusNode, selection.focusOffset);
+  if (!anchor || !focus) {
+    return null;
+  }
+
+  return {
+    anchor,
+    focus,
+    isCollapsed: selection.isCollapsed
+  };
+}
+
+export function restoreEditorSelection(root: HTMLElement, snapshot: NoteEditorSelectionSnapshot | null) {
+  if (!snapshot) {
+    return false;
+  }
+
+  const anchorNode = resolveSelectionNodePath(root, snapshot.anchor.path);
+  const focusNode = resolveSelectionNodePath(root, snapshot.focus.path);
+  if (!anchorNode || !focusNode) {
+    return false;
+  }
+
+  const anchorOffset = clampSelectionOffset(anchorNode, snapshot.anchor.offset);
+  const focusOffset = clampSelectionOffset(focusNode, snapshot.focus.offset);
+  const selection = window.getSelection();
+  if (!selection) {
+    return false;
+  }
+
+  selection.removeAllRanges();
+  if (typeof selection.setBaseAndExtent === "function") {
+    selection.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset);
+    return true;
+  }
+
+  const range = document.createRange();
+  range.setStart(anchorNode, anchorOffset);
+  range.setEnd(focusNode, focusOffset);
+  selection.addRange(range);
+  return true;
+}
+
 export function getSelectedText(root: HTMLElement) {
   const selection = getSelectionInRoot(root);
-  return selection ? selection.toString() : "";
+  return selection ? stripPageLinkCaretAnchors(selection.toString()) : "";
 }
 
 export function getBlockFromSelection(root: HTMLElement) {
@@ -522,6 +740,15 @@ export function getPageLinkFromSelection(root: HTMLElement) {
   }
 
   return null;
+}
+
+export function isSelectionInsidePageLinkAnchor(root: HTMLElement) {
+  const selection = getSelectionInRoot(root);
+  if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) {
+    return false;
+  }
+
+  return isPageLinkCaretAnchorNode(selection.anchorNode);
 }
 
 export function isSelectionWithinSingleBlock(root: HTMLElement) {
@@ -601,6 +828,20 @@ function placeCaretAfterNode(node: Node) {
   selection.addRange(range);
 }
 
+function placeCaretInsideAnchor(anchor: Text, position: "start" | "end" = "end") {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const range = document.createRange();
+  const offset = position === "start" ? 0 : anchor.textContent?.length ?? 0;
+  range.setStart(anchor, offset);
+  range.setEnd(anchor, offset);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 function placeCaretBeforeNode(node: Node) {
   const selection = window.getSelection();
   if (!selection) {
@@ -612,6 +853,11 @@ function placeCaretBeforeNode(node: Node) {
   range.setEndBefore(node);
   selection.removeAllRanges();
   selection.addRange(range);
+}
+
+function getPageLinkCaretAnchor(pageLink: HTMLElement, direction: "before" | "after") {
+  const sibling = direction === "before" ? pageLink.previousSibling : pageLink.nextSibling;
+  return isPageLinkCaretAnchorNode(sibling) ? sibling : null;
 }
 
 function focusElementWithoutScroll(element: HTMLElement) {
@@ -632,12 +878,76 @@ function shouldInsertLeadingSpace(root: HTMLElement, insertionRange: Range) {
   prefixRange.selectNodeContents(block);
   prefixRange.setEnd(insertionRange.endContainer, insertionRange.endOffset);
 
-  const prefixText = prefixRange.toString();
+  const prefixText = stripPageLinkCaretAnchors(prefixRange.toString());
   if (prefixText.length === 0) {
     return false;
   }
 
   return !/\s$/.test(prefixText);
+}
+
+function isRangeAtBlockEnd(root: HTMLElement, block: HTMLElement, range: Range) {
+  const blockEndRange = root.ownerDocument.createRange();
+  blockEndRange.selectNodeContents(block);
+  blockEndRange.collapse(false);
+
+  return (
+    range.collapsed &&
+    range.compareBoundaryPoints(Range.START_TO_START, blockEndRange) === 0
+  );
+}
+
+function deepestTrailingNode(node: Node): Node {
+  let current = node;
+
+  while (current.lastChild) {
+    current = current.lastChild;
+  }
+
+  return current;
+}
+
+function removeTrailingLineBreakArtifacts(block: HTMLElement) {
+  while (block.lastChild instanceof HTMLBRElement) {
+    block.lastChild.remove();
+  }
+
+  let trailingNode = block.lastChild ? deepestTrailingNode(block.lastChild) : null;
+
+  while (trailingNode) {
+    if (trailingNode instanceof HTMLBRElement) {
+      const parent = trailingNode.parentNode;
+      trailingNode.remove();
+      trailingNode = parent?.lastChild ? deepestTrailingNode(parent.lastChild) : null;
+      continue;
+    }
+
+    if (isPageLinkCaretAnchorNode(trailingNode)) {
+      trailingNode = trailingNode.previousSibling
+        ? deepestTrailingNode(trailingNode.previousSibling)
+        : trailingNode.parentNode instanceof HTMLElement
+          ? trailingNode.parentNode
+          : null;
+      continue;
+    }
+
+    if (trailingNode.nodeType === Node.TEXT_NODE) {
+      const textNode = trailingNode as Text;
+      const sanitized = stripPageLinkCaretAnchors(textNode.textContent ?? "");
+      const trimmed = sanitized.replace(/[\r\n]+$/g, "");
+      if (trimmed !== sanitized) {
+        textNode.textContent = trimmed;
+      }
+      if ((textNode.textContent ?? "").length === 0) {
+        const parent = textNode.parentNode;
+        textNode.remove();
+        trailingNode = parent?.lastChild ? deepestTrailingNode(parent.lastChild) : null;
+        continue;
+      }
+    }
+
+    break;
+  }
 }
 
 export function insertPageLinkAtRange(
@@ -671,15 +981,27 @@ export function insertPageLinkAtRange(
   const element = createPageLinkElement(node);
 
   focusElementWithoutScroll(root);
-  const nextRange = insertionRange.cloneRange();
+  let nextRange = insertionRange.cloneRange();
   nextRange.collapse(true);
+  if (isRangeAtBlockEnd(root, block, nextRange)) {
+    removeTrailingLineBreakArtifacts(block);
+    nextRange = root.ownerDocument.createRange();
+    nextRange.selectNodeContents(block);
+    nextRange.collapse(false);
+  }
   const fragment = root.ownerDocument.createDocumentFragment();
   if (shouldInsertLeadingSpace(root, nextRange)) {
     fragment.appendChild(root.ownerDocument.createTextNode(" "));
   }
   fragment.appendChild(element);
   nextRange.insertNode(fragment);
-  placeCaretAfterNode(element);
+  ensurePageLinkCaretAnchors(element);
+  const trailingAnchor = getPageLinkCaretAnchor(element, "after");
+  if (trailingAnchor) {
+    placeCaretInsideAnchor(trailingAnchor, "end");
+  } else {
+    placeCaretAfterNode(element);
+  }
 
   return {
     ok: true as const,
@@ -711,7 +1033,13 @@ export function updatePageLinkTarget(root: HTMLElement, pageLinkId: string, page
   const replacement = createPageLinkElement(nextNode);
   focusElementWithoutScroll(root);
   pageLink.replaceWith(replacement);
-  placeCaretAfterNode(replacement);
+  ensurePageLinkCaretAnchors(replacement);
+  const trailingAnchor = getPageLinkCaretAnchor(replacement, "after");
+  if (trailingAnchor) {
+    placeCaretInsideAnchor(trailingAnchor, "end");
+  } else {
+    placeCaretAfterNode(replacement);
+  }
 
   return {
     ok: true as const,
@@ -725,12 +1053,19 @@ export function removePageLink(root: HTMLElement, pageLinkId: string) {
     return false;
   }
 
-  const nextSibling = pageLink.nextSibling;
+  const leadingAnchor = getPageLinkCaretAnchor(pageLink, "before");
+  const trailingAnchor = getPageLinkCaretAnchor(pageLink, "after");
+  const nextSibling = trailingAnchor?.nextSibling ?? pageLink.nextSibling;
+  const previousSibling = leadingAnchor?.previousSibling ?? pageLink.previousSibling;
   const parent = pageLink.parentNode;
+  leadingAnchor?.remove();
   pageLink.remove();
+  trailingAnchor?.remove();
 
   if (nextSibling) {
     placeCaretBeforeNode(nextSibling);
+  } else if (previousSibling) {
+    placeCaretAfterNode(previousSibling);
   } else if (parent) {
     const selection = window.getSelection();
     if (selection) {
@@ -761,7 +1096,7 @@ export function clearSelectedPageLink(root: HTMLElement) {
 }
 
 export function textFromEditable(root: HTMLElement) {
-  return root.textContent ?? "";
+  return stripPageLinkCaretAnchors(root.textContent ?? "");
 }
 
 export function copyPageLinkReference(root: HTMLElement, pageLinkId: string) {
@@ -777,6 +1112,108 @@ export function copyPageLinkReference(root: HTMLElement, pageLinkId: string) {
   }
 
   insertTextAtSelection(text);
+}
+
+export function selectTextMatchInBlock(
+  root: HTMLElement,
+  blockId: string,
+  query: string,
+  occurrenceIndex: number
+) {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!normalizedQuery) {
+    return false;
+  }
+
+  const block = findBlockElement(root, blockId);
+  if (!block) {
+    return false;
+  }
+
+  const ownerDocument = root.ownerDocument;
+  const walker = ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  const textSegments: Array<{
+    node: Text;
+    sourceStart: number;
+    sourceEnd: number;
+    visibleStart: number;
+    visibleEnd: number;
+  }> = [];
+  let visibleText = "";
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const sourceText = node.textContent ?? "";
+    if (sourceText.length === 0 || isPageLinkCaretAnchorNode(node)) {
+      continue;
+    }
+
+    const visibleStart = visibleText.length;
+    visibleText += stripPageLinkCaretAnchors(sourceText);
+    textSegments.push({
+      node,
+      sourceStart: 0,
+      sourceEnd: sourceText.length,
+      visibleStart,
+      visibleEnd: visibleText.length
+    });
+  }
+
+  const normalizedText = visibleText.toLocaleLowerCase();
+  let cursor = 0;
+  let currentOccurrence = 0;
+  let matchStart = -1;
+
+  while (cursor <= normalizedText.length) {
+    const nextMatch = normalizedText.indexOf(normalizedQuery, cursor);
+    if (nextMatch < 0) {
+      break;
+    }
+
+    if (currentOccurrence === occurrenceIndex) {
+      matchStart = nextMatch;
+      break;
+    }
+
+    currentOccurrence += 1;
+    cursor = nextMatch + Math.max(normalizedQuery.length, 1);
+  }
+
+  if (matchStart < 0) {
+    return false;
+  }
+
+  const matchEnd = matchStart + normalizedQuery.length;
+  const startSegment = textSegments.find((segment) =>
+    matchStart >= segment.visibleStart && matchStart <= segment.visibleEnd
+  );
+  const endSegment = textSegments.find((segment) =>
+    matchEnd >= segment.visibleStart && matchEnd <= segment.visibleEnd
+  );
+
+  if (!startSegment || !endSegment) {
+    return false;
+  }
+
+  const range = ownerDocument.createRange();
+  range.setStart(
+    startSegment.node,
+    Math.min(startSegment.sourceEnd, startSegment.sourceStart + matchStart - startSegment.visibleStart)
+  );
+  range.setEnd(
+    endSegment.node,
+    Math.min(endSegment.sourceEnd, endSegment.sourceStart + matchEnd - endSegment.visibleStart)
+  );
+
+  const selection = ownerDocument.defaultView?.getSelection();
+  if (!selection) {
+    return false;
+  }
+
+  selection.removeAllRanges();
+  selection.addRange(range);
+  block.scrollIntoView({ block: "center" });
+  return true;
 }
 
 function serializeCurrentSelection(root: HTMLElement): NoteClipboardPayload | null {
@@ -795,9 +1232,23 @@ function serializeCurrentSelection(root: HTMLElement): NoteClipboardPayload | nu
   const range = selection.getRangeAt(0);
   const wrapper = document.createElement("div");
   wrapper.appendChild(range.cloneContents());
+  const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_TEXT);
+  const emptyNodes: Text[] = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const sanitized = stripPageLinkCaretAnchors(node.textContent ?? "");
+    if (sanitized.length === 0) {
+      emptyNodes.push(node);
+      continue;
+    }
+    node.textContent = sanitized;
+  }
+  for (const node of emptyNodes) {
+    node.remove();
+  }
   return {
     html: wrapper.innerHTML,
-    text: selection.toString()
+    text: stripPageLinkCaretAnchors(selection.toString())
   };
 }
 
@@ -964,6 +1415,30 @@ function nextNodeInRoot(root: HTMLElement, node: Node): Node | null {
   return null;
 }
 
+function resolveAdjacentPageLinkFromNode(
+  root: HTMLElement,
+  node: Node | null,
+  direction: "backward" | "forward"
+) {
+  if (!node) {
+    return null;
+  }
+
+  const directPageLink = findClosestPageLinkElement(root, node);
+  if (directPageLink) {
+    return directPageLink;
+  }
+
+  if (!isPageLinkCaretAnchorNode(node)) {
+    return null;
+  }
+
+  const neighboringNode =
+    direction === "backward" ? previousNodeInRoot(root, node) : nextNodeInRoot(root, node);
+
+  return neighboringNode ? findClosestPageLinkElement(root, neighboringNode) : null;
+}
+
 export function getAdjacentPageLink(root: HTMLElement, direction: "backward" | "forward") {
   const selection = getSelectionInRoot(root);
   if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) {
@@ -978,6 +1453,14 @@ export function getAdjacentPageLink(root: HTMLElement, direction: "backward" | "
 
   if (container.nodeType === Node.TEXT_NODE) {
     const textLength = container.textContent?.length ?? 0;
+    if (isPageLinkCaretAnchorNode(container)) {
+      adjacentNode =
+        direction === "backward"
+          ? previousNodeInRoot(root, container)
+          : nextNodeInRoot(root, container);
+      return resolveAdjacentPageLinkFromNode(root, adjacentNode, direction);
+    }
+
     if (direction === "backward") {
       if (offset > 0) {
         return null;
@@ -1004,7 +1487,7 @@ export function getAdjacentPageLink(root: HTMLElement, direction: "backward" | "
     }
   }
 
-  return adjacentNode ? findClosestPageLinkElement(root, adjacentNode) : null;
+  return resolveAdjacentPageLinkFromNode(root, adjacentNode, direction);
 }
 
 export function moveCaretAroundPageLink(root: HTMLElement, pageLinkId: string, direction: "before" | "after") {
@@ -1014,8 +1497,18 @@ export function moveCaretAroundPageLink(root: HTMLElement, pageLinkId: string, d
   }
 
   if (direction === "before") {
+    const leadingAnchor = getPageLinkCaretAnchor(pageLink, "before");
+    if (leadingAnchor) {
+      placeCaretInsideAnchor(leadingAnchor, "end");
+      return true;
+    }
     placeCaretBeforeNode(pageLink);
   } else {
+    const trailingAnchor = getPageLinkCaretAnchor(pageLink, "after");
+    if (trailingAnchor) {
+      placeCaretInsideAnchor(trailingAnchor, "end");
+      return true;
+    }
     placeCaretAfterNode(pageLink);
   }
   return true;

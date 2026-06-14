@@ -40,6 +40,7 @@ export function useWorkspaceController() {
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
 
   const viewerApiRef = useRef<ViewerApi | null>(null);
+  const [viewerApi, setViewerApi] = useState<ViewerApi | null>(null);
 
   const collections = libraryTree?.folders ?? [];
   const selectedCollection = useMemo(
@@ -123,6 +124,7 @@ export function useWorkspaceController() {
 
   const registerViewerApi = useCallback((api: ViewerApi | null) => {
     viewerApiRef.current = api;
+    setViewerApi(api);
   }, []);
 
   const handleOpenDocument = useCallback(
@@ -342,6 +344,7 @@ export function useWorkspaceController() {
     collectionOptions,
     activeDocumentId,
     viewerApiRef,
+    viewerApi,
     setWorkspaceMode,
     setSelectedCollectionId,
     setStatusMessage,

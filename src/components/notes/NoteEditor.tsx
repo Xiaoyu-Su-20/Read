@@ -6,6 +6,7 @@ import {
 } from "react";
 
 import {
+  captureEditorSelection,
   captureBlockEndRange,
   clearSelectedPageLink,
   copyPageLinkReference,
@@ -23,6 +24,7 @@ import {
   handleCut,
   handlePaste,
   insertTextAtSelection,
+  isSelectionInsidePageLinkAnchor,
   isPointWithinBlockContent,
   isPointWithinPageLinkContent,
   isPointWithinSelectionContent,
@@ -31,14 +33,29 @@ import {
   parseNoteBlocksFromEditor,
   pasteSelection,
   removePageLink,
+  restoreEditorSelection,
   renderNoteBlocksHtml,
   replaceBlockElementType,
+  selectTextMatchInBlock,
   selectPageLinkToken,
   insertPageLinkAtRange,
   updatePageLinkTarget
 } from "../../lib/noteEditorDom";
 import { logNoteDebugEvent } from "../../lib/api";
-import type { NoteBlockType, NoteDocument, NotePageLinkNode } from "../../lib/types";
+import {
+  commitNoteHistoryState,
+  createNoteHistoryState,
+  redoNoteHistoryState,
+  replaceCurrentHistorySelection,
+  undoNoteHistoryState,
+  type NoteHistoryState
+} from "../../lib/noteHistory";
+import type {
+  NoteBlockType,
+  NoteDocument,
+  NoteHistoryMergeKey,
+  NotePageLinkNode
+} from "../../lib/types";
 
 export type NoteEditorContextTarget =
   | {
@@ -57,6 +74,7 @@ type PageLinkCommandResult =
   | { ok: false; message: string };
 
 export type NoteEditorHandle = {
+  focus: () => void;
   scrollToBlock: (blockId: string) => void;
   copySelection: () => void;
   cutSelection: () => void;
@@ -70,6 +88,9 @@ export type NoteEditorHandle = {
   copyPageReference: (pageLinkId: string) => void;
   resolveContextMenuTargetAtPoint: (x: number, y: number) => NoteEditorContextTarget | null;
   clearSelectedBlock: () => void;
+  selectTextMatch: (blockId: string, query: string, occurrenceIndex: number) => boolean;
+  undo: () => boolean;
+  redo: () => boolean;
 };
 
 type NoteEditorProps = {
@@ -90,6 +111,82 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
   const selectedBlockIdRef = useRef<string | null>(null);
   const selectedPageLinkIdRef = useRef<string | null>(null);
   const pendingPageLinkRangeRef = useRef<Range | null>(null);
+  const historyRef = useRef<NoteHistoryState | null>(null);
+  const applyingHistoryRef = useRef(false);
+
+  function inferHistoryMergeKeyFromInputType(inputType: string): NoteHistoryMergeKey | null {
+    if (inputType === "insertFromPaste" || inputType === "insertFromDrop") {
+      return "paste";
+    }
+
+    if (
+      inputType === "insertText" ||
+      inputType === "insertCompositionText" ||
+      inputType === "insertParagraph" ||
+      inputType === "insertLineBreak"
+    ) {
+      return "typing";
+    }
+
+    if (inputType.startsWith("delete")) {
+      return "delete";
+    }
+
+    return null;
+  }
+
+  function blocksEqual(
+    left: NoteDocument["blocks"],
+    right: NoteDocument["blocks"]
+  ) {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+
+  function captureHistoryHtml() {
+    if (!bodyRef.current) {
+      return "";
+    }
+
+    const snapshotRoot = bodyRef.current.cloneNode(true) as HTMLDivElement;
+    snapshotRoot.querySelectorAll<HTMLElement>("[data-inline-type='page-link']").forEach((element) => {
+      delete element.dataset.selected;
+    });
+    return snapshotRoot.innerHTML;
+  }
+
+  function applyHistoryState(nextHistoryState: NoteHistoryState) {
+    if (!bodyRef.current) {
+      historyRef.current = nextHistoryState;
+      return false;
+    }
+
+    applyingHistoryRef.current = true;
+    try {
+      historyRef.current = nextHistoryState;
+      updateSelectedBlock(null);
+      updateSelectedPageLink(null);
+      pendingPageLinkRangeRef.current = null;
+      bodyRef.current.innerHTML =
+        nextHistoryState.current.html ?? renderNoteBlocksHtml(nextHistoryState.current.blocks);
+      normalizeNoteEditorDom(bodyRef.current);
+      restoreEditorSelection(bodyRef.current, nextHistoryState.current.selection);
+      onChangeBlocks(nextHistoryState.current.blocks);
+    } finally {
+      applyingHistoryRef.current = false;
+    }
+    return true;
+  }
+
+  function updateHistorySelectionFromDom() {
+    if (!bodyRef.current || !historyRef.current || applyingHistoryRef.current) {
+      return;
+    }
+
+    historyRef.current = replaceCurrentHistorySelection(
+      historyRef.current,
+      captureEditorSelection(bodyRef.current)
+    );
+  }
 
   function updateSelectedBlock(blockId: string | null) {
     selectedBlockIdRef.current = blockId;
@@ -103,12 +200,92 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     selectPageLinkToken(bodyRef.current, pageLinkId);
   }
 
-  function syncBlocksFromDom() {
+  function focusEditorBody() {
+    if (!bodyRef.current) {
+      return;
+    }
+
+    try {
+      bodyRef.current.focus({ preventScroll: true });
+    } catch {
+      bodyRef.current.focus();
+    }
+  }
+
+  function syncBlocksFromDom(mergeKey?: NoteHistoryMergeKey | null) {
     if (!bodyRef.current) {
       return;
     }
     normalizeNoteEditorDom(bodyRef.current);
-    onChangeBlocks(parseNoteBlocksFromEditor(bodyRef.current));
+    const nextBlocks = parseNoteBlocksFromEditor(bodyRef.current);
+    const nextSelection = captureEditorSelection(bodyRef.current);
+    const nextHtml = captureHistoryHtml();
+    const currentHistoryState = historyRef.current;
+
+    if (!currentHistoryState) {
+      historyRef.current = createNoteHistoryState({
+        blocks: nextBlocks,
+        selection: nextSelection,
+        html: nextHtml
+      });
+      onChangeBlocks(nextBlocks);
+      return;
+    }
+
+    if (blocksEqual(currentHistoryState.current.blocks, nextBlocks)) {
+      const updatedHistoryState = replaceCurrentHistorySelection(currentHistoryState, nextSelection);
+      historyRef.current = {
+        ...updatedHistoryState,
+        current: {
+          ...updatedHistoryState.current,
+          html: nextHtml
+        }
+      };
+      return;
+    }
+
+    historyRef.current = commitNoteHistoryState(
+      currentHistoryState,
+      {
+        blocks: nextBlocks,
+        selection: nextSelection,
+        html: nextHtml
+      },
+      {
+        mergeKey: mergeKey ?? null
+      }
+    );
+    onChangeBlocks(nextBlocks);
+  }
+
+  function performUndo() {
+    const currentHistoryState = historyRef.current;
+    if (!currentHistoryState) {
+      return false;
+    }
+
+    updateHistorySelectionFromDom();
+    const nextHistoryState = undoNoteHistoryState(historyRef.current ?? currentHistoryState);
+    if (!nextHistoryState) {
+      return false;
+    }
+
+    return applyHistoryState(nextHistoryState);
+  }
+
+  function performRedo() {
+    const currentHistoryState = historyRef.current;
+    if (!currentHistoryState) {
+      return false;
+    }
+
+    updateHistorySelectionFromDom();
+    const nextHistoryState = redoNoteHistoryState(historyRef.current ?? currentHistoryState);
+    if (!nextHistoryState) {
+      return false;
+    }
+
+    return applyHistoryState(nextHistoryState);
   }
 
   function readPageLinkNode(pageLinkId: string) {
@@ -229,6 +406,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       selectedBlockIdRef.current = null;
       selectedPageLinkIdRef.current = null;
       pendingPageLinkRangeRef.current = null;
+      historyRef.current = null;
       return;
     }
 
@@ -237,6 +415,12 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     }
 
     bodyRef.current.innerHTML = renderNoteBlocksHtml(note.blocks);
+    normalizeNoteEditorDom(bodyRef.current);
+    historyRef.current = createNoteHistoryState({
+      blocks: note.blocks,
+      selection: captureEditorSelection(bodyRef.current),
+      html: captureHistoryHtml()
+    });
     appliedNoteIdRef.current = note.id;
     updateSelectedBlock(null);
     updateSelectedPageLink(null);
@@ -246,6 +430,12 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
   useImperativeHandle(
     ref,
     () => ({
+      focus() {
+        if (!bodyRef.current) {
+          return;
+        }
+        bodyRef.current.focus({ preventScroll: true });
+      },
       scrollToBlock(blockId) {
         if (!bodyRef.current) {
           return;
@@ -267,7 +457,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         }
         cutSelection(bodyRef.current);
         updateSelectedPageLink(null);
-        syncBlocksFromDom();
+        syncBlocksFromDom("delete");
       },
       async pasteSelection() {
         if (!bodyRef.current) {
@@ -278,7 +468,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           updateSelectedPageLink(null);
         }
         await pasteSelection(bodyRef.current);
-        syncBlocksFromDom();
+        syncBlocksFromDom("paste");
       },
       resolveContextMenuTargetAtPoint,
       turnInto(blockId, type) {
@@ -311,7 +501,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         if (!replaced) {
           return;
         }
-        syncBlocksFromDom();
+        syncBlocksFromDom("turn-into");
       },
       insertPageLink(pageNumber) {
         if (!bodyRef.current || !note) {
@@ -343,7 +533,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
 
         pendingPageLinkRangeRef.current = null;
         updateSelectedPageLink(result.node.id);
-        syncBlocksFromDom();
+        syncBlocksFromDom("insert-page-link");
         return result;
       },
       openPageLink(pageLinkId) {
@@ -371,7 +561,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         }
 
         updateSelectedPageLink(result.node.id);
-        syncBlocksFromDom();
+        syncBlocksFromDom("edit-page-link");
         return result;
       },
       removePageLink(pageLinkId) {
@@ -384,7 +574,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           return false;
         }
         updateSelectedPageLink(null);
-        syncBlocksFromDom();
+        syncBlocksFromDom("remove-page-link");
         return true;
       },
       copyPageReference(pageLinkId) {
@@ -400,10 +590,36 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           clearSelectedPageLink(bodyRef.current);
         }
         pendingPageLinkRangeRef.current = null;
+      },
+      selectTextMatch(blockId, query, occurrenceIndex) {
+        if (!bodyRef.current) {
+          return false;
+        }
+
+        updateSelectedBlock(null);
+        updateSelectedPageLink(null);
+        return selectTextMatchInBlock(bodyRef.current, blockId, query, occurrenceIndex);
+      },
+      undo() {
+        return performUndo();
+      },
+      redo() {
+        return performRedo();
       }
     }),
     [currentPage, note, onChangeBlocks, onOpenPageLink]
   );
+
+  useEffect(() => {
+    function syncSelectionIntoHistory() {
+      updateHistorySelectionFromDom();
+    }
+
+    document.addEventListener("selectionchange", syncSelectionIntoHistory);
+    return () => {
+      document.removeEventListener("selectionchange", syncSelectionIntoHistory);
+    };
+  }, []);
 
   return (
     <div className="note-editor">
@@ -427,7 +643,9 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           }
           handleCut(bodyRef.current, event.nativeEvent);
           updateSelectedPageLink(null);
-          window.requestAnimationFrame(syncBlocksFromDom);
+          window.requestAnimationFrame(() => {
+            syncBlocksFromDom("delete");
+          });
         }}
         onPaste={(event) => {
           if (!bodyRef.current) {
@@ -438,7 +656,9 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
             updateSelectedPageLink(null);
           }
           handlePaste(bodyRef.current, event.nativeEvent);
-          window.requestAnimationFrame(syncBlocksFromDom);
+          window.requestAnimationFrame(() => {
+            syncBlocksFromDom("paste");
+          });
         }}
         onKeyDownCapture={(event) => {
           event.stopPropagation();
@@ -450,10 +670,12 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           event.stopPropagation();
         }}
         onBlur={() => {
+          updateHistorySelectionFromDom();
           void onBlur();
         }}
-        onInput={() => {
-          syncBlocksFromDom();
+        onInput={(event) => {
+          const inputEvent = event.nativeEvent as InputEvent;
+          syncBlocksFromDom(inferHistoryMergeKeyFromInputType(inputEvent.inputType));
         }}
         onDoubleClick={(event) => {
           if (!bodyRef.current) {
@@ -484,6 +706,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
 
           if (event.button === 0) {
             event.preventDefault();
+            focusEditorBody();
             const pageLinkId = target.dataset.pageLinkId ?? null;
             if (pageLinkId) {
               updateSelectedPageLink(pageLinkId);
@@ -524,11 +747,24 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           onOpenPageLink(node);
         }}
         onBeforeInput={(event) => {
+          const inputEvent = event.nativeEvent as InputEvent;
+
+          if (inputEvent.inputType === "historyUndo") {
+            event.preventDefault();
+            performUndo();
+            return;
+          }
+
+          if (inputEvent.inputType === "historyRedo") {
+            event.preventDefault();
+            performRedo();
+            return;
+          }
+
           if (!bodyRef.current || !selectedPageLinkIdRef.current) {
             return;
           }
 
-          const inputEvent = event.nativeEvent as InputEvent;
           const selectedPageLinkId = selectedPageLinkIdRef.current;
 
           if (
@@ -552,12 +788,29 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
               insertTextAtSelection("\n");
             }
 
-            syncBlocksFromDom();
+            syncBlocksFromDom(
+              inputEvent.inputType.startsWith("delete") ? "remove-page-link" : "typing"
+            );
           }
         }}
         onKeyDown={(event) => {
           if (!bodyRef.current) {
             return;
+          }
+
+          if (event.metaKey || event.ctrlKey) {
+            const key = event.key.toLowerCase();
+            if (key === "z" && !event.shiftKey) {
+              event.preventDefault();
+              performUndo();
+              return;
+            }
+
+            if ((key === "z" && event.shiftKey) || key === "y") {
+              event.preventDefault();
+              performRedo();
+              return;
+            }
           }
 
           if (!(event.metaKey || event.ctrlKey)) {
@@ -576,11 +829,25 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
                 return;
               }
 
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                moveCaretAroundPageLink(bodyRef.current, selectedPageLinkIdRef.current, "before");
+                updateSelectedPageLink(null);
+                return;
+              }
+
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                moveCaretAroundPageLink(bodyRef.current, selectedPageLinkIdRef.current, "after");
+                updateSelectedPageLink(null);
+                return;
+              }
+
               if (event.key === "Backspace" || event.key === "Delete") {
                 event.preventDefault();
                 removePageLink(bodyRef.current, selectedPageLinkIdRef.current);
                 updateSelectedPageLink(null);
-                syncBlocksFromDom();
+                syncBlocksFromDom("remove-page-link");
                 return;
               }
             }
@@ -593,7 +860,13 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
               const pageLinkId = adjacentPageLink?.dataset.pageLinkId ?? null;
               if (pageLinkId) {
                 event.preventDefault();
-                updateSelectedPageLink(pageLinkId);
+                if (isSelectionInsidePageLinkAnchor(bodyRef.current)) {
+                  removePageLink(bodyRef.current, pageLinkId);
+                  updateSelectedPageLink(null);
+                  syncBlocksFromDom("remove-page-link");
+                } else {
+                  updateSelectedPageLink(pageLinkId);
+                }
                 return;
               }
             }
@@ -605,13 +878,17 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           if (key === "b") {
             event.preventDefault();
             document.execCommand("bold");
-            window.requestAnimationFrame(syncBlocksFromDom);
+            window.requestAnimationFrame(() => {
+              syncBlocksFromDom("format");
+            });
           }
 
           if (key === "i") {
             event.preventDefault();
             document.execCommand("italic");
-            window.requestAnimationFrame(syncBlocksFromDom);
+            window.requestAnimationFrame(() => {
+              syncBlocksFromDom("format");
+            });
           }
         }}
       />

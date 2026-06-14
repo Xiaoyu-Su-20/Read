@@ -1,8 +1,8 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 import { logNoteDebugEvent } from "../../lib/api";
-import { parsePageLinkTargetInput } from "../../lib/notes";
-import type { NoteBlockType, NoteDocument, NoteNavigationItem, NotePageLinkNode } from "../../lib/types";
+import { noteBlockText, parsePageLinkTargetInput } from "../../lib/notes";
+import type { NoteBlockType, NoteDocument, NoteNavigationItem, NotePageLinkNode, NoteRevealRequest } from "../../lib/types";
 import NotesContextMenu from "./context-menu/NotesContextMenu";
 import { toPanePoint } from "./context-menu/menuPlacement";
 import {
@@ -21,6 +21,7 @@ type NotesPaneProps = {
   onCopyAllText: () => Promise<void>;
   onGoToPage: (page: number) => void;
   currentPage: number | null;
+  revealRequest: NoteRevealRequest | null;
 };
 
 function NavigationButton({
@@ -78,13 +79,45 @@ function isMenuInteractiveTarget(target: EventTarget | null) {
     target instanceof HTMLElement &&
     Boolean(
       target.closest(
-        ".editor-context-menu, .block-type-submenu, .notes-inline-dialog, .notes-popover, .notes-rail, .notes-pane__scrollbar"
+        ".editor-context-menu, .block-type-submenu, .notes-find-panel, .notes-inline-dialog, .notes-popover, .notes-rail, .notes-pane__scrollbar"
       )
     )
   );
 }
 
 const TOAST_DURATION_MS = 2400;
+
+type NoteFindMatch = {
+  blockId: string;
+  occurrenceIndex: number;
+};
+
+function collectNoteFindMatches(note: NoteDocument | null, query: string): NoteFindMatch[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!note || normalizedQuery.length === 0) {
+    return [];
+  }
+
+  const matches: NoteFindMatch[] = [];
+  for (const block of note.blocks) {
+    const text = noteBlockText(block).toLocaleLowerCase();
+    let cursor = 0;
+    let occurrenceIndex = 0;
+
+    while (cursor <= text.length) {
+      const matchIndex = text.indexOf(normalizedQuery, cursor);
+      if (matchIndex < 0) {
+        break;
+      }
+
+      matches.push({ blockId: block.id, occurrenceIndex });
+      occurrenceIndex += 1;
+      cursor = matchIndex + Math.max(normalizedQuery.length, 1);
+    }
+  }
+
+  return matches;
+}
 
 const NotesPane = memo(function NotesPane({
   note,
@@ -95,9 +128,11 @@ const NotesPane = memo(function NotesPane({
   onFlush,
   onCopyAllText,
   onGoToPage,
-  currentPage
+  currentPage,
+  revealRequest
 }: NotesPaneProps) {
   const editorRef = useRef<NoteEditorHandle | null>(null);
+  const findInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const pageLinkInputRef = useRef<HTMLInputElement | null>(null);
   const paneRef = useRef<HTMLElement | null>(null);
@@ -127,12 +162,23 @@ const NotesPane = memo(function NotesPane({
   const [renamingTitle, setRenamingTitle] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [activeFindIndex, setActiveFindIndex] = useState(0);
   const [pageLinkDialog, setPageLinkDialog] = useState<{
     mode: "insert" | "edit";
     pageLinkId: string | null;
     value: string;
     error: string | null;
   } | null>(null);
+  const findMatches = useMemo(
+    () => collectNoteFindMatches(note, findQuery),
+    [findQuery, note]
+  );
+
+  useEffect(() => {
+    if (revealRequest) editorRef.current?.scrollToBlock(revealRequest.blockId);
+  }, [revealRequest]);
   const {
     state: contextMenuState,
     position: contextMenuPosition,
@@ -145,6 +191,38 @@ const NotesPane = memo(function NotesPane({
     openSubmenu,
     scheduleCloseSubmenu
   } = useContextMenuController({ paneRef });
+
+  function openFindPanel() {
+    closeMenu();
+    setNavigationOpen(false);
+    setMoreOpen(false);
+    setRenamingTitle(false);
+    setRenameDraft("");
+    setPageLinkDialog(null);
+    setFindOpen(true);
+    window.requestAnimationFrame(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    });
+  }
+
+  function closeFindPanel() {
+    setFindOpen(false);
+    setActiveFindIndex(0);
+    editorRef.current?.focus();
+  }
+
+  function moveFindSelection(delta: number) {
+    if (findMatches.length === 0) {
+      setActiveFindIndex(0);
+      return;
+    }
+
+    setActiveFindIndex((current) => {
+      const nextIndex = (current + delta + findMatches.length) % findMatches.length;
+      return nextIndex;
+    });
+  }
 
   function updateNotesScrollbar() {
     const paneElement = paneRef.current;
@@ -215,6 +293,7 @@ const NotesPane = memo(function NotesPane({
     setRenamingTitle(false);
     setRenameDraft("");
     setPageLinkDialog(null);
+    setFindOpen(false);
   }
 
   function validatePageLinkInput(value: string) {
@@ -289,6 +368,9 @@ const NotesPane = memo(function NotesPane({
 
     editorRef.current?.clearSelectedBlock();
     setPageLinkDialog(null);
+    window.requestAnimationFrame(() => {
+      editorRef.current?.focus();
+    });
   }
 
   function handlePageLinkOpen(node: NotePageLinkNode) {
@@ -393,8 +475,37 @@ const NotesPane = memo(function NotesPane({
   }, [pageLinkDialog]);
 
   useEffect(() => {
+    setActiveFindIndex(0);
+  }, [findQuery, note?.id]);
+
+  useEffect(() => {
+    if (!findOpen || findMatches.length === 0) {
+      return;
+    }
+
+    if (activeFindIndex >= findMatches.length) {
+      setActiveFindIndex(0);
+      return;
+    }
+
+    const match = findMatches[activeFindIndex];
+    if (!match) {
+      return;
+    }
+
+    editorRef.current?.selectTextMatch(match.blockId, findQuery, match.occurrenceIndex);
+    window.requestAnimationFrame(() => {
+      findInputRef.current?.focus({ preventScroll: true });
+    });
+  }, [activeFindIndex, findMatches, findOpen, findQuery]);
+
+  useEffect(() => {
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") {
+        if (findOpen) {
+          closeFindPanel();
+          return;
+        }
         if (pageLinkDialog) {
           setPageLinkDialog(null);
           return;
@@ -413,7 +524,7 @@ const NotesPane = memo(function NotesPane({
     return () => {
       window.removeEventListener("keydown", closeOnEscape, true);
     };
-  }, [closeMenu, pageLinkDialog, renamingTitle]);
+  }, [closeMenu, findOpen, pageLinkDialog, renamingTitle]);
 
   useEffect(() => {
     function closeOnWindowPointerDown(event: PointerEvent) {
@@ -586,6 +697,28 @@ const NotesPane = memo(function NotesPane({
       className="notes-pane"
       aria-label="Notes"
       onKeyDownCapture={(event) => {
+        const key = event.key.toLowerCase();
+        const isFind = (event.metaKey || event.ctrlKey) && key === "f" && !event.shiftKey;
+        const isUndo = (event.metaKey || event.ctrlKey) && key === "z" && !event.shiftKey;
+        const isRedo =
+          (event.metaKey || event.ctrlKey) && ((key === "z" && event.shiftKey) || key === "y");
+
+        if (isFind) {
+          event.preventDefault();
+          event.stopPropagation();
+          openFindPanel();
+          return;
+        }
+
+        if ((isUndo || isRedo) && !renamingTitle && !pageLinkDialog) {
+          const handled = isUndo ? editorRef.current?.undo() : editorRef.current?.redo();
+          if (handled) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+        }
+
         event.stopPropagation();
       }}
       onPointerDownCapture={(event) => {
@@ -602,6 +735,67 @@ const NotesPane = memo(function NotesPane({
         event.stopPropagation();
       }}
     >
+      {findOpen ? (
+        <div className="notes-find-panel" role="dialog" aria-label="Find in note">
+          <input
+            ref={findInputRef}
+            className="notes-find-panel__input"
+            type="text"
+            value={findQuery}
+            placeholder="Find in note"
+            spellCheck={false}
+            onChange={(event) => {
+              setFindQuery(event.target.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                closeFindPanel();
+                return;
+              }
+
+              if (event.key === "Enter") {
+                event.preventDefault();
+                moveFindSelection(event.shiftKey ? -1 : 1);
+              }
+            }}
+          />
+          <span className="notes-find-panel__count" aria-live="polite">
+            {findQuery.trim()
+              ? findMatches.length > 0
+                ? `${activeFindIndex + 1} / ${findMatches.length}`
+                : "0 / 0"
+              : "0 / 0"}
+          </span>
+          <button
+            className="notes-find-panel__button"
+            type="button"
+            aria-label="Previous match"
+            disabled={findMatches.length === 0}
+            onClick={() => moveFindSelection(-1)}
+          >
+            ^
+          </button>
+          <button
+            className="notes-find-panel__button"
+            type="button"
+            aria-label="Next match"
+            disabled={findMatches.length === 0}
+            onClick={() => moveFindSelection(1)}
+          >
+            v
+          </button>
+          <button
+            className="notes-find-panel__button notes-find-panel__button--close"
+            type="button"
+            aria-label="Close find"
+            onClick={closeFindPanel}
+          >
+            x
+          </button>
+        </div>
+      ) : null}
+
       <div ref={scrollRef} className="notes-pane__scroll-surface">
         <div ref={contentRef} className="notes-pane__content">
           {note ? (

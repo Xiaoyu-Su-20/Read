@@ -1,11 +1,13 @@
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import CommandPalette from "./components/CommandPalette";
 import CollectionView from "./components/CollectionView";
 import OutlineOverlay from "./components/OutlineOverlay";
 import ReaderWorkspace from "./components/ReaderWorkspace";
+import UnifiedSearchOverlay from "./search/components/UnifiedSearchOverlay";
+import { createUnifiedSearchController } from "./search";
 import { openLibraryFolder } from "./lib/api";
 import { isPassiveStatusMessage } from "./lib/app/helpers";
 import { useCommandRegistry } from "./lib/app/useCommandRegistry";
@@ -13,6 +15,7 @@ import { useLibraryFlows } from "./lib/app/useLibraryFlows";
 import { useNotesController } from "./lib/app/useNotesController";
 import { usePaletteController } from "./lib/app/usePaletteController";
 import { useWorkspaceController } from "./lib/app/useWorkspaceController";
+import { collectDocuments } from "./lib/tree";
 
 const appWindow = getCurrentWindow();
 
@@ -26,6 +29,10 @@ function isEditableTarget(target: EventTarget | null) {
   }
 
   return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
+}
+
+function isNotesTarget(target: EventTarget | null) {
+  return target instanceof HTMLElement && Boolean(target.closest(".notes-pane"));
 }
 
 function shouldStartWindowDrag(target: EventTarget | null) {
@@ -61,7 +68,38 @@ export default function App() {
     setStatusMessage: workspace.setStatusMessage
   });
   const palette = usePaletteController();
+  const searchController = useMemo(() => createUnifiedSearchController(), []);
+  const [noteRevealRequest, setNoteRevealRequest] = useState<import("./lib/types").NoteRevealRequest | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const searchableDocuments = useMemo(
+    () => workspace.libraryTree ? collectDocuments(workspace.libraryTree) : [],
+    [workspace.libraryTree]
+  );
+
+  useEffect(() => {
+    searchController.setContext({
+      currentPage: workspace.viewerSnapshot.currentPage,
+      totalPages: workspace.viewerSnapshot.pageCount,
+      activeDocumentId: workspace.activeDocumentId,
+      currentNote: notes.note,
+      documents: searchableDocuments,
+      pdfPort: workspace.viewerApi?.searchPort ?? null
+    });
+  }, [
+    notes.note,
+    searchableDocuments,
+    searchController,
+    workspace.activeDocumentId,
+    workspace.viewerApi,
+    workspace.viewerSnapshot.currentPage,
+    workspace.viewerSnapshot.pageCount
+  ]);
+
+  function openUnifiedSearch() {
+    palette.closePalette();
+    setOutlineOpen(false);
+    searchController.open();
+  }
   const flows = useLibraryFlows({
     libraryTree: workspace.libraryTree,
     collectionOptions: workspace.collectionOptions,
@@ -101,12 +139,96 @@ export default function App() {
     openDocumentById: async (documentId) => {
       setOutlineOpen(false);
       await workspace.handleOpenDocument(documentId);
-    }
+    },
+    openSearch: openUnifiedSearch
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlistenResized: (() => void) | null = null;
+    let unlistenScaleChanged: (() => void) | null = null;
+    let unlistenMoved: (() => void) | null = null;
+
+    async function syncWindowChromeState() {
+      try {
+        const maximized = await appWindow.isMaximized();
+        if (cancelled) {
+          return;
+        }
+        document.documentElement.dataset.windowMaximized = maximized ? "true" : "false";
+      } catch (error) {
+        console.error("window chrome sync failed:", error);
+      }
+    }
+
+    async function stabilizeStartupWindow() {
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => resolve());
+        });
+      });
+
+      if (cancelled) {
+        return;
+      }
+
+      try {
+        if (!(await appWindow.isMaximized())) {
+          await appWindow.maximize();
+        }
+      } catch (error) {
+        console.error("startup maximize failed:", error);
+      }
+
+      await syncWindowChromeState();
+
+      try {
+        [unlistenResized, unlistenScaleChanged, unlistenMoved] = await Promise.all([
+          appWindow.onResized(() => {
+            void syncWindowChromeState();
+          }),
+          appWindow.onScaleChanged(() => {
+            void syncWindowChromeState();
+          }),
+          appWindow.onMoved(() => {
+            void syncWindowChromeState();
+          })
+        ]);
+      } catch (error) {
+        console.error("window event subscription failed:", error);
+      }
+    }
+
+    void stabilizeStartupWindow();
+
+    return () => {
+      cancelled = true;
+      delete document.documentElement.dataset.windowMaximized;
+      unlistenResized?.();
+      unlistenScaleChanged?.();
+      unlistenMoved?.();
+    };
+  }, []);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const originatedFromEditable = isEditableTarget(event.target);
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "f") {
+        if (event.shiftKey) {
+          event.preventDefault();
+          openUnifiedSearch();
+          return;
+        }
+
+        if (isNotesTarget(event.target)) {
+          return;
+        }
+
+        event.preventDefault();
+        openUnifiedSearch();
+        return;
+      }
 
       if (
         event.key === "Tab" &&
@@ -122,19 +244,21 @@ export default function App() {
 
       if (event.key === "Escape") {
         palette.closePalette();
+        searchController.close();
         setOutlineOpen(false);
         return;
       }
     }
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [
     commandRegistry,
     outlineOpen,
     palette.closePalette,
     palette.openCommands,
     palette.paletteOpen,
+    searchController,
     workspace.workspaceMode
   ]);
 
@@ -239,7 +363,7 @@ export default function App() {
               <path d="m12.5 7.5 4 4" />
             </ChromeIcon>
           </button>
-          <button className="sidebar__icon-button" type="button" aria-label="Search">
+          <button className="sidebar__icon-button" type="button" aria-label="Search" onClick={openUnifiedSearch}>
             <ChromeIcon label="Search">
               <circle cx="11" cy="11" r="6.5" />
               <path d="m16 16 4 4" />
@@ -374,6 +498,7 @@ export default function App() {
             onCopyAllNoteText={notes.copyAllText}
             onGoToNotePage={workspace.goToReaderPage}
             currentReaderPage={workspace.viewerSnapshot.currentPage}
+            noteRevealRequest={noteRevealRequest}
             onSnapshotChange={workspace.handleViewerSnapshotChange}
             onOutlineChange={workspace.handleViewerOutlineChange}
             onStateChange={workspace.handleViewerStateChange}
@@ -397,6 +522,15 @@ export default function App() {
         onSelect={(item) => {
           workspace.viewerApiRef.current?.jumpToOutline(item);
           setOutlineOpen(false);
+        }}
+      />
+
+      <UnifiedSearchOverlay
+        controller={searchController}
+        onOpenDocument={workspace.handleOpenDocument}
+        onGoToPage={workspace.goToReaderPage}
+        onRevealNoteBlock={(blockId) => {
+          setNoteRevealRequest((current) => ({ blockId, sequence: (current?.sequence ?? 0) + 1 }));
         }}
       />
     </main>

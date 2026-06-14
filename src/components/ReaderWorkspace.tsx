@@ -5,6 +5,7 @@ import type {
   DocumentState,
   NoteDocument,
   NoteNavigationItem,
+  NoteRevealRequest,
   OutlineItem,
   ViewerApi,
   ViewerSnapshot
@@ -21,6 +22,7 @@ type ReaderWorkspaceProps = {
   onCopyAllNoteText: () => Promise<void>;
   onGoToNotePage: (page: number) => void;
   currentReaderPage: number | null;
+  noteRevealRequest: NoteRevealRequest | null;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
   onOutlineChange: (items: OutlineItem[]) => void;
   onStatusChange: (message: string) => void;
@@ -39,6 +41,7 @@ export default function ReaderWorkspace({
   onCopyAllNoteText,
   onGoToNotePage,
   currentReaderPage,
+  noteRevealRequest,
   onSnapshotChange,
   onOutlineChange,
   onStatusChange,
@@ -81,6 +84,7 @@ export default function ReaderWorkspace({
           onCopyAllText={onCopyAllNoteText}
           onGoToPage={onGoToNotePage}
           currentPage={currentReaderPage}
+          revealRequest={noteRevealRequest}
         />
       </div>
     </div>

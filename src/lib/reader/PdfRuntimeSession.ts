@@ -155,6 +155,8 @@ export function createPdfRuntimeSession(
   const pageTextCache = new Map<number, PageTextLayerData>();
   const plainTextPromises = new Map<number, Promise<string>>();
   const plainTextCache = new Map<number, string>();
+  const searchTextPromises = new Map<number, Promise<string>>();
+  const searchTextCache = new Map<number, string>();
 
   function assertActive() {
     if (disposed) {
@@ -327,28 +329,30 @@ export function createPdfRuntimeSession(
     return nextTextPromise;
   }
 
-  async function getPagePlainText(pageNumber: number) {
+  async function getPageSearchText(pageNumber: number, signal?: AbortSignal) {
     assertActive();
 
-    const cached = plainTextCache.get(pageNumber);
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const cached = searchTextCache.get(pageNumber);
     if (cached !== undefined) {
       return cached;
     }
 
-    const existing = plainTextPromises.get(pageNumber);
+    const existing = searchTextPromises.get(pageNumber);
     if (existing) {
-      return existing;
+      const text = await existing;
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      return text;
     }
 
-    const nextPlainTextPromise = (async () => {
+    const nextSearchTextPromise = (async () => {
       const existingPageText = pageTextCache.get(pageNumber);
       if (existingPageText) {
         const text = existingPageText.textContent.items
           .map((item) => (isTextItem(item) ? item.str : ""))
-          .join(" ")
-          .toLowerCase();
-        plainTextCache.set(pageNumber, text);
-        plainTextPromises.delete(pageNumber);
+          .join(" ");
+        searchTextCache.set(pageNumber, text);
+        searchTextPromises.delete(pageNumber);
         return text;
       }
 
@@ -359,19 +363,49 @@ export function createPdfRuntimeSession(
 
       const text = textContent.items
         .map((item) => (isTextItem(item) ? item.str : ""))
-        .join(" ")
-        .toLowerCase();
+        .join(" ");
 
-      plainTextCache.set(pageNumber, text);
-      plainTextPromises.delete(pageNumber);
+      searchTextCache.set(pageNumber, text);
+      searchTextPromises.delete(pageNumber);
       return text;
     })().catch((error) => {
-      plainTextPromises.delete(pageNumber);
+      searchTextPromises.delete(pageNumber);
       throw error;
     });
 
+    searchTextPromises.set(pageNumber, nextSearchTextPromise);
+    const text = await nextSearchTextPromise;
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    return text;
+  }
+
+  async function getPagePlainText(pageNumber: number) {
+    assertActive();
+    const cached = plainTextCache.get(pageNumber);
+    if (cached !== undefined) return cached;
+    const existing = plainTextPromises.get(pageNumber);
+    if (existing) return existing;
+    const nextPlainTextPromise = getPageSearchText(pageNumber)
+      .then((text) => {
+        const normalized = text.toLocaleLowerCase();
+        plainTextCache.set(pageNumber, normalized);
+        plainTextPromises.delete(pageNumber);
+        return normalized;
+      })
+      .catch((error) => {
+        plainTextPromises.delete(pageNumber);
+        throw error;
+      });
     plainTextPromises.set(pageNumber, nextPlainTextPromise);
     return nextPlainTextPromise;
+  }
+
+  function getExtractedPageNumbers() {
+    return new Set([
+      ...pageTextCache.keys(),
+      ...searchTextCache.keys(),
+      ...plainTextCache.keys()
+    ]);
   }
 
   async function search(query: string) {
@@ -411,6 +445,8 @@ export function createPdfRuntimeSession(
     pageTextCache.clear();
     plainTextPromises.clear();
     plainTextCache.clear();
+    searchTextPromises.clear();
+    searchTextCache.clear();
 
     const documentToDestroy = loadedDocument;
     const loadingTaskToDestroy = loadingTask;
@@ -434,6 +470,8 @@ export function createPdfRuntimeSession(
     load,
     getOutline,
     getPageText,
+    getPageSearchText,
+    getExtractedPageNumbers,
     getPagePlainText,
     search,
     dispose

@@ -199,6 +199,17 @@ describe("PdfRuntimeSession", () => {
     expect(fixture.getPageTextContent.get(3)).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps original-case search text and reports extracted pages", async () => {
+    const fixture = createRuntimeFixture();
+
+    const text = await fixture.session.getPageSearchText(1, new AbortController().signal);
+
+    expect(text).toBe("Alpha");
+    expect(fixture.session.getExtractedPageNumbers()).toEqual(new Set([1]));
+    expect(await fixture.session.getPagePlainText(1)).toBe("alpha");
+    expect(fixture.getPageTextContent.get(1)).toHaveBeenCalledTimes(1);
+  });
+
   it("disposes caches and rejects reused access after disposal", async () => {
     const fixture = createRuntimeFixture();
 

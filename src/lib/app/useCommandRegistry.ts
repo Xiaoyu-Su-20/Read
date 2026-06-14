@@ -39,6 +39,7 @@ type UseCommandRegistryArgs = {
   rescanLibraryFlow: () => Promise<void>;
   openLibraryFolder: () => Promise<void>;
   openDocumentById: (documentId: string) => Promise<void>;
+  openSearch: () => void;
 };
 
 export function useCommandRegistry({
@@ -59,7 +60,8 @@ export function useCommandRegistry({
   promptImportFlow,
   rescanLibraryFlow,
   openLibraryFolder,
-  openDocumentById
+  openDocumentById,
+  openSearch
 }: UseCommandRegistryArgs) {
   return useMemo(() => {
     const latestAvailableRecentDocument = recentDocuments.find(
@@ -137,14 +139,8 @@ export function useCommandRegistry({
         group: "navigation",
         keywords: ["search find text"],
         onSelect: () => {
-          const viewer = viewerOrStatus();
-          if (!viewer) {
-            closePalette();
-            return;
-          }
-          openPrompt("Find in document", "Search text", "Search", async (value) => {
-            await viewer.search(value);
-          });
+          closePalette();
+          openSearch();
         }
       },
       {
@@ -280,6 +276,7 @@ export function useCommandRegistry({
     openDocumentById,
     openLibraryFolder,
     openPrompt,
+    openSearch,
     openSelection,
     outlineItems,
     promptImportFlow,

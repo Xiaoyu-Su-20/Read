@@ -1,7 +1,7 @@
 import { memo } from "react";
 
 import NotesPane from "./notes/NotesPane";
-import type { NoteDocument, NoteNavigationItem } from "../lib/types";
+import type { NoteDocument, NoteNavigationItem, NoteRevealRequest } from "../lib/types";
 
 type NotesViewportProps = {
   note: NoteDocument | null;
@@ -13,6 +13,7 @@ type NotesViewportProps = {
   onCopyAllText: () => Promise<void>;
   onGoToPage: (page: number) => void;
   currentPage: number | null;
+  revealRequest: NoteRevealRequest | null;
 };
 
 const NotesViewport = memo(function NotesViewport({
@@ -24,7 +25,8 @@ const NotesViewport = memo(function NotesViewport({
   onFlush,
   onCopyAllText,
   onGoToPage,
-  currentPage
+  currentPage,
+  revealRequest
 }: NotesViewportProps) {
   return (
     <section className="notes-viewport" aria-label="Notes viewport">
@@ -38,6 +40,7 @@ const NotesViewport = memo(function NotesViewport({
         onCopyAllText={onCopyAllText}
         onGoToPage={onGoToPage}
         currentPage={currentPage}
+        revealRequest={revealRequest}
       />
     </section>
   );
