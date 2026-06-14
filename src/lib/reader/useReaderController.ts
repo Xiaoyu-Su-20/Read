@@ -1,5 +1,6 @@
 import type { KeyboardEvent, WheelEvent } from "react";
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
 import { saveDocumentState } from "../api";
 import { debugAction, startDebugProcess } from "../debugLog";
@@ -13,7 +14,7 @@ import type {
   ViewerSnapshot
 } from "../types";
 import { createPageCache, makePageCacheKey, type CachedRenderedPage } from "./PageCache";
-import { renderVisiblePdfPage } from "./PdfPageRenderer";
+import { invalidatePdfPageRenders, renderVisiblePdfPage } from "./PdfPageRenderer";
 import { createPdfRuntimeSession, type PdfRuntimeSession } from "./PdfRuntimeSession";
 import {
   makeRapidTurnOverlayModel,
@@ -55,6 +56,12 @@ type RapidTurnSession = {
   direction: NavigationDirection | null;
   source: RapidTurnIntent["source"] | null;
   targetPage: number;
+};
+
+type NormalizationReadyEvent = {
+  documentId: string;
+  fingerprint: string;
+  token: string;
 };
 
 function clampPage(page: number, pageCount: number) {
@@ -114,6 +121,7 @@ export function useReaderController({
   const pageCache = useRef(createPageCache(RENDER_CACHE_SIZE));
   const preloadInFlight = useRef(new Set<string>());
   const renderSequenceRef = useRef(0);
+  const normalizationGenerationRef = useRef(0);
   const incomingPageKeyRef = useRef<string | null>(null);
   const initializedDocumentIdRef = useRef<string | null>(null);
   const outlineLoadedForDocumentIdRef = useRef<string | null>(null);
@@ -577,6 +585,46 @@ export function useReaderController({
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<NormalizationReadyEvent>("page-normalization-ready", (event) => {
+      const activeDocument = currentDocumentRef.current;
+      if (
+        !activeDocument ||
+        event.payload.documentId !== activeDocument.document.id ||
+        event.payload.fingerprint !== activeDocument.document.fingerprint
+      ) {
+        return;
+      }
+
+      normalizationGenerationRef.current += 1;
+      renderSequenceRef.current += 1;
+      pageCache.current.clear();
+      preloadInFlight.current.clear();
+      invalidatePdfPageRenders(event.payload.documentId);
+      setIncomingPage(null);
+      setIncomingReady(false);
+      incomingPageKeyRef.current = null;
+      setIsRendering(false);
+      debugAction("reader.normalization-ready", {
+        documentId: event.payload.documentId,
+        token: event.payload.token
+      });
+    }).then((disposeListener) => {
+      if (disposed) {
+        disposeListener();
+      } else {
+        unlisten = disposeListener;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
     function flushOnVisibilityChange() {
       if (window.document.visibilityState === "hidden") {
         flushReaderState("document-hidden");
@@ -783,8 +831,8 @@ export function useReaderController({
       return;
     }
 
-    const requestKey = makePageCacheKey(document.document.id, currentPage, zoom);
-    const cachedPage = pageCache.current.get(requestKey);
+    const logicalKey = makePageCacheKey(document.document.id, currentPage, zoom);
+    const cachedPage = pageCache.current.getByLogicalKey(logicalKey);
     const requestSequence = renderSequenceRef.current + 1;
     renderSequenceRef.current = requestSequence;
 
@@ -800,8 +848,8 @@ export function useReaderController({
       if (!displayedPage) {
         setDisplayedPage(cachedPage);
         setLoadingDocument(false);
-      } else if (displayedPage.requestKey !== requestKey) {
-        incomingPageKeyRef.current = requestKey;
+      } else if (displayedPage.requestKey !== cachedPage.requestKey) {
+        incomingPageKeyRef.current = cachedPage.requestKey;
         setIncomingReady(false);
         setIncomingPage(cachedPage);
       }
@@ -835,7 +883,7 @@ export function useReaderController({
           return;
         }
 
-        pageCache.current.set(requestKey, page);
+        pageCache.current.set(page.cacheKey, page);
         if (!displayedPage) {
           setDisplayedPage(page);
           setIncomingPage(null);
@@ -843,7 +891,7 @@ export function useReaderController({
           incomingPageKeyRef.current = null;
           setLoadingDocument(false);
         } else {
-          incomingPageKeyRef.current = requestKey;
+          incomingPageKeyRef.current = page.requestKey;
           setIncomingReady(false);
           setIncomingPage(page);
         }
@@ -871,7 +919,7 @@ export function useReaderController({
     }
 
     debugAction("reader.page-swap-committed", {
-      documentId: incomingPage.requestKey.split(":")[0],
+      documentId: currentDocumentRef.current?.document.id ?? null,
       page: incomingPage.pageNumber
     });
     setDisplayedPage(incomingPage);
@@ -935,11 +983,11 @@ export function useReaderController({
 
       for (const pageNumber of adjacentPages) {
         const key = makePageCacheKey(document.document.id, pageNumber, zoom);
-        if (pageCache.current.has(key) || preloadInFlight.current.has(key)) {
+        if (pageCache.current.hasLogicalKey(key) || preloadInFlight.current.has(key)) {
           debugAction("reader.preload-skipped", {
             key,
             page: pageNumber,
-            reason: pageCache.current.has(key) ? "cached" : "in-flight"
+            reason: pageCache.current.hasLogicalKey(key) ? "cached" : "in-flight"
           });
           continue;
         }
@@ -950,9 +998,12 @@ export function useReaderController({
           page: pageNumber,
           zoom
         });
+        const normalizationGeneration = normalizationGenerationRef.current;
         void renderVisiblePdfPage(document.document.id, pageNumber, zoom)
           .then((page) => {
-            pageCache.current.set(key, page);
+            if (normalizationGeneration === normalizationGenerationRef.current) {
+              pageCache.current.set(page.cacheKey, page);
+            }
           })
           .finally(() => {
             preloadInFlight.current.delete(key);

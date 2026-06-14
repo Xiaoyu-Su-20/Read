@@ -257,6 +257,25 @@ describe("PdfTextLayer", () => {
     expect(markup).toContain("--total-scale-factor:2.5");
   });
 
+  it("applies the backend affine transform to the inner text layer", () => {
+    const markup = renderToStaticMarkup(
+      createElement(PdfTextLayer, {
+        pageNumber: 4,
+        textLayer: createTextLayerData(),
+        renderedWidth: 300,
+        renderedHeight: 400,
+        renderTransform: {
+          sourceWidth: 100,
+          sourceHeight: 100,
+          matrix: [2, 0, 0, 2, 40, 60]
+        }
+      })
+    );
+
+    expect(markup).toContain("matrix(2, 0, 0, 2, 40, 60)");
+    expect(markup).toContain("reader-page__text-content textLayer");
+  });
+
   it("derives explicit states for missing, mismatched, and active text layers", () => {
     expect(getTextLayerRenderState(4, null)).toBe("missing");
     expect(getTextLayerRenderState(5, createTextLayerData())).toBe("mismatch");

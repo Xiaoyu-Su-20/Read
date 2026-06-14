@@ -1,6 +1,7 @@
 mod debug;
 mod error;
 mod models;
+mod normalization;
 mod store;
 
 use std::{
@@ -15,6 +16,7 @@ use models::{
     DocumentPayload, DocumentRecord, DocumentState, FolderRecord, FolderTreeNode, NoteDocument,
     RenderedPagePayload,
 };
+use normalization::{new_manifest_cache, ManifestCache, NormalizationWorker};
 use serde_json::{json, Value};
 use store::{LibraryStore, RenderCache};
 use tauri::{AppHandle, Manager, State};
@@ -23,6 +25,8 @@ struct AppState {
     lock: Arc<Mutex<()>>,
     render_cache: Arc<Mutex<RenderCache>>,
     in_flight_renders: Arc<Mutex<HashMap<String, Arc<InFlightRender>>>>,
+    normalization_worker: NormalizationWorker,
+    normalization_cache: ManifestCache,
 }
 
 struct InFlightRender {
@@ -186,14 +190,26 @@ fn import_pdf(
             "sourcePath": source_path,
         }),
         || {
-            with_store(&app, state, |store| {
-                store
+            let worker = state.normalization_worker.clone();
+            let result = with_store(&app, state, |store| {
+                let record = store
                     .import_pdf(
                         PathBuf::from(source_path).as_path(),
                         destination_folder_id.as_deref(),
                     )
-                    .map_err(|error| error.to_string())
-            })
+                    .map_err(|error| error.to_string())?;
+                let job = store.prepare_normalization_job(&record.id).ok();
+                Ok((record, job))
+            })?;
+            if let Some(job) = result.1 {
+                if let Err(error) = worker.schedule(job) {
+                    crate::debug::action(
+                        "normalization.schedule-error",
+                        json!({"error": error.to_string()}),
+                    );
+                }
+            }
+            Ok(result.0)
         },
     )
 }
@@ -367,11 +383,26 @@ fn open_document(
             "documentId": document_id,
         }),
         || {
-            with_store(&app, state, |store| {
-                store
+            let worker = state.normalization_worker.clone();
+            let result = with_store(&app, state, |store| {
+                let payload = store
                     .open_document(&document_id)
-                    .map_err(|error| error.to_string())
-            })
+                    .map_err(|error| error.to_string())?;
+                let mut job = store.prepare_normalization_job(&document_id).ok();
+                if let Some(job) = job.as_mut() {
+                    job.page_count = payload.page_count;
+                }
+                Ok((payload, job))
+            })?;
+            if let Some(job) = result.1 {
+                if let Err(error) = worker.schedule(job) {
+                    crate::debug::action(
+                        "normalization.schedule-error",
+                        json!({"error": error.to_string()}),
+                    );
+                }
+            }
+            Ok(result.0)
         },
     )
 }
@@ -557,12 +588,13 @@ async fn render_pdf_page(
 
     let render_cache = state.render_cache.clone();
     let in_flight_renders = state.in_flight_renders.clone();
+    let normalization_cache = state.normalization_cache.clone();
     let task_document_id = document_id.clone();
 
     let result = tauri::async_runtime::spawn_blocking(move || {
         let store = app_store(&app)?;
         let request = store
-            .prepare_render_request(&task_document_id, page_number, zoom)
+            .prepare_render_request(&task_document_id, page_number, zoom, &normalization_cache)
             .map_err(|error| error.to_string())?;
         crate::debug::action(
             "command.render_pdf_page:document-path-resolved",
@@ -590,12 +622,27 @@ async fn render_pdf_page(
 
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState {
-            lock: Arc::new(Mutex::new(())),
-            render_cache: Arc::new(Mutex::new(RenderCache::default())),
-            in_flight_renders: Arc::new(Mutex::new(HashMap::new())),
-        })
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let app_dir = app.path().app_data_dir()?;
+            let document_dir = app.path().document_dir()?.join("Reader");
+            let paths = store::paths::StorePaths::new(app_dir, document_dir);
+            paths.ensure_storage_dirs()?;
+            let normalization_cache = new_manifest_cache();
+            let normalization_worker = NormalizationWorker::start(
+                app.handle().clone(),
+                paths,
+                normalization_cache.clone(),
+            );
+            app.manage(AppState {
+                lock: Arc::new(Mutex::new(())),
+                render_cache: Arc::new(Mutex::new(RenderCache::default())),
+                in_flight_renders: Arc::new(Mutex::new(HashMap::new())),
+                normalization_worker,
+                normalization_cache,
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_library_root,
             import_pdf,

@@ -22,6 +22,7 @@ pub struct StorePaths {
     pub notes_index_path: PathBuf,
     pub states_dir: PathBuf,
     pub rendered_pages_dir: PathBuf,
+    pub page_normalization_dir: PathBuf,
 }
 
 impl StorePaths {
@@ -37,6 +38,7 @@ impl StorePaths {
             notes_index_path: app_dir.join("notes").join("index.json"),
             states_dir: app_dir.join("document-states"),
             rendered_pages_dir: app_dir.join("rendered-pages"),
+            page_normalization_dir: app_dir.join("page-normalization"),
             app_dir,
         }
     }
@@ -46,6 +48,7 @@ impl StorePaths {
         fs::create_dir_all(&self.notes_dir)?;
         fs::create_dir_all(&self.states_dir)?;
         fs::create_dir_all(&self.rendered_pages_dir)?;
+        fs::create_dir_all(&self.page_normalization_dir)?;
         fs::create_dir_all(&self.library_dir)?;
         Ok(())
     }
@@ -60,6 +63,11 @@ impl StorePaths {
 
     pub fn note_path(&self, note_id: &str) -> PathBuf {
         self.notes_dir.join(format!("{note_id}.json"))
+    }
+
+    pub fn normalization_manifest_path(&self, document_id: &str) -> PathBuf {
+        self.page_normalization_dir
+            .join(format!("{document_id}.json"))
     }
 
     pub fn relative_to_root(&self, root: &Path, full_path: &Path) -> AppResult<String> {

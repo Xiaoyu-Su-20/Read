@@ -6,6 +6,15 @@ import { makePageCacheKey, type CachedRenderedPage } from "./PageCache";
 
 const inFlightPageRenders = new Map<string, Promise<CachedRenderedPage>>();
 
+export function invalidatePdfPageRenders(documentId: string) {
+  const prefix = `${documentId}:`;
+  for (const key of inFlightPageRenders.keys()) {
+    if (key.startsWith(prefix)) {
+      inFlightPageRenders.delete(key);
+    }
+  }
+}
+
 export async function renderVisiblePdfPage(
   documentId: string,
   pageNumber: number,
@@ -37,6 +46,7 @@ export function toCachedRenderedPage(
   return {
     ...payload,
     imageUrl: convertFileSrc(payload.imagePath),
-    requestKey: makePageCacheKey(documentId, payload.pageNumber, zoom)
+    requestKey: payload.cacheKey,
+    logicalKey: makePageCacheKey(documentId, payload.pageNumber, zoom)
   };
 }

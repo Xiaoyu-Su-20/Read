@@ -56,6 +56,15 @@ export type RenderedPagePayload = {
   width: number;
   height: number;
   cacheKey: string;
+  renderVariant: "raw" | "normalized";
+  normalizationToken: string | null;
+  textLayerTransform: TextLayerTransform;
+};
+
+export type TextLayerTransform = {
+  sourceWidth: number;
+  sourceHeight: number;
+  matrix: [number, number, number, number, number, number];
 };
 
 export type PageTextLayerData = {

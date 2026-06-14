@@ -100,7 +100,7 @@ pub struct DocumentPayload {
     pub page_count: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderedPagePayload {
     pub image_path: String,
@@ -108,6 +108,24 @@ pub struct RenderedPagePayload {
     pub width: u32,
     pub height: u32,
     pub cache_key: String,
+    pub render_variant: RenderVariant,
+    pub normalization_token: Option<String>,
+    pub text_layer_transform: TextLayerTransform,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RenderVariant {
+    Raw,
+    Normalized,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextLayerTransform {
+    pub source_width: f32,
+    pub source_height: f32,
+    pub matrix: [f32; 6],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

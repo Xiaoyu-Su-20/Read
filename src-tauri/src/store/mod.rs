@@ -15,11 +15,12 @@ use crate::{
         DocumentAvailability, DocumentPayload, DocumentRecord, DocumentState, FolderRecord,
         FolderTreeNode, LibraryIndex, NoteDocument, NoteIndex, RenderedPagePayload, ROOT_FOLDER_ID,
     },
+    normalization::{ready_manifest_for, ManifestCache, NormalizationJob},
 };
 
 mod catalog;
 mod notes;
-mod paths;
+pub(crate) mod paths;
 mod render;
 mod state;
 
@@ -341,13 +342,39 @@ impl LibraryStore {
         document_id: &str,
         page_number: u32,
         zoom: f32,
+        manifest_cache: &ManifestCache,
     ) -> AppResult<PageRenderRequest> {
         self.ensure_ready()?;
         let document = self.catalog.find_document_by_id(&self.paths, document_id)?;
         self.catalog.ensure_document_available(&document)?;
         let path = self.resolved_document_path(&document)?;
-        self.renderer
-            .prepare_request(&self.paths, &document, &path, page_number, zoom)
+        let normalization = ready_manifest_for(
+            &self.paths,
+            manifest_cache,
+            &document.id,
+            &document.fingerprint,
+        )?;
+        self.renderer.prepare_request(
+            &self.paths,
+            &document,
+            &path,
+            page_number,
+            zoom,
+            normalization,
+        )
+    }
+
+    pub fn prepare_normalization_job(&self, document_id: &str) -> AppResult<NormalizationJob> {
+        self.ensure_ready()?;
+        let document = self.catalog.find_document_by_id(&self.paths, document_id)?;
+        self.catalog.ensure_document_available(&document)?;
+        let document_path = self.resolved_document_path(&document)?;
+        Ok(NormalizationJob {
+            document_id: document.id,
+            fingerprint: document.fingerprint,
+            document_path,
+            page_count: 0,
+        })
     }
 
     #[cfg(test)]
@@ -358,7 +385,8 @@ impl LibraryStore {
         zoom: f32,
         render_cache: Arc<Mutex<RenderCache>>,
     ) -> AppResult<RenderedPagePayload> {
-        let request = self.prepare_render_request(document_id, page_number, zoom)?;
+        let cache = crate::normalization::new_manifest_cache();
+        let request = self.prepare_render_request(document_id, page_number, zoom, &cache)?;
         Self::render_pdf_page_blocking(request, render_cache)
     }
 

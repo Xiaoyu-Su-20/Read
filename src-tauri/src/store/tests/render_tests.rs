@@ -2,6 +2,15 @@ use std::fs;
 
 use tempfile::tempdir;
 
+use crate::{
+    models::RenderVariant,
+    normalization::manifest::{
+        CanonicalFrame, DocumentNormalizationManifest, NormalizationRect, NormalizationStatus,
+        PageClassification, PageNormalizationEntry, NORMALIZATION_ALGORITHM_VERSION,
+        NORMALIZATION_SCHEMA_VERSION,
+    },
+};
+
 use super::{
     super::{LibraryStore, DEFAULT_COLLECTION_ID, MAX_RENDER_CACHE_ENTRIES},
     support::{create_render_cache, write_valid_pdf, write_valid_pdf_pages},
@@ -69,7 +78,74 @@ fn render_pdf_page_reuses_cached_file() {
 
     assert_eq!(first.cache_key, second.cache_key);
     assert_eq!(second.page_number, 1);
+    assert_eq!(second.render_variant, RenderVariant::Raw);
     assert_eq!(cached_contents, b"sentinel");
+}
+
+#[test]
+fn render_pdf_page_uses_ready_normalization_manifest() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("normalized.pdf");
+    write_valid_pdf(&source, "Normalize me");
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let manifest = DocumentNormalizationManifest {
+        document_id: record.id.clone(),
+        fingerprint: record.fingerprint.clone(),
+        schema_version: NORMALIZATION_SCHEMA_VERSION,
+        algorithm_version: NORMALIZATION_ALGORITHM_VERSION.to_string(),
+        status: NormalizationStatus::Ready,
+        page_count: 1,
+        created_at: "now".to_string(),
+        updated_at: "now".to_string(),
+        completed_at: Some("now".to_string()),
+        cache_token: Some("normalization-test".to_string()),
+        canonical_frame: Some(CanonicalFrame {
+            width: 220.0,
+            height: 240.0,
+            anchor_policy: "topCenter".to_string(),
+            safe_padding: 10.0,
+            background_gray: 245,
+        }),
+        pages: vec![PageNormalizationEntry {
+            page_number: 1,
+            source_crop_box: NormalizationRect {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 200.0,
+            },
+            rotation: 0,
+            scale: 1.0,
+            offset_x: 10.0,
+            offset_y: 10.0,
+            classification: PageClassification::Body,
+            confidence: 0.95,
+        }],
+        failure: None,
+    };
+    fs::write(
+        app_dir
+            .join("page-normalization")
+            .join(format!("{}.json", record.id)),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let rendered = store
+        .render_pdf_page(&record.id, 1, 1.0, create_render_cache())
+        .unwrap();
+
+    assert_eq!(rendered.render_variant, RenderVariant::Normalized);
+    assert_eq!(
+        rendered.normalization_token.as_deref(),
+        Some("normalization-test")
+    );
+    assert_eq!((rendered.width, rendered.height), (220, 240));
+    assert!(rendered.cache_key.contains("normalization-test"));
 }
 
 #[test]
@@ -105,11 +181,23 @@ fn render_cache_evicts_oldest_entries_beyond_the_limit() {
             zoom: 1.0,
             cache_key: format!("doc:{page_number}:1.00"),
             image_path: image_path.clone(),
+            normalization: None,
         };
 
         let evicted_paths = {
             let mut cache = render_cache.lock().unwrap();
-            cache.insert(&request, 600, 800)
+            cache.insert(
+                &request,
+                600,
+                800,
+                crate::models::RenderVariant::Raw,
+                None,
+                crate::models::TextLayerTransform {
+                    source_width: 600.0,
+                    source_height: 800.0,
+                    matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                },
+            )
         };
 
         previous_paths.push(image_path);

@@ -3,6 +3,7 @@ import type { RenderedPagePayload } from "../types";
 export type CachedRenderedPage = RenderedPagePayload & {
   imageUrl: string;
   requestKey: string;
+  logicalKey: string;
 };
 
 export function makePageCacheKey(documentId: string, pageNumber: number, zoom = 1) {
@@ -26,8 +27,21 @@ export function createPageCache(maxEntries: number) {
       entries.set(key, cached);
       return cached;
     },
+    getByLogicalKey(logicalKey: string) {
+      const match = [...entries.entries()].find(([, page]) => page.logicalKey === logicalKey);
+      if (!match) {
+        return undefined;
+      }
+      const [key, page] = match;
+      entries.delete(key);
+      entries.set(key, page);
+      return page;
+    },
     has(key: string) {
       return entries.has(key);
+    },
+    hasLogicalKey(logicalKey: string) {
+      return [...entries.values()].some((page) => page.logicalKey === logicalKey);
     },
     keys() {
       return [...entries.keys()];

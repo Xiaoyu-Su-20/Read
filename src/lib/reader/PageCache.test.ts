@@ -17,7 +17,11 @@ describe("PageCache helpers", () => {
       width: 612,
       height: 792,
       cacheKey: "doc:1",
-      requestKey: "doc:1"
+      requestKey: "doc:1",
+      logicalKey: "doc:1",
+      renderVariant: "raw",
+      normalizationToken: null,
+      textLayerTransform: { sourceWidth: 612, sourceHeight: 792, matrix: [1, 0, 0, 1, 0, 0] }
     });
     cache.set("doc:2", {
       imagePath: "C:/Reader/rendered-pages/2.jpg",
@@ -26,7 +30,11 @@ describe("PageCache helpers", () => {
       width: 612,
       height: 792,
       cacheKey: "doc:2",
-      requestKey: "doc:2"
+      requestKey: "doc:2",
+      logicalKey: "doc:2",
+      renderVariant: "raw",
+      normalizationToken: null,
+      textLayerTransform: { sourceWidth: 612, sourceHeight: 792, matrix: [1, 0, 0, 1, 0, 0] }
     });
 
     expect(cache.get("doc:1")?.pageNumber).toBe(1);
@@ -38,10 +46,15 @@ describe("PageCache helpers", () => {
       width: 612,
       height: 792,
       cacheKey: "doc:3",
-      requestKey: "doc:3"
+      requestKey: "doc:3",
+      logicalKey: "doc:3",
+      renderVariant: "raw",
+      normalizationToken: null,
+      textLayerTransform: { sourceWidth: 612, sourceHeight: 792, matrix: [1, 0, 0, 1, 0, 0] }
     });
 
     expect(cache.get("doc:2")).toBeUndefined();
     expect(cache.keys()).toEqual(["doc:1", "doc:3"]);
+    expect(cache.getByLogicalKey("doc:3")?.cacheKey).toBe("doc:3");
   });
 });

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use crate::models::RenderedPagePayload;
+use crate::models::{RenderVariant, RenderedPagePayload, TextLayerTransform};
 
 use super::PageRenderRequest;
 
@@ -15,6 +15,9 @@ struct RenderCacheEntry {
     width: u32,
     height: u32,
     access_order: u64,
+    render_variant: RenderVariant,
+    normalization_token: Option<String>,
+    text_layer_transform: TextLayerTransform,
 }
 
 #[derive(Debug, Default)]
@@ -53,10 +56,21 @@ impl RenderCache {
             width: entry.width,
             height: entry.height,
             cache_key: entry.cache_key.clone(),
+            render_variant: entry.render_variant,
+            normalization_token: entry.normalization_token.clone(),
+            text_layer_transform: entry.text_layer_transform.clone(),
         })
     }
 
-    pub fn insert(&mut self, request: &PageRenderRequest, width: u32, height: u32) -> Vec<PathBuf> {
+    pub fn insert(
+        &mut self,
+        request: &PageRenderRequest,
+        width: u32,
+        height: u32,
+        render_variant: RenderVariant,
+        normalization_token: Option<String>,
+        text_layer_transform: TextLayerTransform,
+    ) -> Vec<PathBuf> {
         let access_order = self.next_access_order();
         let mut paths_to_remove = Vec::new();
 
@@ -70,6 +84,9 @@ impl RenderCache {
                 width,
                 height,
                 access_order,
+                render_variant,
+                normalization_token,
+                text_layer_transform,
             },
         ) {
             if previous.image_path != request.image_path {

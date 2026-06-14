@@ -1391,6 +1391,11 @@ button {
   --min-font-size-inv: calc(1 / var(--min-font-size));
 }
 
+.reader-page__text-content {
+  position: absolute;
+  inset: 0 auto auto 0;
+}
+
 .reader-page__text-layer.highlighting {
   touch-action: none;
 }
@@ -1403,7 +1408,7 @@ button {
   transform-origin: 0% 0%;
 }
 
-.reader-page__text-layer > :not(.markedContent),
+.reader-page__text-content > :not(.markedContent),
 .reader-page__text-layer .markedContent span:not(.markedContent) {
   z-index: 1;
   --font-height: 0;

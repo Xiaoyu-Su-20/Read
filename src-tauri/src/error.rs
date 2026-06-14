@@ -18,4 +18,6 @@ pub enum AppError {
     InvalidInput(String),
     #[error("Render error: {0}")]
     Render(String),
+    #[error("Normalization error: {0}")]
+    Normalization(String),
 }

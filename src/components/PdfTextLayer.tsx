@@ -1,5 +1,5 @@
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
-import { memo, useEffect, useRef, useState, type CSSProperties } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { debugAction, debugError } from "../lib/debugLog";
 import {
@@ -10,13 +10,14 @@ import {
   type PdfSelectionLike,
   type PdfTextRunSnapshot
 } from "../lib/reader/PdfCopyNormalizer";
-import type { PageTextLayerData } from "../lib/types";
+import type { PageTextLayerData, TextLayerTransform } from "../lib/types";
 
 type PdfTextLayerProps = {
   pageNumber: number;
   textLayer: PageTextLayerData | null;
   renderedWidth: number;
   renderedHeight: number;
+  renderTransform?: TextLayerTransform;
 };
 
 type TextLayerCopyEvent = Pick<ClipboardEvent, "clipboardData" | "preventDefault" | "stopPropagation">;
@@ -324,19 +325,34 @@ const PdfTextLayer = memo(function PdfTextLayer({
   pageNumber,
   textLayer,
   renderedWidth,
-  renderedHeight
+  renderedHeight,
+  renderTransform
 }: PdfTextLayerProps) {
+  const resolvedRenderTransform = useMemo<TextLayerTransform>(
+    () =>
+      renderTransform ?? {
+        sourceWidth: renderedWidth,
+        sourceHeight: renderedHeight,
+        matrix: [1, 0, 0, 1, 0, 0]
+      },
+    [renderTransform, renderedHeight, renderedWidth]
+  );
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const textRunsRef = useRef<PdfTextRunSnapshot[]>([]);
   const [textLayerState, setTextLayerState] = useState<TextLayerRenderState>(() =>
     getTextLayerRenderState(pageNumber, textLayer)
   );
   const runtimeScale = textLayer
-    ? deriveTextLayerScale(textLayer, renderedWidth, renderedHeight)
+    ? deriveTextLayerScale(
+        textLayer,
+        resolvedRenderTransform.sourceWidth,
+        resolvedRenderTransform.sourceHeight
+      )
     : 1;
 
   useEffect(() => {
-    const container = containerRef.current;
+    const container = contentRef.current;
     if (!container) {
       return;
     }
@@ -381,8 +397,8 @@ const PdfTextLayer = memo(function PdfTextLayer({
         container,
         viewport: createRuntimeTextLayerViewport(
           textLayer,
-          renderedWidth,
-          renderedHeight
+          resolvedRenderTransform.sourceWidth,
+          resolvedRenderTransform.sourceHeight
         ) as never
       }) as RuntimeTextLayerInstance;
       debugAction("reader.text-layer-render-start", {
@@ -464,23 +480,32 @@ const PdfTextLayer = memo(function PdfTextLayer({
         ...getContainerMetrics(container)
       });
     };
-  }, [pageNumber, renderedHeight, renderedWidth, textLayer]);
+  }, [pageNumber, resolvedRenderTransform, renderedHeight, renderedWidth, textLayer]);
 
   const layerStyle = {
     width: `${renderedWidth}px`,
-    height: `${renderedHeight}px`,
+    height: `${renderedHeight}px`
+  } as CSSProperties;
+  const [a, b, c, d, e, f] = resolvedRenderTransform.matrix;
+  const contentStyle = {
+    width: `${resolvedRenderTransform.sourceWidth}px`,
+    height: `${resolvedRenderTransform.sourceHeight}px`,
+    transform: `matrix(${a}, ${b}, ${c}, ${d}, ${e}, ${f})`,
+    transformOrigin: "0 0",
     ["--total-scale-factor"]: String(runtimeScale)
   } as CSSProperties;
 
   return (
     <div
       ref={containerRef}
-      className="reader-page__text-layer textLayer"
+      className="reader-page__text-layer"
       aria-label={`Text layer for page ${pageNumber}`}
       data-text-layer-page-number={textLayer?.pageNumber ?? ""}
       data-text-layer-state={textLayerState}
       style={layerStyle}
-    />
+    >
+      <div ref={contentRef} className="reader-page__text-content textLayer" style={contentStyle} />
+    </div>
   );
 });
 

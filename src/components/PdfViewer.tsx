@@ -152,6 +152,7 @@ const PdfViewer = memo(function PdfViewer({
                       textLayer={displayedPageTextLayer}
                       renderedWidth={displayedPage.width}
                       renderedHeight={displayedPage.height}
+                      renderTransform={displayedPage.textLayerTransform}
                     />
                   </>
                 ) : null}
