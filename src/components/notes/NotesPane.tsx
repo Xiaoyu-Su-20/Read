@@ -1,8 +1,29 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 import { logNoteDebugEvent } from "../../lib/api";
+import {
+  createDirectHeadingReference,
+  createOutlineHeadingReference,
+  createUserOutlineItemFromHeading,
+  dedupeOutlineItems,
+  findUserOutlineItemForHeading,
+  headingLevel,
+  headingTitle,
+  resolveSourceReferenceTarget,
+  scoreOutlineCandidates
+} from "../../lib/documentReferences";
 import { noteBlockText, parsePageLinkTargetInput } from "../../lib/notes";
-import type { NoteBlockType, NoteDocument, NoteNavigationItem, NotePageLinkNode, NoteRevealRequest } from "../../lib/types";
+import type {
+  DocumentState,
+  NoteBlockType,
+  NoteDocument,
+  NoteNavigationItem,
+  NotePageLinkNode,
+  NoteRevealRequest,
+  OutlineItem,
+  PdfNavigationTarget,
+  PdfOutlineItem
+} from "../../lib/types";
 import NotesContextMenu from "./context-menu/NotesContextMenu";
 import { toPanePoint } from "./context-menu/menuPlacement";
 import {
@@ -20,6 +41,11 @@ type NotesPaneProps = {
   onFlush: () => void | Promise<void>;
   onCopyAllText: () => Promise<void>;
   onGoToPage: (page: number) => void;
+  documentId: string | null;
+  outlineItems: OutlineItem[];
+  readerState: DocumentState | null;
+  onNavigateToTarget: (target: PdfNavigationTarget) => void;
+  onSetUserOutlineItems: (items: PdfOutlineItem[]) => void;
   currentPage: number | null;
   revealRequest: NoteRevealRequest | null;
 };
@@ -128,6 +154,11 @@ const NotesPane = memo(function NotesPane({
   onFlush,
   onCopyAllText,
   onGoToPage,
+  documentId,
+  outlineItems,
+  readerState,
+  onNavigateToTarget,
+  onSetUserOutlineItems,
   currentPage,
   revealRequest
 }: NotesPaneProps) {
@@ -170,6 +201,10 @@ const NotesPane = memo(function NotesPane({
     pageLinkId: string | null;
     value: string;
     error: string | null;
+  } | null>(null);
+  const [sectionPicker, setSectionPicker] = useState<{
+    blockId: string;
+    query: string;
   } | null>(null);
   const findMatches = useMemo(
     () => collectNoteFindMatches(note, findQuery),
@@ -293,6 +328,7 @@ const NotesPane = memo(function NotesPane({
     setRenamingTitle(false);
     setRenameDraft("");
     setPageLinkDialog(null);
+    setSectionPicker(null);
     setFindOpen(false);
   }
 
@@ -381,6 +417,135 @@ const NotesPane = memo(function NotesPane({
 
     onGoToPage(node.pdfPageIndex);
   }
+
+  function findHeadingBlock(blockId: string | null | undefined) {
+    const block = note?.blocks.find((candidate) => candidate.id === blockId) ?? null;
+    return block && headingLevel(block) ? block : null;
+  }
+
+  function setHeadingReference(
+    blockId: string,
+    reference: Parameters<NoteEditorHandle["setHeadingReference"]>[1]
+  ) {
+    const updated = editorRef.current?.setHeadingReference(blockId, reference);
+    if (!updated) {
+      showToast("Unable to update heading reference.");
+      return false;
+    }
+
+    return true;
+  }
+
+  function linkHeadingToCurrentPage() {
+    if (contextMenuState?.target !== "body" || !documentId || !currentPage) {
+      showToast("Open a document page before linking a heading.");
+      closeMenu();
+      return;
+    }
+
+    const block = findHeadingBlock(contextMenuState.blockId);
+    if (!block) {
+      closeMenu();
+      return;
+    }
+
+    setHeadingReference(
+      block.id,
+      createDirectHeadingReference({
+        documentId,
+        title: headingTitle(block),
+        pageNumber: currentPage
+      })
+    );
+    editorRef.current?.clearSelectedBlock();
+    closeMenu();
+  }
+
+  function openSectionPicker() {
+    if (contextMenuState?.target !== "body") {
+      return;
+    }
+
+    const block = findHeadingBlock(contextMenuState.blockId);
+    if (!block) {
+      closeMenu();
+      return;
+    }
+
+    setSectionPicker({
+      blockId: block.id,
+      query: headingTitle(block)
+    });
+    closeMenu();
+  }
+
+  function createSectionFromHeading() {
+    if (contextMenuState?.target !== "body" || !documentId || !currentPage) {
+      showToast("Open a document page before creating a section.");
+      closeMenu();
+      return;
+    }
+
+    const block = findHeadingBlock(contextMenuState.blockId);
+    if (!block) {
+      closeMenu();
+      return;
+    }
+
+    const title = headingTitle(block);
+    const currentUserOutlineItems = readerState?.userOutlineItems ?? [];
+    const existingUserOutlineItem = findUserOutlineItemForHeading({
+      items: currentUserOutlineItems,
+      documentId,
+      title,
+      pageNumber: currentPage
+    });
+    const userOutlineItem = existingUserOutlineItem ?? createUserOutlineItemFromHeading({
+      documentId,
+      title,
+      pageNumber: currentPage
+    });
+    onSetUserOutlineItems(dedupeOutlineItems([...currentUserOutlineItems, userOutlineItem]));
+    setHeadingReference(block.id, createOutlineHeadingReference(userOutlineItem));
+    editorRef.current?.clearSelectedBlock();
+    closeMenu();
+  }
+
+  function removeHeadingReference() {
+    if (contextMenuState?.target !== "body") {
+      return;
+    }
+
+    setHeadingReference(contextMenuState.blockId, null);
+    editorRef.current?.clearSelectedBlock();
+    closeMenu();
+  }
+
+  function handleHeadingReferenceOpen(
+    reference: NonNullable<NoteDocument["blocks"][number]["sourceReference"]>
+  ) {
+    const target = resolveSourceReferenceTarget(reference, outlineItems);
+    if (!target) {
+      showToast("This heading reference no longer has a page target.");
+      return;
+    }
+
+    onNavigateToTarget(target);
+  }
+
+  const sectionPickerBlock = sectionPicker ? findHeadingBlock(sectionPicker.blockId) : null;
+  const sectionPickerItems = useMemo(
+    () =>
+      sectionPicker && sectionPickerBlock
+        ? scoreOutlineCandidates({
+            outlineItems,
+            headingTitle: headingTitle(sectionPickerBlock),
+            currentPage,
+            query: sectionPicker.query
+          })
+        : [],
+    [currentPage, outlineItems, sectionPicker, sectionPickerBlock]
+  );
 
   useEffect(() => {
     closeMenu();
@@ -620,7 +785,9 @@ const NotesPane = memo(function NotesPane({
           : {
               target: "body",
               blockId: resolvedTarget.blockId,
+              blockType: resolvedTarget.blockType,
               canAddPageLink: resolvedTarget.canAddPageLink,
+              sourceReference: resolvedTarget.sourceReference,
               anchor
             };
 
@@ -809,6 +976,7 @@ const NotesPane = memo(function NotesPane({
                 void onFlush();
               }}
               onOpenPageLink={handlePageLinkOpen}
+              onOpenHeadingReference={handleHeadingReferenceOpen}
             />
           ) : (
             <div className="notes-pane__empty">
@@ -1091,6 +1259,75 @@ const NotesPane = memo(function NotesPane({
         </div>
       ) : null}
 
+      {sectionPicker ? (
+        <div
+          className="notes-inline-dialog notes-inline-dialog--section-picker"
+          role="dialog"
+          aria-label="Link heading to PDF section"
+        >
+          <div className="notes-inline-dialog__header">
+            <strong className="notes-inline-dialog__title">Link Heading</strong>
+            <button
+              className="notes-inline-dialog__close"
+              type="button"
+              aria-label="Close section picker"
+              onClick={() => {
+                setSectionPicker(null);
+              }}
+            >
+              x
+            </button>
+          </div>
+          <p className="notes-inline-dialog__help">Choose a PDF section for this heading.</p>
+          <input
+            className="notes-inline-dialog__input"
+            type="text"
+            value={sectionPicker.query}
+            placeholder="Search sections"
+            spellCheck={false}
+            autoFocus
+            onChange={(event) => {
+              setSectionPicker((current) =>
+                current ? { ...current, query: event.target.value } : current
+              );
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setSectionPicker(null);
+              }
+            }}
+          />
+          <div className="notes-section-picker">
+            {sectionPickerItems.length === 0 ? (
+              <p className="notes-popover__empty">No matching PDF sections.</p>
+            ) : (
+              sectionPickerItems.slice(0, 12).map(({ item, depth }) => (
+                <button
+                  key={item.id}
+                  className="notes-section-picker__item"
+                  type="button"
+                  style={{ paddingLeft: `${12 + depth * 14}px` }}
+                  onClick={() => {
+                    if (!sectionPickerBlock) {
+                      return;
+                    }
+
+                    setHeadingReference(sectionPickerBlock.id, createOutlineHeadingReference(item));
+                    setSectionPicker(null);
+                    window.requestAnimationFrame(() => {
+                      editorRef.current?.focus();
+                    });
+                  }}
+                >
+                  <span>{item.title}</span>
+                  <small>{item.page ? `Page ${item.page}` : item.externalUrl ? "External" : "No target"}</small>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      ) : null}
+
       {toastMessage ? <div className="notes-pane__toast">{toastMessage}</div> : null}
 
       <NotesContextMenu
@@ -1126,6 +1363,10 @@ const NotesPane = memo(function NotesPane({
           });
           closeMenu();
         }}
+        onLinkHeadingToCurrentPage={linkHeadingToCurrentPage}
+        onLinkHeadingToSection={openSectionPicker}
+        onCreateSectionFromHeading={createSectionFromHeading}
+        onRemoveHeadingReference={removeHeadingReference}
         onOpenPage={() => {
           if (contextMenuState?.target !== "page-link") {
             return;

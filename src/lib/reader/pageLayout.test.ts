@@ -14,9 +14,11 @@ describe("pageLayout", () => {
 
   it("eases centering down as the page approaches overflow", () => {
     const centeredOffset = (1000 - 900) / 2;
-    const expected = centeredOffset * smoothstep((1000 - 900) / PAGE_CENTER_TRANSITION_BAND_PX);
+    const expected = Math.floor(
+      centeredOffset * smoothstep((1000 - 900) / PAGE_CENTER_TRANSITION_BAND_PX)
+    );
 
-    expect(computePageAxisOffset(1000, 900)).toBeCloseTo(expected, 5);
+    expect(computePageAxisOffset(1000, 900)).toBe(expected);
     expect(computePageAxisOffset(1000, 900)).toBeLessThan(centeredOffset);
   });
 

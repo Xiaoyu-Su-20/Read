@@ -32,6 +32,45 @@ export type ReaderPreferences = {
   fitMode: string;
 };
 
+export type PdfNavigationFit = "xyz" | "fit" | "fitH" | "fitV" | "fitR" | "unknown";
+
+export type PdfNavigationTarget = {
+  documentId: string;
+  pageIndex: number;
+  x?: number | null;
+  y?: number | null;
+  zoom?: number | null;
+  fit?: PdfNavigationFit | null;
+};
+
+export type PdfOutlineSource = "embedded" | "user";
+
+export type PdfOutlineItem = {
+  id: string;
+  title: string;
+  source: PdfOutlineSource;
+  sourceId?: string | null;
+  target: PdfNavigationTarget | null;
+  page: number | null;
+  externalUrl?: string | null;
+  bold?: boolean;
+  italic?: boolean;
+  color?: [number, number, number] | null;
+  items: PdfOutlineItem[];
+  createdAt?: string | null;
+};
+
+export type DocumentSourceReference = {
+  id: string;
+  documentId: string | null;
+  kind: "direct" | "outline";
+  outlineItemId: string | null;
+  outlineSource: PdfOutlineSource | null;
+  title: string;
+  target: PdfNavigationTarget | null;
+  createdAt: string;
+};
+
 export type DocumentState = {
   version: number;
   documentId: string;
@@ -41,6 +80,7 @@ export type DocumentState = {
   zoom: number;
   bookmarks: Bookmark[];
   preferences: ReaderPreferences;
+  userOutlineItems: PdfOutlineItem[];
 };
 
 export type DocumentPayload = {
@@ -88,12 +128,7 @@ export type FolderTreeNode = {
   documents: DocumentRecord[];
 };
 
-export type OutlineItem = {
-  id: string;
-  title: string;
-  page: number | null;
-  items: OutlineItem[];
-};
+export type OutlineItem = PdfOutlineItem;
 
 export type ViewerSnapshot = {
   currentPage: number;
@@ -132,6 +167,7 @@ export type NoteBlock = {
   id: string;
   type: NoteBlockType;
   children: NoteInlineNode[];
+  sourceReference?: DocumentSourceReference | null;
   spans?: NoteSpan[];
 };
 
@@ -179,6 +215,7 @@ export type NoteHistoryMergeKey =
   | "insert-page-link"
   | "edit-page-link"
   | "remove-page-link"
+  | "heading-reference"
   | "format"
   | "turn-into";
 
@@ -186,12 +223,14 @@ export type ViewerApi = {
   nextPage: () => void;
   previousPage: () => void;
   goToPage: (page: number) => void;
+  navigateToTarget: (target: PdfNavigationTarget) => void;
   searchPort: import("../search/model/SearchRequest").PdfSearchPort;
   jumpToOutline: (item: OutlineItem) => void;
   getCurrentPage: () => number;
   getPageCount: () => number;
   getReaderState: () => DocumentState | null;
   setBookmarks: (bookmarks: Bookmark[]) => void;
+  setUserOutlineItems: (items: PdfOutlineItem[]) => void;
 };
 
 export type NoteRevealRequest = {

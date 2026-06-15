@@ -62,6 +62,7 @@ fn get_or_create_note_for_book_returns_most_recent_existing_note() {
                     bold: false,
                     italic: false,
                 })],
+                source_reference: None,
                 spans: Vec::new(),
             }],
         })
@@ -102,6 +103,7 @@ fn save_note_updates_note_file_and_index_metadata() {
                         italic: false,
                     }),
                 ],
+                source_reference: None,
                 spans: Vec::new(),
             }],
             ..note
@@ -149,6 +151,7 @@ fn save_note_supports_standalone_notes() {
                     bold: false,
                     italic: true,
                 })],
+                source_reference: None,
                 spans: vec![NoteSpan {
                     text: "Freeform".to_string(),
                     bold: false,
@@ -191,6 +194,7 @@ fn save_note_migrates_legacy_spans_into_children() {
                 id: "legacy".to_string(),
                 r#type: crate::models::NoteBlockType::Paragraph,
                 children: Vec::new(),
+                source_reference: None,
                 spans: vec![NoteSpan {
                     text: "(p. 45)".to_string(),
                     bold: false,

@@ -29,6 +29,21 @@ export function findBookmarkAtPage(bookmarks: Bookmark[], page: number) {
   return bookmarks.find((bookmark) => bookmark.page === page) ?? null;
 }
 
+export function dedupeBookmarks(bookmarks: Bookmark[]) {
+  const seenPages = new Set<number>();
+  const result: Bookmark[] = [];
+
+  for (const bookmark of bookmarks) {
+    if (seenPages.has(bookmark.page)) {
+      continue;
+    }
+    seenPages.add(bookmark.page);
+    result.push(bookmark);
+  }
+
+  return result;
+}
+
 export function formatShortcut(shortcut: string[]) {
   return shortcut.join(" ");
 }

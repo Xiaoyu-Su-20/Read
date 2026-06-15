@@ -39,6 +39,7 @@ import {
   selectTextMatchInBlock,
   selectPageLinkToken,
   insertPageLinkAtRange,
+  updateBlockSourceReference,
   updatePageLinkTarget
 } from "../../lib/noteEditorDom";
 import { logNoteDebugEvent } from "../../lib/api";
@@ -52,6 +53,7 @@ import {
 } from "../../lib/noteHistory";
 import type {
   NoteBlockType,
+  DocumentSourceReference,
   NoteDocument,
   NoteHistoryMergeKey,
   NotePageLinkNode
@@ -61,7 +63,9 @@ export type NoteEditorContextTarget =
   | {
       target: "body";
       blockId: string;
+      blockType: NoteBlockType;
       canAddPageLink: boolean;
+      sourceReference: DocumentSourceReference | null;
     }
   | {
       target: "page-link";
@@ -86,6 +90,7 @@ export type NoteEditorHandle = {
   editPageLink: (pageLinkId: string, pageNumber: number) => PageLinkCommandResult;
   removePageLink: (pageLinkId: string) => boolean;
   copyPageReference: (pageLinkId: string) => void;
+  setHeadingReference: (blockId: string, sourceReference: DocumentSourceReference | null) => boolean;
   resolveContextMenuTargetAtPoint: (x: number, y: number) => NoteEditorContextTarget | null;
   clearSelectedBlock: () => void;
   selectTextMatch: (blockId: string, query: string, occurrenceIndex: number) => boolean;
@@ -100,10 +105,11 @@ type NoteEditorProps = {
   onChangeBlocks: (blocks: NoteDocument["blocks"]) => void;
   onBlur: () => void | Promise<void>;
   onOpenPageLink: (node: NotePageLinkNode) => void;
+  onOpenHeadingReference: (reference: DocumentSourceReference) => void;
 };
 
 const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEditor(
-  { note, loading, currentPage, onChangeBlocks, onBlur, onOpenPageLink },
+  { note, loading, currentPage, onChangeBlocks, onBlur, onOpenPageLink, onOpenHeadingReference },
   ref
 ) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -314,6 +320,19 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     };
   }
 
+  function readSourceReference(block: HTMLElement) {
+    const encoded = block.dataset.sourceReference;
+    if (!encoded) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(decodeURIComponent(encoded)) as DocumentSourceReference;
+    } catch {
+      return null;
+    }
+  }
+
   function resolveContextMenuTargetAtPoint(x: number, y: number) {
     if (!bodyRef.current) {
       return null;
@@ -371,6 +390,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       return null;
     }
     const canAddPageLink = pointResolvedContentBlock.dataset.blockType === "paragraph";
+    const blockType = (resolvedBlock.dataset.blockType ?? "paragraph") as NoteBlockType;
 
     pendingPageLinkRangeRef.current = canAddPageLink
       ? captureBlockEndRange(bodyRef.current, pointResolvedContentBlock)
@@ -391,7 +411,9 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     return {
       target: "body",
       blockId,
-      canAddPageLink
+      blockType,
+      canAddPageLink,
+      sourceReference: readSourceReference(resolvedBlock)
     } satisfies NoteEditorContextTarget;
   }
 
@@ -583,6 +605,19 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         }
         copyPageLinkReference(bodyRef.current, pageLinkId);
       },
+      setHeadingReference(blockId, sourceReference) {
+        if (!bodyRef.current || !note) {
+          return false;
+        }
+
+        const updated = updateBlockSourceReference(bodyRef.current, blockId, sourceReference, note.bookId);
+        if (!updated) {
+          return false;
+        }
+
+        syncBlocksFromDom("heading-reference");
+        return true;
+      },
       clearSelectedBlock() {
         updateSelectedBlock(null);
         updateSelectedPageLink(null);
@@ -607,7 +642,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         return performRedo();
       }
     }),
-    [currentPage, note, onChangeBlocks, onOpenPageLink]
+    [currentPage, note, onChangeBlocks, onOpenHeadingReference, onOpenPageLink]
   );
 
   useEffect(() => {
@@ -696,6 +731,16 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
             return;
           }
 
+          const headingReferenceTarget =
+            event.target instanceof Element
+              ? event.target.closest<HTMLElement>("[data-heading-reference-indicator='true']")
+              : null;
+          if (headingReferenceTarget) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+
           const target = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("[data-inline-type='page-link']") : null;
           if (!target) {
             if (selectedPageLinkIdRef.current) {
@@ -715,6 +760,21 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         }}
         onClick={(event) => {
           if (!bodyRef.current) {
+            return;
+          }
+
+          const headingReferenceTarget =
+            event.target instanceof Element
+              ? event.target.closest<HTMLElement>("[data-heading-reference-indicator='true']")
+              : null;
+          if (headingReferenceTarget) {
+            const block = headingReferenceTarget.closest<HTMLElement>("[data-block-id]");
+            const reference = block ? readSourceReference(block) : null;
+            if (reference) {
+              event.preventDefault();
+              event.stopPropagation();
+              onOpenHeadingReference(reference);
+            }
             return;
           }
 

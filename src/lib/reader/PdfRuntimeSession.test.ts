@@ -108,13 +108,24 @@ function createRuntimeFixture() {
       if (destination === "chapter-1") {
         return [0];
       }
+      if (destination === "chapter-2") {
+        return [{ id: "page-2" }, { name: "XYZ" }, 12, 34, 1.5];
+      }
       return null;
     }),
-    getPageIndex: vi.fn(async () => 0),
+    getPageIndex: vi.fn(async (reference: { id?: string }) =>
+      reference.id === "page-2" ? 1 : 0
+    ),
     getOutline: vi.fn(async () => [
       {
         title: "Chapter 1",
         dest: "chapter-1",
+        bold: true,
+        items: []
+      },
+      {
+        title: "Chapter 2",
+        dest: "chapter-2",
         items: []
       }
     ]),
@@ -163,6 +174,19 @@ describe("PdfRuntimeSession", () => {
     const plainText = await fixture.session.getPagePlainText(2);
 
     expect(outline[0]?.page).toBe(1);
+    expect(outline[0]?.source).toBe("embedded");
+    expect(outline[0]?.target).toEqual({
+      documentId: "doc-1",
+      pageIndex: 0
+    });
+    expect(outline[1]?.target).toEqual({
+      documentId: "doc-1",
+      pageIndex: 1,
+      fit: "xyz",
+      x: 12,
+      y: 34,
+      zoom: 1.5
+    });
     expect(textLayer.pageNumber).toBe(1);
     expect(textLayer.viewportWidth).toBe(100);
     expect(plainText).toBe("beta");

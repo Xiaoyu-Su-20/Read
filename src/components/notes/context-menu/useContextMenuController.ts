@@ -1,3 +1,4 @@
+import type { DocumentSourceReference, NoteBlockType } from "../../../lib/types";
 import {
   useCallback,
   useEffect,
@@ -21,7 +22,9 @@ export type NotesContextMenuState =
   | {
       target: "body";
       blockId: string;
+      blockType: NoteBlockType;
       canAddPageLink: boolean;
+      sourceReference: DocumentSourceReference | null;
       anchor: PanePoint;
     }
   | {

@@ -1,15 +1,24 @@
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import CommandPalette from "./components/CommandPalette";
 import CollectionView from "./components/CollectionView";
+import DisplaySettingsPopover from "./components/DisplaySettingsPopover";
 import OutlineOverlay from "./components/OutlineOverlay";
 import ReaderWorkspace from "./components/ReaderWorkspace";
 import UnifiedSearchOverlay from "./search/components/UnifiedSearchOverlay";
 import { createUnifiedSearchController } from "./search";
 import { openLibraryFolder } from "./lib/api";
 import { isPassiveStatusMessage } from "./lib/app/helpers";
+import {
+  resetActiveDocumentAppearanceProfile,
+  resetAllDocumentAppearanceSettings,
+  toggleSharedDocumentAppearancePaper,
+  updateDocumentAppearanceMode,
+  updateDocumentAppearancePaperColor
+} from "./lib/app/settingsRegistry";
+import { useAppSettings } from "./lib/app/useAppSettings";
 import { useCommandRegistry } from "./lib/app/useCommandRegistry";
 import { useLibraryFlows } from "./lib/app/useLibraryFlows";
 import { useNotesController } from "./lib/app/useNotesController";
@@ -67,14 +76,20 @@ export default function App() {
     activeDocument: workspace.activeDocument,
     setStatusMessage: workspace.setStatusMessage
   });
+  const { settings, selectors, setSetting } = useAppSettings();
   const palette = usePaletteController();
   const searchController = useMemo(() => createUnifiedSearchController(), []);
   const [noteRevealRequest, setNoteRevealRequest] = useState<import("./lib/types").NoteRevealRequest | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsContainerRef = useRef<HTMLDivElement | null>(null);
   const searchableDocuments = useMemo(
     () => workspace.libraryTree ? collectDocuments(workspace.libraryTree) : [],
     [workspace.libraryTree]
   );
+  const viewerDisplayConfig = selectors.viewerDisplayConfig(settings);
+  const readerControlsEnabled =
+    workspace.workspaceMode === "reader" && workspace.activeDocument !== null;
 
   useEffect(() => {
     searchController.setContext({
@@ -98,6 +113,7 @@ export default function App() {
   function openUnifiedSearch() {
     palette.closePalette();
     setOutlineOpen(false);
+    setSettingsOpen(false);
     searchController.open();
   }
   const flows = useLibraryFlows({
@@ -243,6 +259,11 @@ export default function App() {
       }
 
       if (event.key === "Escape") {
+        if (settingsOpen) {
+          setSettingsOpen(false);
+          return;
+        }
+
         palette.closePalette();
         searchController.close();
         setOutlineOpen(false);
@@ -259,8 +280,33 @@ export default function App() {
     palette.openCommands,
     palette.paletteOpen,
     searchController,
+    settingsOpen,
     workspace.workspaceMode
   ]);
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      return;
+    }
+
+    function closeOnPointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (settingsContainerRef.current?.contains(target)) {
+        return;
+      }
+
+      setSettingsOpen(false);
+    }
+
+    window.addEventListener("pointerdown", closeOnPointerDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnPointerDown, true);
+    };
+  }, [settingsOpen]);
 
   useEffect(() => {
     function suppressNativeContextMenu(event: MouseEvent) {
@@ -369,26 +415,85 @@ export default function App() {
               <path d="m16 16 4 4" />
             </ChromeIcon>
           </button>
-          <button className="sidebar__icon-button" type="button" aria-label="Bookmarks">
-            <ChromeIcon label="Bookmarks">
+          <button
+            className={`sidebar__icon-button${outlineOpen ? " sidebar__icon-button--active" : ""}`}
+            type="button"
+            aria-label="Marks"
+            onClick={() => setOutlineOpen((value) => !value)}
+          >
+            <ChromeIcon label="Marks">
               <path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" />
             </ChromeIcon>
           </button>
         </div>
 
-        <button className="sidebar__icon-button sidebar__icon-button--bottom" type="button" aria-label="Settings">
-          <ChromeIcon label="Settings">
-            <circle cx="12" cy="12" r="3.2" />
-            <path d="M12 2.8v2.1" />
-            <path d="M12 19.1v2.1" />
-            <path d="m4.9 4.9 1.5 1.5" />
-            <path d="m17.6 17.6 1.5 1.5" />
-            <path d="M2.8 12h2.1" />
-            <path d="M19.1 12h2.1" />
-            <path d="m4.9 19.1 1.5-1.5" />
-            <path d="m17.6 6.4 1.5-1.5" />
-          </ChromeIcon>
-        </button>
+        <div ref={settingsContainerRef} className="sidebar__bottom-slot" data-no-window-drag>
+          {settingsOpen ? (
+            <DisplaySettingsPopover
+              id="display-settings-popover"
+              controlsDisabled={!readerControlsEnabled}
+              settings={settings}
+              onChangeDocumentAppearanceMode={(appearance) => {
+                setSetting("documentAppearance", (currentValue) =>
+                  updateDocumentAppearanceMode(currentValue, appearance)
+                );
+              }}
+              onChangeDocumentPaperColor={(value) => {
+                setSetting("documentAppearance", (currentValue) =>
+                  updateDocumentAppearancePaperColor(currentValue, value)
+                );
+              }}
+              onResetActiveDocumentAppearance={() => {
+                setSetting("documentAppearance", (currentValue) =>
+                  resetActiveDocumentAppearanceProfile(currentValue)
+                );
+              }}
+              onResetAllDocumentAppearance={() => {
+                setSetting("documentAppearance", (currentValue) =>
+                  resetAllDocumentAppearanceSettings(currentValue.mode)
+                );
+              }}
+              onToggleSharedDocumentPaperColor={() => {
+                setSetting("documentAppearance", (currentValue) =>
+                  toggleSharedDocumentAppearancePaper(currentValue)
+                );
+              }}
+              onChangeThemeColor={(key, value) => {
+                setSetting("themeProfile", (currentValue) => ({
+                  ...currentValue,
+                  [key]: value
+                }));
+              }}
+              onToggleSetting={(key) => {
+                setSetting(key, (currentValue) => !currentValue);
+              }}
+            />
+          ) : null}
+          <button
+            className={`sidebar__icon-button sidebar__icon-button--bottom${
+              settingsOpen ? " sidebar__icon-button--active" : ""
+            }`}
+            type="button"
+            aria-label="Settings"
+            aria-controls="display-settings-popover"
+            aria-expanded={settingsOpen}
+            onClick={() => {
+              setSettingsOpen((currentValue) => !currentValue);
+            }}
+          >
+            <ChromeIcon label="Settings">
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="M12 2.8v2.1" />
+              <path d="M12 19.1v2.1" />
+              <path d="m4.9 4.9 1.5 1.5" />
+              <path d="m17.6 17.6 1.5 1.5" />
+              <path d="M2.8 12h2.1" />
+              <path d="M19.1 12h2.1" />
+              <path d="m4.9 19.1 1.5-1.5" />
+              <path d="m17.6 6.4 1.5-1.5" />
+            </ChromeIcon>
+          </button>
+        </div>
       </nav>
 
       <header className="topbar" onMouseDown={handleTopbarMouseDown}>
@@ -499,11 +604,20 @@ export default function App() {
             onGoToNotePage={workspace.goToReaderPage}
             currentReaderPage={workspace.viewerSnapshot.currentPage}
             noteRevealRequest={noteRevealRequest}
+            outlineItems={workspace.outlineItems}
+            readerState={workspace.readerState}
+            onNavigateToTarget={(target) => {
+              workspace.viewerApiRef.current?.navigateToTarget(target);
+            }}
+            onSetUserOutlineItems={(items) => {
+              workspace.viewerApiRef.current?.setUserOutlineItems(items);
+            }}
             onSnapshotChange={workspace.handleViewerSnapshotChange}
             onOutlineChange={workspace.handleViewerOutlineChange}
             onStateChange={workspace.handleViewerStateChange}
             onStatusChange={workspace.handleViewerStatusChange}
             registerApi={workspace.registerViewerApi}
+            viewerDisplayConfig={viewerDisplayConfig}
           />
         )}
       </section>
@@ -518,9 +632,14 @@ export default function App() {
       <OutlineOverlay
         open={outlineOpen}
         items={workspace.outlineItems}
+        bookmarks={workspace.readerState?.bookmarks ?? []}
         onClose={() => setOutlineOpen(false)}
         onSelect={(item) => {
           workspace.viewerApiRef.current?.jumpToOutline(item);
+          setOutlineOpen(false);
+        }}
+        onSelectBookmark={(bookmark) => {
+          workspace.viewerApiRef.current?.goToPage(bookmark.page);
           setOutlineOpen(false);
         }}
       />

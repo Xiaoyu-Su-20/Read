@@ -6,7 +6,7 @@ use super::{
     super::{LibraryStore, DEFAULT_COLLECTION_ID},
     support::write_sample_pdf,
 };
-use crate::models::DocumentState;
+use crate::models::{DocumentState, PdfNavigationTarget, PdfOutlineItem, PdfOutlineSource};
 
 #[test]
 fn rejects_state_for_wrong_document_id() {
@@ -99,4 +99,53 @@ fn save_document_state_does_not_rewrite_library_index() {
 
     let after = fs::metadata(&index_path).unwrap().modified().unwrap();
     assert_eq!(after, before);
+}
+
+#[test]
+fn save_document_state_persists_user_outline_items() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("outline-state.pdf");
+    write_sample_pdf(&source, "outline-state");
+
+    let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+
+    let mut state = DocumentState::new(record.id.clone(), record.fingerprint.clone());
+    state.user_outline_items = vec![PdfOutlineItem {
+        id: "user:outline-1".to_string(),
+        title: "My Section".to_string(),
+        source: PdfOutlineSource::User,
+        source_id: None,
+        target: Some(PdfNavigationTarget {
+            document_id: record.id.clone(),
+            page_index: 2,
+            x: None,
+            y: None,
+            zoom: None,
+            fit: Some("xyz".to_string()),
+        }),
+        page: Some(3),
+        external_url: None,
+        bold: false,
+        italic: false,
+        color: None,
+        items: Vec::new(),
+        created_at: Some("2026-06-14T00:00:00Z".to_string()),
+    }];
+
+    store.save_document_state(&record.id, state).unwrap();
+    let reopened = store.open_document(&record.id).unwrap();
+
+    assert_eq!(reopened.state.user_outline_items.len(), 1);
+    assert_eq!(reopened.state.user_outline_items[0].title, "My Section");
+    assert_eq!(
+        reopened.state.user_outline_items[0]
+            .target
+            .as_ref()
+            .unwrap()
+            .page_index,
+        2
+    );
 }

@@ -5,8 +5,9 @@ use uuid::Uuid;
 use crate::{
     error::AppResult,
     models::{
-        DocumentRecord, NoteBlock, NoteBlockType, NoteDocument, NoteIndex, NoteIndexEntry,
-        NoteInlineNode, NotePageLinkNode, NoteTextNode,
+        DocumentRecord, DocumentSourceReference, DocumentSourceReferenceKind, NoteBlock,
+        NoteBlockType, NoteDocument, NoteIndex, NoteIndexEntry, NoteInlineNode,
+        NotePageLinkNode, NoteTextNode,
     },
 };
 
@@ -160,7 +161,82 @@ impl NoteStore {
 
             block.children =
                 self.normalize_note_inline_nodes(&block.children, note.book_id.as_deref());
+            block.source_reference = self.normalize_source_reference(
+                block.r#type,
+                block.source_reference.clone(),
+                note.book_id.as_deref(),
+            );
             block.spans.clear();
+        }
+    }
+
+    fn normalize_source_reference(
+        &self,
+        block_type: NoteBlockType,
+        source_reference: Option<DocumentSourceReference>,
+        fallback_document_id: Option<&str>,
+    ) -> Option<DocumentSourceReference> {
+        if block_type == NoteBlockType::Paragraph {
+            return None;
+        }
+
+        let mut reference = source_reference?;
+        if reference.id.trim().is_empty() {
+            reference.id = Uuid::new_v4().to_string();
+        }
+
+        if reference.document_id.as_deref().unwrap_or("").trim().is_empty() {
+            reference.document_id = reference
+                .target
+                .as_ref()
+                .map(|target| target.document_id.clone())
+                .or_else(|| fallback_document_id.map(ToOwned::to_owned));
+        }
+
+        if reference.created_at.trim().is_empty() {
+            reference.created_at = timestamp();
+        }
+
+        reference.title = if reference.title.trim().is_empty() {
+            "Untitled section".to_string()
+        } else {
+            reference.title.trim().to_string()
+        };
+
+        reference.outline_item_id = reference
+            .outline_item_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+
+        reference.target = reference.target.and_then(|mut target| {
+            if target.document_id.trim().is_empty() {
+                if let Some(document_id) = reference.document_id.clone() {
+                    target.document_id = document_id;
+                }
+            }
+
+            if target.document_id.trim().is_empty() {
+                return None;
+            }
+
+            Some(target)
+        });
+
+        match reference.kind {
+            DocumentSourceReferenceKind::Direct if reference.target.is_none() => None,
+            DocumentSourceReferenceKind::Outline
+                if reference.outline_item_id.is_none() && reference.target.is_none() =>
+            {
+                None
+            }
+            DocumentSourceReferenceKind::Direct => {
+                reference.outline_item_id = None;
+                reference.outline_source = None;
+                Some(reference)
+            }
+            DocumentSourceReferenceKind::Outline => Some(reference),
         }
     }
 
@@ -173,6 +249,7 @@ impl NoteStore {
                 bold: false,
                 italic: false,
             })],
+            source_reference: None,
             spans: Vec::new(),
         }
     }

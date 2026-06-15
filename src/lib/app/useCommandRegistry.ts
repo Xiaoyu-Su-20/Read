@@ -1,7 +1,8 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useMemo } from "react";
 
-import { findBookmarkAtPage } from "../commands";
+import { dedupeBookmarks, findBookmarkAtPage } from "../commands";
+import { dedupeOutlineItems, flattenOutlineItems } from "../documentReferences";
 import type {
   DocumentPayload,
   DocumentRecord,
@@ -90,16 +91,50 @@ export function useCommandRegistry({
       }
     }));
 
-    const bookmarkItems = (readerState?.bookmarks ?? []).map((bookmark) => ({
-      id: bookmark.id,
-      title: bookmark.label,
-      subtitle: `Page ${bookmark.page}`,
-      glyph: "bookmark" as const,
-      onSelect: async () => {
-        viewerApiRef.current?.goToPage(bookmark.page);
-        closePalette();
-      }
-    }));
+    const savedMarks = dedupeBookmarks(readerState?.bookmarks ?? []);
+    const flatOutlineItems = flattenOutlineItems(dedupeOutlineItems(outlineItems));
+    const markItems = [
+      ...savedMarks.map((bookmark) => ({
+        id: `saved-mark-${bookmark.id}`,
+        title: bookmark.label,
+        subtitle: `Page ${bookmark.page} - Saved`,
+        glyph: "bookmark" as const,
+        keywords: ["mark", "bookmark", "saved", `page ${bookmark.page}`],
+        onSelect: async () => {
+          viewerApiRef.current?.goToPage(bookmark.page);
+          closePalette();
+        }
+      })),
+      ...flatOutlineItems.map(({ item, depth }) => ({
+        id: `section-mark-${item.id}`,
+        title: `${"> ".repeat(depth)}${item.title}`,
+        subtitle: `${item.page ? `Page ${item.page}` : item.externalUrl ? "External" : "No target"} - ${
+          item.source === "user" ? "Note" : "PDF"
+        }`,
+        glyph: "bookmark" as const,
+        keywords: ["mark", "outline", "section", "heading", item.source],
+        onSelect: async () => {
+          const viewer = viewerApiRef.current;
+          if (viewer && item.target) {
+            viewer.navigateToTarget(item.target);
+          } else if (viewer && item.page) {
+            viewer.goToPage(item.page);
+          } else {
+            setStatusMessage("That mark does not have a readable page target.");
+          }
+          closePalette();
+        }
+      }))
+    ];
+
+    const savedMarkCount = savedMarks.length;
+    const sectionMarkCount = flatOutlineItems.length;
+    const totalMarkCount = markItems.length;
+
+    const currentPageHasMark = findBookmarkAtPage(
+      savedMarks,
+      viewerSnapshot.currentPage
+    );
 
     return [
       {
@@ -176,31 +211,32 @@ export function useCommandRegistry({
         }
       },
       {
-        id: "toggle-outline",
-        title: "Toggle outline panel",
-        subtitle: outlineItems.length > 0 ? "Show the document map" : "No outline found",
-        glyph: "panel",
-        group: "view",
-        keywords: ["outline table contents headings"],
+        id: "open-marks",
+        title: "Open marks",
+        subtitle:
+          totalMarkCount > 0
+            ? `${totalMarkCount} mark${totalMarkCount === 1 ? "" : "s"}`
+            : "No marks in this document yet",
+        glyph: "bookmark",
+        group: "bookmarks",
+        keywords: ["marks bookmark outline table contents headings sections"],
         onSelect: () => {
           closePalette();
-          setOutlineOpen((value) => !value);
+          setOutlineOpen(true);
         }
       },
       {
         id: "bookmark-toggle",
-        title: findBookmarkAtPage(readerState?.bookmarks ?? [], viewerSnapshot.currentPage)
-          ? "Remove bookmark"
-          : "Add bookmark",
+        title: currentPageHasMark ? "Remove mark" : "Add mark",
         subtitle: `Page ${viewerSnapshot.currentPage}`,
         glyph: "bookmark",
         group: "bookmarks",
-        keywords: ["bookmark save page"],
+        keywords: ["mark bookmark save page"],
         onSelect: () => {
           const currentState = viewerApiRef.current?.getReaderState();
           if (!currentState) {
             closePalette();
-            setStatusMessage("Open a document before editing bookmarks.");
+            setStatusMessage("Open a document before editing marks.");
             return;
           }
 
@@ -212,25 +248,24 @@ export function useCommandRegistry({
           );
           setStatusMessage(
             existing
-              ? `Removed bookmark from page ${viewerSnapshot.currentPage}.`
-              : `Bookmarked page ${viewerSnapshot.currentPage}.`
+              ? `Removed mark from page ${viewerSnapshot.currentPage}.`
+              : `Marked page ${viewerSnapshot.currentPage}.`
           );
           closePalette();
         }
       },
       {
         id: "bookmark-jump",
-        title: "Jump to bookmark",
-        subtitle: `${readerState?.bookmarks.length ?? 0} saved pages`,
+        title: "Jump to mark",
+        subtitle:
+          totalMarkCount > 0
+            ? `${savedMarkCount} saved, ${sectionMarkCount} section${sectionMarkCount === 1 ? "" : "s"}`
+            : "No marks in this document yet",
         glyph: "bookmark",
         group: "bookmarks",
-        keywords: ["bookmark jump"],
+        keywords: ["mark bookmark jump outline section heading"],
         onSelect: () => {
-          openSelection(
-            "Bookmarks",
-            bookmarkItems,
-            "No bookmarks have been saved in this document yet."
-          );
+          openSelection("Marks", markItems, "No marks in this document yet.");
         }
       },
       {

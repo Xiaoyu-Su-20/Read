@@ -1,7 +1,15 @@
 import { memo } from "react";
 
 import NotesPane from "./notes/NotesPane";
-import type { NoteDocument, NoteNavigationItem, NoteRevealRequest } from "../lib/types";
+import type {
+  DocumentState,
+  NoteDocument,
+  NoteNavigationItem,
+  NoteRevealRequest,
+  OutlineItem,
+  PdfNavigationTarget,
+  PdfOutlineItem
+} from "../lib/types";
 
 type NotesViewportProps = {
   note: NoteDocument | null;
@@ -12,6 +20,11 @@ type NotesViewportProps = {
   onFlush: () => void | Promise<void>;
   onCopyAllText: () => Promise<void>;
   onGoToPage: (page: number) => void;
+  documentId: string | null;
+  outlineItems: OutlineItem[];
+  readerState: DocumentState | null;
+  onNavigateToTarget: (target: PdfNavigationTarget) => void;
+  onSetUserOutlineItems: (items: PdfOutlineItem[]) => void;
   currentPage: number | null;
   revealRequest: NoteRevealRequest | null;
 };
@@ -25,6 +38,11 @@ const NotesViewport = memo(function NotesViewport({
   onFlush,
   onCopyAllText,
   onGoToPage,
+  documentId,
+  outlineItems,
+  readerState,
+  onNavigateToTarget,
+  onSetUserOutlineItems,
   currentPage,
   revealRequest
 }: NotesViewportProps) {
@@ -39,6 +57,11 @@ const NotesViewport = memo(function NotesViewport({
         onFlush={onFlush}
         onCopyAllText={onCopyAllText}
         onGoToPage={onGoToPage}
+        documentId={documentId}
+        outlineItems={outlineItems}
+        readerState={readerState}
+        onNavigateToTarget={onNavigateToTarget}
+        onSetUserOutlineItems={onSetUserOutlineItems}
         currentPage={currentPage}
         revealRequest={revealRequest}
       />

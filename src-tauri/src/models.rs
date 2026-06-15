@@ -65,6 +65,78 @@ impl Default for ReaderPreferences {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct PdfNavigationTarget {
+    pub document_id: String,
+    pub page_index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PdfOutlineSource {
+    Embedded,
+    User,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfOutlineItem {
+    pub id: String,
+    pub title: String,
+    pub source: PdfOutlineSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<PdfNavigationTarget>,
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_url: Option<String>,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[f32; 3]>,
+    #[serde(default)]
+    pub items: Vec<PdfOutlineItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DocumentSourceReferenceKind {
+    Direct,
+    Outline,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentSourceReference {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_id: Option<String>,
+    pub kind: DocumentSourceReferenceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline_source: Option<PdfOutlineSource>,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<PdfNavigationTarget>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct DocumentState {
     pub version: u32,
     pub document_id: String,
@@ -74,6 +146,8 @@ pub struct DocumentState {
     pub zoom: f32,
     pub bookmarks: Vec<Bookmark>,
     pub preferences: ReaderPreferences,
+    #[serde(default)]
+    pub user_outline_items: Vec<PdfOutlineItem>,
 }
 
 impl DocumentState {
@@ -87,6 +161,7 @@ impl DocumentState {
             zoom: 1.0,
             bookmarks: Vec::new(),
             preferences: ReaderPreferences::default(),
+            user_outline_items: Vec::new(),
         }
     }
 }
@@ -209,18 +284,20 @@ pub enum NoteBlockType {
     Heading3,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteBlock {
     pub id: String,
     pub r#type: NoteBlockType,
     #[serde(default)]
     pub children: Vec<NoteInlineNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_reference: Option<DocumentSourceReference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spans: Vec<NoteSpan>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteDocument {
     pub id: String,

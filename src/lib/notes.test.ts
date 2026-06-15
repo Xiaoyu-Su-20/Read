@@ -6,11 +6,13 @@ import {
   createTextNode,
   deriveNoteNavigationItems,
   formatPageLinkText,
+  normalizeDocumentSourceReference,
   normalizeNoteBlocks,
   normalizeNoteDocument,
   normalizeNoteSpans,
   parsePageLinkText,
   parsePageLinkTargetInput,
+  replaceBlockSourceReference,
   replaceBlockType
 } from "./notes";
 import type { NoteBlock, NoteDocument } from "./types";
@@ -133,6 +135,69 @@ describe("notes helpers", () => {
         bold: true
       }
     ]);
+  });
+
+  it("preserves valid heading references and removes them from paragraphs", () => {
+    const reference = normalizeDocumentSourceReference({
+      id: "ref-1",
+      documentId: "doc-1",
+      kind: "direct",
+      outlineItemId: null,
+      outlineSource: null,
+      title: "Chapter",
+      target: {
+        documentId: "doc-1",
+        pageIndex: 4
+      },
+      createdAt: "2026-06-14T00:00:00Z"
+    });
+
+    const blocks = normalizeNoteBlocks([
+      {
+        id: "heading",
+        type: "heading1",
+        children: [createTextNode("Chapter")],
+        sourceReference: reference
+      },
+      {
+        id: "paragraph",
+        type: "paragraph",
+        children: [createTextNode("Body")],
+        sourceReference: reference
+      }
+    ]);
+
+    expect(blocks[0]?.sourceReference?.target?.pageIndex).toBe(4);
+    expect(blocks[1]?.sourceReference).toBeNull();
+  });
+
+  it("replaces heading references without changing the heading text", () => {
+    const blocks = replaceBlockSourceReference(
+      [
+        {
+          id: "heading",
+          type: "heading2",
+          children: [createTextNode("Section")]
+        }
+      ],
+      "heading",
+      {
+        id: "ref-1",
+        documentId: "doc-1",
+        kind: "direct",
+        outlineItemId: null,
+        outlineSource: null,
+        title: "Section",
+        target: {
+          documentId: "doc-1",
+          pageIndex: 8
+        },
+        createdAt: "2026-06-14T00:00:00Z"
+      }
+    );
+
+    expect(blocks[0]?.children).toEqual([createTextNode("Section")]);
+    expect(blocks[0]?.sourceReference?.target?.pageIndex).toBe(8);
   });
 
   it("creates pagelinks with a saved pdf page index", () => {

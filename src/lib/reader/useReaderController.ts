@@ -3,13 +3,17 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { saveDocumentState } from "../api";
+import { dedupeBookmarks } from "../commands";
 import { debugAction, startDebugProcess } from "../debugLog";
+import { dedupeOutlineItems, mergeOutlineItems } from "../documentReferences";
 import type {
   Bookmark,
   DocumentPayload,
   DocumentState,
   OutlineItem,
   PageTextLayerData,
+  PdfNavigationTarget,
+  PdfOutlineItem,
   ViewerApi,
   ViewerSnapshot
 } from "../types";
@@ -76,15 +80,25 @@ function shouldIgnoreRenderResponse(requestSequence: number, activeSequence: num
   return requestSequence !== activeSequence;
 }
 
+function normalizeDocumentState(state: DocumentState): DocumentState {
+  return {
+    ...state,
+    bookmarks: dedupeBookmarks(state.bookmarks ?? []),
+    userOutlineItems: dedupeOutlineItems(state.userOutlineItems ?? [])
+  };
+}
+
 function stateSignature(state: DocumentState) {
+  const normalizedState = normalizeDocumentState(state);
   return JSON.stringify({
-    version: state.version,
-    documentId: state.documentId,
-    fingerprint: state.fingerprint,
-    lastPage: state.lastPage,
-    zoom: state.zoom,
-    bookmarks: state.bookmarks,
-    preferences: state.preferences
+    version: normalizedState.version,
+    documentId: normalizedState.documentId,
+    fingerprint: normalizedState.fingerprint,
+    lastPage: normalizedState.lastPage,
+    zoom: normalizedState.zoom,
+    bookmarks: normalizedState.bookmarks,
+    preferences: normalizedState.preferences,
+    userOutlineItems: normalizedState.userOutlineItems
   });
 }
 
@@ -125,6 +139,7 @@ export function useReaderController({
   const incomingPageKeyRef = useRef<string | null>(null);
   const initializedDocumentIdRef = useRef<string | null>(null);
   const outlineLoadedForDocumentIdRef = useRef<string | null>(null);
+  const embeddedOutlineItemsRef = useRef<OutlineItem[]>([]);
   const currentDocumentRef = useRef<DocumentPayload | null>(null);
   const readerStateRef = useRef<DocumentState | null>(null);
   const lastPersistedSignatureRef = useRef<string | null>(null);
@@ -187,9 +202,33 @@ export function useReaderController({
   }
 
   function updateReaderState(nextState: DocumentState | null) {
-    readerStateRef.current = nextState;
-    setReaderState(nextState);
-    onStateChange(nextState);
+    const normalizedState = nextState ? normalizeDocumentState(nextState) : null;
+    readerStateRef.current = normalizedState;
+    setReaderState(normalizedState);
+    onStateChange(normalizedState);
+  }
+
+  function publishOutlineItems(userOutlineItems?: PdfOutlineItem[]) {
+    onOutlineChange(
+      mergeOutlineItems(
+        embeddedOutlineItemsRef.current,
+        userOutlineItems ?? readerStateRef.current?.userOutlineItems ?? []
+      )
+    );
+  }
+
+  function navigateToTarget(target: PdfNavigationTarget, reason: string) {
+    const activeDocument = currentDocumentRef.current;
+    if (activeDocument && target.documentId && target.documentId !== activeDocument.document.id) {
+      onStatusChange("This reference points to another document.");
+      return;
+    }
+
+    const nextPage = clampPage(target.pageIndex + 1, pageCount || target.pageIndex + 1);
+    if (typeof target.zoom === "number" && Number.isFinite(target.zoom) && target.zoom > 0) {
+      setZoom(clampZoom(target.zoom));
+    }
+    requestPageTurnWithIntent(nextPage, reason);
   }
 
   async function persistReaderStateSnapshot(
@@ -293,10 +332,11 @@ export function useReaderController({
   function markReaderStateDirty(
     nextState: DocumentState,
     reason: string,
-    delayMs = NAVIGATION_SAVE_DEBOUNCE_MS
+    delayMs = NAVIGATION_SAVE_DEBOUNCE_MS,
+    options?: { force?: boolean }
   ) {
     const signature = stateSignature(nextState);
-    const isDirty = signature !== lastPersistedSignatureRef.current;
+    const isDirty = options?.force === true || signature !== lastPersistedSignatureRef.current;
     dirtyStateRef.current = isDirty;
     debugAction("reader-state.dirty", {
       delayMs,
@@ -525,6 +565,7 @@ export function useReaderController({
       targetPage: 1
     };
     outlineLoadedForDocumentIdRef.current = null;
+    embeddedOutlineItemsRef.current = [];
     setDocumentError(null);
     setRenderError(null);
     setDisplayedPageTextLayer(null);
@@ -562,15 +603,27 @@ export function useReaderController({
     setCurrentPage(nextPage);
     setTargetPage(nextPage);
     setZoom(nextZoom);
-    const nextState = {
+    const rawNextState = {
       ...document.state,
       lastPage: nextPage,
-      zoom: nextZoom
+      zoom: nextZoom,
+      userOutlineItems: document.state.userOutlineItems ?? []
     };
+    const nextState = normalizeDocumentState(rawNextState);
+    const stateWasDeduped =
+      JSON.stringify(rawNextState.bookmarks ?? []) !== JSON.stringify(nextState.bookmarks) ||
+      JSON.stringify(rawNextState.userOutlineItems ?? []) !==
+        JSON.stringify(nextState.userOutlineItems);
     clearScheduledSave();
     dirtyStateRef.current = false;
     lastPersistedSignatureRef.current = stateSignature(nextState);
     updateReaderState(nextState);
+    onOutlineChange(nextState.userOutlineItems);
+    if (stateWasDeduped) {
+      markReaderStateDirty(nextState, "dedupe-reader-state", BOOKMARK_SAVE_DEBOUNCE_MS, {
+        force: true
+      });
+    }
     onStatusChange(`Opened ${nextPageCount} pages.`);
   }, [document, onOutlineChange, onStateChange, onStatusChange]);
 
@@ -715,11 +768,13 @@ export function useReaderController({
         }
 
         outlineLoadedForDocumentIdRef.current = document.document.id;
-        onOutlineChange(nextOutline);
+        embeddedOutlineItemsRef.current = nextOutline;
+        publishOutlineItems();
       })
       .catch(() => {
         if (!cancelled && runtimeSessionRef.current === runtimeSession) {
-          onOutlineChange([]);
+          embeddedOutlineItemsRef.current = [];
+          publishOutlineItems();
         }
       });
 
@@ -1033,6 +1088,9 @@ export function useReaderController({
           goToPage: (page) => {
             requestPageTurnWithIntent(clampPage(page, pageCount), "go-to-page");
           },
+          navigateToTarget: (target) => {
+            navigateToTarget(target, "target");
+          },
           searchPort: {
             getExtractedPageNumbers: () =>
               runtimeSessionRef.current?.getExtractedPageNumbers() ?? new Set<number>(),
@@ -1043,7 +1101,9 @@ export function useReaderController({
             }
           },
           jumpToOutline: (item) => {
-            if (item.page) {
+            if (item.target) {
+              navigateToTarget(item.target, "outline");
+            } else if (item.page) {
               requestPageTurnWithIntent(item.page, "outline");
             }
           },
@@ -1055,13 +1115,31 @@ export function useReaderController({
               if (!current) {
                 return current;
               }
+              const nextBookmarks = dedupeBookmarks(bookmarks);
               const nextState = {
                 ...current,
-                bookmarks
+                bookmarks: nextBookmarks
               };
               readerStateRef.current = nextState;
               markReaderStateDirty(nextState, "bookmarks", BOOKMARK_SAVE_DEBOUNCE_MS);
               onStateChange(nextState);
+              return nextState;
+            });
+          },
+          setUserOutlineItems: (items) => {
+            setReaderState((current) => {
+              if (!current) {
+                return current;
+              }
+              const nextItems = dedupeOutlineItems(items);
+              const nextState = {
+                ...current,
+                userOutlineItems: nextItems
+              };
+              readerStateRef.current = nextState;
+              markReaderStateDirty(nextState, "outline");
+              onStateChange(nextState);
+              publishOutlineItems(nextItems);
               return nextState;
             });
           }

@@ -23,9 +23,10 @@ describe("CommandPalette", () => {
         },
         {
           id: "add-bookmark",
-          title: "Add bookmark",
+          title: "Add mark",
           subtitle: "Save this page",
           group: "bookmarks",
+          keywords: ["bookmark"],
           onSelect: vi.fn()
         },
         {
@@ -57,7 +58,7 @@ describe("CommandPalette", () => {
     expect(markup).toContain('class="palette__divider"');
     expect(markup.match(/class="palette__divider"/g)).toHaveLength(2);
     expect(markup).toContain("Go to page");
-    expect(markup).toContain("Add bookmark");
+    expect(markup).toContain("Add mark");
     expect(markup).toContain("Import PDF");
     expect(markup).toContain(">G<");
     expect(markup).toContain(">Tab<");
@@ -80,8 +81,9 @@ describe("CommandPalette", () => {
         },
         {
           id: "add-bookmark",
-          title: "Add bookmark",
+          title: "Add mark",
           group: "bookmarks",
+          keywords: ["bookmark"],
           onSelect: vi.fn()
         },
         {
@@ -102,7 +104,7 @@ describe("CommandPalette", () => {
       })
     );
 
-    expect(markup).toContain("Add bookmark");
+    expect(markup).toContain("Add mark");
     expect(markup).not.toContain("Go to page");
     expect(markup).not.toContain("Import PDF");
     expect(markup).not.toContain('class="palette__divider"');

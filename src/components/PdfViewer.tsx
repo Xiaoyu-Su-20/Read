@@ -1,5 +1,10 @@
 import { memo, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 
+import {
+  resolveViewerImageFilter,
+  resolveViewerPaperColor,
+  type ViewerDisplayConfig
+} from "../lib/app/settingsRegistry";
 import { isDebugModeEnabled } from "../lib/debugLog";
 import { computePageShellOffsets } from "../lib/reader/pageLayout";
 import { useReaderController } from "../lib/reader/useReaderController";
@@ -14,6 +19,7 @@ type PdfViewerProps = {
   onStatusChange: (message: string) => void;
   onStateChange: (state: DocumentState | null) => void;
   registerApi: (api: ViewerApi | null) => void;
+  viewerDisplayConfig: ViewerDisplayConfig;
 };
 
 const PdfViewer = memo(function PdfViewer({
@@ -22,7 +28,8 @@ const PdfViewer = memo(function PdfViewer({
   onOutlineChange,
   onStatusChange,
   onStateChange,
-  registerApi
+  registerApi,
+  viewerDisplayConfig
 }: PdfViewerProps) {
   const scrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const [pageOffsets, setPageOffsets] = useState({ offsetX: 0, offsetY: 0 });
@@ -97,6 +104,10 @@ const PdfViewer = memo(function PdfViewer({
     ["--page-offset-x"]: `${pageOffsets.offsetX.toFixed(2)}px`,
     ["--page-offset-y"]: `${pageOffsets.offsetY.toFixed(2)}px`
   } as CSSProperties;
+  const appearanceStyle = {
+    ["--viewer-paper-color"]: resolveViewerPaperColor(viewerDisplayConfig),
+    ["--viewer-image-filter"]: resolveViewerImageFilter(viewerDisplayConfig)
+  } as CSSProperties;
 
   if (!document) {
     return (
@@ -119,7 +130,11 @@ const PdfViewer = memo(function PdfViewer({
   }
 
   return (
-    <div className="reader-stage">
+    <div
+      className="reader-stage"
+      data-document-appearance={viewerDisplayConfig.mode}
+      style={appearanceStyle}
+    >
       <div
         ref={scrollSurfaceRef}
         className="reader-scroll-surface"

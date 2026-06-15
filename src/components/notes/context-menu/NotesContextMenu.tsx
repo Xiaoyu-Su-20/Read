@@ -15,6 +15,10 @@ type NotesContextMenuProps = {
   onPaste: () => void | Promise<void>;
   onTurnInto: (type: NoteBlockType) => void;
   onAddPageLink: () => void;
+  onLinkHeadingToCurrentPage: () => void;
+  onLinkHeadingToSection: () => void;
+  onCreateSectionFromHeading: () => void;
+  onRemoveHeadingReference: () => void;
   onOpenPage: () => void;
   onEditPageLink: () => void;
   onCopyPageReference: () => void;
@@ -35,6 +39,10 @@ export default function NotesContextMenu({
   onPaste,
   onTurnInto,
   onAddPageLink,
+  onLinkHeadingToCurrentPage,
+  onLinkHeadingToSection,
+  onCreateSectionFromHeading,
+  onRemoveHeadingReference,
   onOpenPage,
   onEditPageLink,
   onCopyPageReference,
@@ -47,6 +55,9 @@ export default function NotesContextMenu({
   }
 
   const menuPosition = position ?? state.anchor;
+  const isHeadingTarget =
+    state.target === "body" &&
+    (state.blockType === "heading1" || state.blockType === "heading2" || state.blockType === "heading3");
 
   return (
     <div className="notes-context-menu-layer" role="presentation">
@@ -94,6 +105,24 @@ export default function NotesContextMenu({
               <button className="editor-context-menu__item" type="button" onClick={onAddPageLink}>
                 Add PageLink
               </button>
+            ) : null}
+            {isHeadingTarget ? (
+              <>
+                <button className="editor-context-menu__item" type="button" onClick={onLinkHeadingToCurrentPage}>
+                  Link heading to current page
+                </button>
+                <button className="editor-context-menu__item" type="button" onClick={onLinkHeadingToSection}>
+                  Link heading to PDF section
+                </button>
+                <button className="editor-context-menu__item" type="button" onClick={onCreateSectionFromHeading}>
+                  Create PDF section from heading
+                </button>
+                {state.sourceReference ? (
+                  <button className="editor-context-menu__item" type="button" onClick={onRemoveHeadingReference}>
+                    Remove heading link
+                  </button>
+                ) : null}
+              </>
             ) : null}
             {state.target === "body" ? (
               <div

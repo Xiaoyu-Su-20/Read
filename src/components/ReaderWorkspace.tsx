@@ -1,5 +1,6 @@
 import NotesViewport from "./NotesViewport";
 import ReaderViewport from "./ReaderViewport";
+import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import type {
   DocumentPayload,
   DocumentState,
@@ -7,6 +8,8 @@ import type {
   NoteNavigationItem,
   NoteRevealRequest,
   OutlineItem,
+  PdfNavigationTarget,
+  PdfOutlineItem,
   ViewerApi,
   ViewerSnapshot
 } from "../lib/types";
@@ -23,11 +26,16 @@ type ReaderWorkspaceProps = {
   onGoToNotePage: (page: number) => void;
   currentReaderPage: number | null;
   noteRevealRequest: NoteRevealRequest | null;
+  outlineItems: OutlineItem[];
+  readerState: DocumentState | null;
+  onNavigateToTarget: (target: PdfNavigationTarget) => void;
+  onSetUserOutlineItems: (items: PdfOutlineItem[]) => void;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
   onOutlineChange: (items: OutlineItem[]) => void;
   onStatusChange: (message: string) => void;
   onStateChange: (state: DocumentState | null) => void;
   registerApi: (api: ViewerApi | null) => void;
+  viewerDisplayConfig: ViewerDisplayConfig;
 };
 
 export default function ReaderWorkspace({
@@ -42,11 +50,16 @@ export default function ReaderWorkspace({
   onGoToNotePage,
   currentReaderPage,
   noteRevealRequest,
+  outlineItems,
+  readerState,
+  onNavigateToTarget,
+  onSetUserOutlineItems,
   onSnapshotChange,
   onOutlineChange,
   onStatusChange,
   onStateChange,
-  registerApi
+  registerApi,
+  viewerDisplayConfig
 }: ReaderWorkspaceProps) {
   if (!document) {
     return (
@@ -57,6 +70,7 @@ export default function ReaderWorkspace({
         onStateChange={onStateChange}
         onStatusChange={onStatusChange}
         registerApi={registerApi}
+        viewerDisplayConfig={viewerDisplayConfig}
       />
     );
   }
@@ -71,6 +85,7 @@ export default function ReaderWorkspace({
           onStateChange={onStateChange}
           onStatusChange={onStatusChange}
           registerApi={registerApi}
+          viewerDisplayConfig={viewerDisplayConfig}
         />
       </div>
       <div className="reader-workspace__notes">
@@ -83,6 +98,11 @@ export default function ReaderWorkspace({
           onFlush={onFlushNote}
           onCopyAllText={onCopyAllNoteText}
           onGoToPage={onGoToNotePage}
+          documentId={document.document.id}
+          outlineItems={outlineItems}
+          readerState={readerState}
+          onNavigateToTarget={onNavigateToTarget}
+          onSetUserOutlineItems={onSetUserOutlineItems}
           currentPage={currentReaderPage}
           revealRequest={noteRevealRequest}
         />

@@ -4,6 +4,10 @@ function clamp01(value: number) {
   return Math.min(Math.max(value, 0), 1);
 }
 
+function roundOffset(value: number) {
+  return Math.max(0, Math.floor(value));
+}
+
 export function smoothstep(value: number) {
   const clamped = clamp01(value);
   return clamped * clamped * (3 - 2 * clamped);
@@ -21,11 +25,11 @@ export function computePageAxisOffset(
 
   const centeredOffset = extraSpace / 2;
   if (extraSpace >= transitionBandPx) {
-    return centeredOffset;
+    return roundOffset(centeredOffset);
   }
 
   const t = smoothstep(extraSpace / transitionBandPx);
-  return centeredOffset * t;
+  return roundOffset(centeredOffset * t);
 }
 
 export function computePageShellOffsets(

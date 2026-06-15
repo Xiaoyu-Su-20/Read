@@ -8,7 +8,7 @@ import type {
 
 import { readDocumentBytes } from "../api";
 import { debugAction, debugError } from "../debugLog";
-import type { OutlineItem, PageTextLayerData } from "../types";
+import type { OutlineItem, PageTextLayerData, PdfNavigationFit, PdfNavigationTarget } from "../types";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/legacy/build/pdf.worker.mjs",
@@ -59,8 +59,38 @@ const wasmUrl = withTrailingSlash(
   new URL("pdfjs-dist/wasm/", import.meta.url).toString()
 );
 
-async function resolveDestinationPage(
+function numericDestinationValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function destinationFit(value: unknown): PdfNavigationFit | null {
+  if (!value || typeof value !== "object" || !("name" in value)) {
+    return null;
+  }
+
+  const name = String((value as { name?: unknown }).name ?? "");
+  switch (name) {
+    case "XYZ":
+      return "xyz";
+    case "Fit":
+    case "FitB":
+      return "fit";
+    case "FitH":
+    case "FitBH":
+      return "fitH";
+    case "FitV":
+    case "FitBV":
+      return "fitV";
+    case "FitR":
+      return "fitR";
+    default:
+      return "unknown";
+  }
+}
+
+async function resolveDestinationTarget(
   document: RuntimePdfDocument,
+  documentId: string,
   destination: unknown
 ) {
   if (!destination) {
@@ -77,20 +107,48 @@ async function resolveDestinationPage(
   }
 
   const reference = target[0];
+  let pageIndex: number | null = null;
   if (typeof reference === "number") {
-    return reference + 1;
+    pageIndex = reference;
+  } else if (reference && typeof reference === "object") {
+    pageIndex = await document.getPageIndex(reference);
   }
 
-  if (reference && typeof reference === "object") {
-    const index = await document.getPageIndex(reference);
-    return index + 1;
+  if (pageIndex == null || !Number.isInteger(pageIndex) || pageIndex < 0) {
+    return null;
   }
 
-  return null;
+  const fit = destinationFit(target[1]);
+  const destinationTarget: PdfNavigationTarget = {
+    documentId,
+    pageIndex,
+    ...(fit ? { fit } : {})
+  };
+
+  if (fit === "xyz") {
+    const x = numericDestinationValue(target[2]);
+    const y = numericDestinationValue(target[3]);
+    const zoom = numericDestinationValue(target[4]);
+    if (x != null) destinationTarget.x = x;
+    if (y != null) destinationTarget.y = y;
+    if (zoom != null && zoom > 0) destinationTarget.zoom = zoom;
+  } else if (fit === "fitH" || fit === "fitV") {
+    const position = numericDestinationValue(target[2]);
+    if (fit === "fitH" && position != null) destinationTarget.y = position;
+    if (fit === "fitV" && position != null) destinationTarget.x = position;
+  } else if (fit === "fitR") {
+    const x = numericDestinationValue(target[2]);
+    const y = numericDestinationValue(target[3]);
+    if (x != null) destinationTarget.x = x;
+    if (y != null) destinationTarget.y = y;
+  }
+
+  return destinationTarget;
 }
 
 async function extractOutline(
   document: RuntimePdfDocument,
+  documentId: string,
   items: unknown[] | null,
   prefix = "outline"
 ): Promise<OutlineItem[]> {
@@ -103,14 +161,28 @@ async function extractOutline(
     const item = items[index] as {
       title?: string;
       dest?: unknown;
+      url?: string;
+      unsafeUrl?: string;
+      bold?: boolean;
+      italic?: boolean;
+      color?: [number, number, number];
       items?: unknown[];
     };
-    const page = await resolveDestinationPage(document, item.dest);
+    const target = await resolveDestinationTarget(document, documentId, item.dest);
+    const title = item.title?.trim() || "Untitled section";
+    const sourceId = `${prefix}-${index}`;
     result.push({
-      id: `${prefix}-${index}`,
-      title: item.title?.trim() || "Untitled section",
-      page,
-      items: await extractOutline(document, item.items ?? null, `${prefix}-${index}`)
+      id: `embedded:${sourceId}`,
+      title,
+      source: "embedded",
+      sourceId,
+      target,
+      page: target ? target.pageIndex + 1 : null,
+      externalUrl: item.url ?? item.unsafeUrl ?? null,
+      bold: Boolean(item.bold),
+      italic: Boolean(item.italic),
+      color: item.color ?? null,
+      items: await extractOutline(document, documentId, item.items ?? null, sourceId)
     });
   }
   return result;
@@ -237,7 +309,7 @@ export function createPdfRuntimeSession(
     if (!outlinePromise) {
       outlinePromise = (async () => {
         const document = await ensureDocument();
-        const outline = await extractOutline(document, await document.getOutline());
+        const outline = await extractOutline(document, documentId, await document.getOutline());
         assertActive();
         outlineCache = outline;
         return outline;

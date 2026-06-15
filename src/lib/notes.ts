@@ -1,8 +1,10 @@
 import type {
   NoteBlock,
   NoteBlockType,
+  DocumentSourceReference,
   NoteDocument,
   NoteInlineNode,
+  PdfNavigationTarget,
   NoteNavigationItem,
   NotePageLinkNode,
   NoteSpan,
@@ -27,6 +29,55 @@ export function createEmptyNoteBlock(id = crypto.randomUUID()): NoteBlock {
     id,
     type: "paragraph",
     children: [createTextNode("")]
+  };
+}
+
+function normalizeNavigationTarget(target: PdfNavigationTarget | null | undefined): PdfNavigationTarget | null {
+  if (!target || !target.documentId || !Number.isInteger(target.pageIndex) || target.pageIndex < 0) {
+    return null;
+  }
+
+  return {
+    documentId: target.documentId,
+    pageIndex: target.pageIndex,
+    ...(typeof target.x === "number" && Number.isFinite(target.x) ? { x: target.x } : {}),
+    ...(typeof target.y === "number" && Number.isFinite(target.y) ? { y: target.y } : {}),
+    ...(typeof target.zoom === "number" && Number.isFinite(target.zoom) && target.zoom > 0
+      ? { zoom: target.zoom }
+      : {}),
+    ...(target.fit ? { fit: target.fit } : {})
+  };
+}
+
+export function normalizeDocumentSourceReference(
+  reference: DocumentSourceReference | null | undefined,
+  fallbackDocumentId?: string | null
+): DocumentSourceReference | null {
+  if (!reference) {
+    return null;
+  }
+
+  const target = normalizeNavigationTarget(reference.target);
+  const outlineItemId = reference.outlineItemId?.trim() || null;
+  const kind = outlineItemId ? "outline" : reference.kind === "outline" ? "outline" : "direct";
+
+  if (kind === "outline" && !outlineItemId && !target) {
+    return null;
+  }
+
+  if (kind === "direct" && !target) {
+    return null;
+  }
+
+  return {
+    id: reference.id || crypto.randomUUID(),
+    documentId: reference.documentId ?? target?.documentId ?? fallbackDocumentId ?? null,
+    kind,
+    outlineItemId,
+    outlineSource: kind === "outline" ? reference.outlineSource ?? null : null,
+    title: reference.title.trim() || "Untitled section",
+    target,
+    createdAt: reference.createdAt || new Date().toISOString()
   };
 }
 
@@ -176,7 +227,11 @@ export function normalizeNoteBlocks(blocks: NoteBlock[], fallbackDocumentId?: st
     return {
       id: blockId,
       type: block.type,
-      children: normalizeNoteInlineNodes(children, fallbackDocumentId)
+      children: normalizeNoteInlineNodes(children, fallbackDocumentId),
+      sourceReference:
+        block.type === "paragraph"
+          ? null
+          : normalizeDocumentSourceReference(block.sourceReference, fallbackDocumentId)
     };
   });
 
@@ -220,10 +275,33 @@ export function replaceBlockType(
       block.id === blockId
         ? {
             ...block,
-            type: nextType
+            type: nextType,
+            sourceReference: nextType === "paragraph" ? null : block.sourceReference ?? null
           }
         : block
     )
+  );
+}
+
+export function replaceBlockSourceReference(
+  blocks: NoteBlock[],
+  blockId: string,
+  sourceReference: DocumentSourceReference | null,
+  fallbackDocumentId?: string | null
+) {
+  return normalizeNoteBlocks(
+    blocks.map((block) =>
+      block.id === blockId
+        ? {
+            ...block,
+            sourceReference:
+              block.type === "paragraph"
+                ? null
+                : normalizeDocumentSourceReference(sourceReference, fallbackDocumentId)
+          }
+        : block
+    ),
+    fallbackDocumentId
   );
 }
 

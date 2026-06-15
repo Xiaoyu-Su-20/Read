@@ -3,10 +3,12 @@ import {
   createPageLinkNode,
   createTextNode,
   formatPageLinkText,
+  normalizeDocumentSourceReference,
   normalizeNoteBlocks,
   normalizeNoteInlineNodes
 } from "./notes";
 import type {
+  DocumentSourceReference,
   NoteBlock,
   NoteBlockType,
   NoteDocument,
@@ -70,6 +72,29 @@ function escapeHtml(value: string) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;")
     .replaceAll("\n", "<br>");
+}
+
+function encodeDataJson(value: unknown) {
+  return encodeURIComponent(JSON.stringify(value));
+}
+
+function bookmarkIconHtml() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" /></svg>`;
+}
+
+function decodeSourceReference(value: string | undefined, fallbackDocumentId?: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return normalizeDocumentSourceReference(
+      JSON.parse(decodeURIComponent(value)) as DocumentSourceReference,
+      fallbackDocumentId
+    );
+  } catch {
+    return null;
+  }
 }
 
 function blockTagName(type: NoteBlockType) {
@@ -139,6 +164,19 @@ function renderPageLinkNodeHtml(node: NotePageLinkNode) {
   )}</span>`;
 }
 
+function createHeadingReferenceIndicator(ownerDocument: Document, reference: DocumentSourceReference) {
+  const indicator = ownerDocument.createElement("button");
+  indicator.className = "heading-source-link";
+  indicator.type = "button";
+  indicator.dataset.headingReferenceIndicator = "true";
+  indicator.contentEditable = "false";
+  indicator.tabIndex = 0;
+  indicator.title = reference.title;
+  indicator.setAttribute("aria-label", reference.title);
+  indicator.innerHTML = bookmarkIconHtml();
+  return indicator;
+}
+
 export function renderNoteInlineNodesHtml(children: NoteInlineNode[]) {
   return normalizeNoteInlineNodes(children)
     .map((node) => (node.type === "page-link" ? renderPageLinkNodeHtml(node) : renderTextNodeHtml(node)))
@@ -149,9 +187,17 @@ export function renderNoteBlocksHtml(blocks: NoteBlock[]) {
   return normalizeNoteBlocks(blocks)
     .map((block) => {
       const tagName = blockTagName(block.type);
-      return `<${tagName} data-block-id="${escapeHtml(block.id)}" data-block-type="${block.type}">${renderNoteInlineNodesHtml(
+      const sourceReference = block.sourceReference
+        ? ` data-source-reference="${escapeHtml(encodeDataJson(block.sourceReference))}"`
+        : "";
+      const indicator = block.sourceReference
+        ? `<button class="heading-source-link" type="button" data-heading-reference-indicator="true" contenteditable="false" tabindex="0" title="${escapeHtml(
+            block.sourceReference.title
+          )}" aria-label="${escapeHtml(block.sourceReference.title)}">${bookmarkIconHtml()}</button>`
+        : "";
+      return `<${tagName} data-block-id="${escapeHtml(block.id)}" data-block-type="${block.type}"${sourceReference}>${renderNoteInlineNodesHtml(
         block.children
-      )}</${tagName}>`;
+      )}${indicator}</${tagName}>`;
     })
     .join("");
 }
@@ -194,6 +240,10 @@ function inlineNodesFromNode(node: Node, activeMarks: MarkState): NoteInlineNode
   }
 
   const element = node as HTMLElement;
+  if (element.dataset.headingReferenceIndicator === "true") {
+    return [];
+  }
+
   if (element.dataset.inlineType === "page-link") {
     return [pageLinkNodeFromElement(element)];
   }
@@ -216,7 +266,7 @@ function inlineNodesFromNode(node: Node, activeMarks: MarkState): NoteInlineNode
 }
 
 export function parseNoteBlocksFromEditor(root: HTMLElement): NoteBlock[] {
-  const blocks = Array.from(root.childNodes).flatMap((childNode) => {
+  const blocks: NoteBlock[] = Array.from(root.childNodes).flatMap<NoteBlock>((childNode) => {
     if (childNode.nodeType === Node.TEXT_NODE) {
       const text = stripPageLinkCaretAnchors(childNode.textContent ?? "");
       return text.trim().length > 0
@@ -234,11 +284,16 @@ export function parseNoteBlocksFromEditor(root: HTMLElement): NoteBlock[] {
     }
 
     const element = childNode as HTMLElement;
+    const type = blockTypeFromTagName(element.tagName);
     return [
       {
         id: element.dataset.blockId || crypto.randomUUID(),
-        type: blockTypeFromTagName(element.tagName),
-        children: normalizeNoteInlineNodes(inlineNodesFromNode(element, { bold: false, italic: false }))
+        type,
+        children: normalizeNoteInlineNodes(inlineNodesFromNode(element, { bold: false, italic: false })),
+        sourceReference:
+          type === "paragraph"
+            ? null
+            : decodeSourceReference(element.dataset.sourceReference)
       }
     ];
   });
@@ -800,6 +855,37 @@ export function replaceBlockElementType(root: HTMLElement, blockId: string, next
   replacement.dataset.blockType = nextType;
   replacement.innerHTML = current.innerHTML;
   current.replaceWith(replacement);
+  return true;
+}
+
+export function updateBlockSourceReference(
+  root: HTMLElement,
+  blockId: string,
+  sourceReference: DocumentSourceReference | null,
+  fallbackDocumentId?: string | null
+) {
+  const block = findBlockElement(root, blockId);
+  if (!block) {
+    return false;
+  }
+
+  const blockType = blockTypeFromElement(block);
+  block.querySelectorAll<HTMLElement>("[data-heading-reference-indicator='true']").forEach((element) => {
+    element.remove();
+  });
+
+  const normalized =
+    blockType === "paragraph"
+      ? null
+      : normalizeDocumentSourceReference(sourceReference, fallbackDocumentId);
+
+  if (!normalized) {
+    delete block.dataset.sourceReference;
+    return true;
+  }
+
+  block.dataset.sourceReference = encodeDataJson(normalized);
+  block.append(createHeadingReferenceIndicator(root.ownerDocument, normalized));
   return true;
 }
 

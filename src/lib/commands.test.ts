@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  dedupeBookmarks,
   filterPaletteItems,
   findBookmarkAtPage,
   sortRecentDocuments
@@ -73,5 +74,30 @@ describe("commands helpers", () => {
 
     expect(bookmark?.label).toBe("Page 3");
     expect(findBookmarkAtPage([], 1)).toBeNull();
+  });
+
+  it("dedupes bookmarks by page while keeping the first saved mark", () => {
+    const bookmarks = dedupeBookmarks([
+      {
+        id: "bookmark-older",
+        page: 3,
+        label: "Older page 3",
+        createdAt: "2026-01-01T00:00:00Z"
+      },
+      {
+        id: "bookmark-newer",
+        page: 3,
+        label: "Newer page 3",
+        createdAt: "2026-01-02T00:00:00Z"
+      },
+      {
+        id: "bookmark-4",
+        page: 4,
+        label: "Page 4",
+        createdAt: "2026-01-03T00:00:00Z"
+      }
+    ]);
+
+    expect(bookmarks.map((bookmark) => bookmark.id)).toEqual(["bookmark-older", "bookmark-4"]);
   });
 });
