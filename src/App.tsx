@@ -1,5 +1,5 @@
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import CommandPalette from "./components/CommandPalette";
@@ -12,11 +12,14 @@ import { createUnifiedSearchController } from "./search";
 import { openLibraryFolder } from "./lib/api";
 import { isPassiveStatusMessage } from "./lib/app/helpers";
 import {
-  resetActiveDocumentAppearanceProfile,
-  resetAllDocumentAppearanceSettings,
-  toggleSharedDocumentAppearancePaper,
-  updateDocumentAppearanceMode,
-  updateDocumentAppearancePaperColor
+  createNewCustomTheme,
+  createViewerDisplayConfig,
+  deleteCustomTheme,
+  deriveThemeCssVariables,
+  duplicateTheme,
+  saveCustomThemeDraft,
+  type ThemeDefinition,
+  type ThemeDraft
 } from "./lib/app/settingsRegistry";
 import { useAppSettings } from "./lib/app/useAppSettings";
 import { useCommandRegistry } from "./lib/app/useCommandRegistry";
@@ -27,6 +30,12 @@ import { useWorkspaceController } from "./lib/app/useWorkspaceController";
 import { collectDocuments } from "./lib/tree";
 
 const appWindow = getCurrentWindow();
+
+type FullscreenState =
+  | "windowed"
+  | "entering"
+  | "fullscreen"
+  | "exiting";
 
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
@@ -76,20 +85,174 @@ export default function App() {
     activeDocument: workspace.activeDocument,
     setStatusMessage: workspace.setStatusMessage
   });
-  const { settings, selectors, setSetting } = useAppSettings();
+  const { settings, selectors, setSetting, updateSettings } = useAppSettings();
   const palette = usePaletteController();
   const searchController = useMemo(() => createUnifiedSearchController(), []);
+  const searchOverlayOpen = useSyncExternalStore(
+    searchController.subscribe,
+    () => searchController.getSnapshot().open,
+    () => false
+  );
   const [noteRevealRequest, setNoteRevealRequest] = useState<import("./lib/types").NoteRevealRequest | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [fullscreenState, setFullscreenState] = useState<FullscreenState>("windowed");
+  const [showFullscreenHint, setShowFullscreenHint] = useState(false);
+  const fullscreenTransitionRef = useRef(false);
   const settingsContainerRef = useRef<HTMLDivElement | null>(null);
   const searchableDocuments = useMemo(
     () => workspace.libraryTree ? collectDocuments(workspace.libraryTree) : [],
     [workspace.libraryTree]
   );
-  const viewerDisplayConfig = selectors.viewerDisplayConfig(settings);
-  const readerControlsEnabled =
-    workspace.workspaceMode === "reader" && workspace.activeDocument !== null;
+  const [themePreview, setThemePreview] = useState<ThemeDefinition | null>(null);
+  const activeTheme = selectors.activeTheme(settings);
+  const themeList = selectors.themeList(settings);
+  const readerPreferences = selectors.readerPreferences(settings);
+  const viewerDisplayConfig = themePreview
+    ? createViewerDisplayConfig(themePreview)
+    : selectors.viewerDisplayConfig(settings);
+  const readerPaneSplitRatio = selectors.readerPaneSplitRatio(settings);
+  const readerOverlayOpen = palette.paletteOpen || searchOverlayOpen || outlineOpen;
+  const readerFullscreenActive =
+    workspace.workspaceMode === "reader" && fullscreenState === "fullscreen";
+  const fullscreenTransitionActive =
+    fullscreenState === "entering" || fullscreenState === "exiting";
+  const readerPreferenceStates = useMemo(
+    () => ({
+      fullscreenMode: {
+        checked: fullscreenState === "fullscreen" || fullscreenState === "entering",
+        disabled: fullscreenTransitionActive
+      }
+    }),
+    [fullscreenState, fullscreenTransitionActive]
+  );
+
+  const syncFullscreenState = useCallback(async () => {
+    if (fullscreenTransitionRef.current) {
+      return;
+    }
+
+    try {
+      const fullscreen = await appWindow.isFullscreen();
+      setFullscreenState(fullscreen ? "fullscreen" : "windowed");
+    } catch (error) {
+      console.error("fullscreen sync failed:", error);
+    }
+  }, []);
+
+  const enterFullscreen = useCallback(async () => {
+    if (workspace.workspaceMode !== "reader") {
+      workspace.setStatusMessage("Open the reader to enter fullscreen.");
+      return;
+    }
+
+    if (fullscreenTransitionRef.current || fullscreenState === "fullscreen" || fullscreenState === "entering") {
+      return;
+    }
+
+    fullscreenTransitionRef.current = true;
+    setFullscreenState("entering");
+
+    try {
+      await appWindow.setFullscreen(true);
+      setSettingsOpen(false);
+      setFullscreenState("fullscreen");
+    } catch (error) {
+      setFullscreenState("windowed");
+      workspace.setStatusMessage("Unable to enter fullscreen.");
+      console.error("enter fullscreen failed:", error);
+    } finally {
+      window.setTimeout(() => {
+        fullscreenTransitionRef.current = false;
+        void syncFullscreenState();
+      }, 300);
+    }
+  }, [fullscreenState, syncFullscreenState, workspace.setStatusMessage, workspace.workspaceMode]);
+
+  const exitFullscreen = useCallback(async () => {
+    if (fullscreenTransitionRef.current || fullscreenState === "windowed" || fullscreenState === "exiting") {
+      return;
+    }
+
+    fullscreenTransitionRef.current = true;
+    setFullscreenState("exiting");
+
+    try {
+      await appWindow.setFullscreen(false);
+      setFullscreenState("windowed");
+    } catch (error) {
+      setFullscreenState("fullscreen");
+      console.error("exit fullscreen failed:", error);
+    } finally {
+      window.setTimeout(() => {
+        fullscreenTransitionRef.current = false;
+        void syncFullscreenState();
+      }, 300);
+    }
+  }, [fullscreenState, syncFullscreenState]);
+
+  const toggleFullscreen = useCallback(async () => {
+    if (fullscreenState === "fullscreen") {
+      await exitFullscreen();
+      return;
+    }
+
+    if (fullscreenState === "windowed") {
+      await enterFullscreen();
+    }
+  }, [enterFullscreen, exitFullscreen, fullscreenState]);
+
+  useEffect(() => {
+    if (themePreview && themePreview.id !== activeTheme.id) {
+      setThemePreview(null);
+    }
+  }, [activeTheme.id, themePreview]);
+
+  useEffect(() => {
+    if (fullscreenState === "fullscreen" || fullscreenState === "windowed") {
+      const nextFullscreenPreference = fullscreenState === "fullscreen";
+      if (readerPreferences.fullscreenMode !== nextFullscreenPreference) {
+        setSetting("readerPreferences", (currentValue) => ({
+          ...currentValue,
+          fullscreenMode: nextFullscreenPreference
+        }));
+      }
+    }
+  }, [fullscreenState, readerPreferences.fullscreenMode, setSetting]);
+
+  useEffect(() => {
+    if (workspace.workspaceMode !== "reader" && fullscreenState === "fullscreen") {
+      void exitFullscreen();
+    }
+  }, [exitFullscreen, fullscreenState, workspace.workspaceMode]);
+
+  useEffect(() => {
+    if (!readerFullscreenActive) {
+      setShowFullscreenHint(false);
+      return;
+    }
+
+    setShowFullscreenHint(true);
+    const timer = window.setTimeout(() => {
+      setShowFullscreenHint(false);
+    }, 2200);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [readerFullscreenActive]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const rootStyle = document.documentElement.style;
+    const themeVariables = deriveThemeCssVariables(themePreview ?? activeTheme);
+    for (const [variableName, variableValue] of Object.entries(themeVariables)) {
+      rootStyle.setProperty(variableName, variableValue);
+    }
+  }, [activeTheme, themePreview]);
 
   useEffect(() => {
     searchController.setContext({
@@ -164,6 +327,7 @@ export default function App() {
     let unlistenResized: (() => void) | null = null;
     let unlistenScaleChanged: (() => void) | null = null;
     let unlistenMoved: (() => void) | null = null;
+    let unlistenFocusChanged: (() => void) | null = null;
 
     async function syncWindowChromeState() {
       try {
@@ -189,27 +353,35 @@ export default function App() {
       }
 
       try {
-        if (!(await appWindow.isMaximized())) {
+        const fullscreen = await appWindow.isFullscreen();
+        if (!fullscreen && !(await appWindow.isMaximized())) {
           await appWindow.maximize();
         }
       } catch (error) {
         console.error("startup maximize failed:", error);
       }
 
-      await syncWindowChromeState();
+      await Promise.all([syncWindowChromeState(), syncFullscreenState()]);
 
       try {
-        [unlistenResized, unlistenScaleChanged, unlistenMoved] = await Promise.all([
-          appWindow.onResized(() => {
-            void syncWindowChromeState();
-          }),
-          appWindow.onScaleChanged(() => {
-            void syncWindowChromeState();
-          }),
-          appWindow.onMoved(() => {
-            void syncWindowChromeState();
-          })
-        ]);
+        [unlistenResized, unlistenScaleChanged, unlistenMoved, unlistenFocusChanged] =
+          await Promise.all([
+            appWindow.onResized(() => {
+              void syncWindowChromeState();
+              void syncFullscreenState();
+            }),
+            appWindow.onScaleChanged(() => {
+              void syncWindowChromeState();
+              void syncFullscreenState();
+            }),
+            appWindow.onMoved(() => {
+              void syncWindowChromeState();
+            }),
+            appWindow.onFocusChanged(() => {
+              void syncWindowChromeState();
+              void syncFullscreenState();
+            })
+          ]);
       } catch (error) {
         console.error("window event subscription failed:", error);
       }
@@ -223,14 +395,28 @@ export default function App() {
       unlistenResized?.();
       unlistenScaleChanged?.();
       unlistenMoved?.();
+      unlistenFocusChanged?.();
     };
-  }, []);
+  }, [syncFullscreenState]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const originatedFromEditable = isEditableTarget(event.target);
+      const normalizedKey = event.key.toLowerCase();
 
-      if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "f") {
+      if (event.key === "F11" || normalizedKey === "f11" || event.code === "F11") {
+        event.preventDefault();
+        void toggleFullscreen();
+        return;
+      }
+
+      if (event.key === "Escape" && fullscreenState === "fullscreen") {
+        event.preventDefault();
+        void exitFullscreen();
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && normalizedKey === "f") {
         if (event.shiftKey) {
           event.preventDefault();
           openUnifiedSearch();
@@ -275,14 +461,30 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [
     commandRegistry,
+    exitFullscreen,
+    fullscreenState,
     outlineOpen,
     palette.closePalette,
     palette.openCommands,
     palette.paletteOpen,
     searchController,
     settingsOpen,
+    toggleFullscreen,
     workspace.workspaceMode
   ]);
+
+  useEffect(() => {
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        void syncFullscreenState();
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [syncFullscreenState]);
 
   useEffect(() => {
     if (!settingsOpen) {
@@ -324,17 +526,11 @@ export default function App() {
   }, [workspace.activeDocumentId]);
 
   const topbarTitle =
-    workspace.workspaceMode === "collection"
-      ? workspace.selectedCollection?.folder.name ?? "Library"
-      : workspace.activeDocument?.document.title ?? "Library";
+    workspace.selectedCollection?.folder.name ?? "Library";
   const topbarStatus =
-    workspace.workspaceMode === "collection"
-      ? workspace.selectedCollection
-        ? `${workspace.selectedCollection.documents.length} books`
-        : "No collection selected"
-      : workspace.viewerSnapshot.pageCount > 0
-        ? `${workspace.viewerSnapshot.currentPage} / ${workspace.viewerSnapshot.pageCount}`
-        : "No document open";
+    workspace.selectedCollection
+      ? `${workspace.selectedCollection.documents.length} books`
+      : "No collection selected";
 
   function handleTopbarMouseDown(event: ReactMouseEvent<HTMLElement>) {
     if (event.button !== 0) {
@@ -350,9 +546,78 @@ export default function App() {
     });
   }
 
+  function renderWindowControls() {
+    return (
+      <div className="window-controls" data-no-window-drag>
+        <button
+          className="window-control"
+          type="button"
+          aria-label="Minimize window"
+          onClick={() => {
+            void appWindow.minimize();
+          }}
+        >
+          <svg
+            className="window-control__icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            aria-hidden="true"
+          >
+            <path d="M6 12.5h12" />
+          </svg>
+        </button>
+        <button
+          className="window-control"
+          type="button"
+          aria-label="Toggle maximize window"
+          onClick={() => {
+            void appWindow.toggleMaximize();
+          }}
+        >
+          <svg
+            className="window-control__icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            aria-hidden="true"
+          >
+            <rect x="6.5" y="6.5" width="11" height="11" rx="1" />
+          </svg>
+        </button>
+        <button
+          className="window-control window-control--close"
+          type="button"
+          aria-label="Close window"
+          onClick={() => {
+            void appWindow.close();
+          }}
+        >
+          <svg
+            className="window-control__icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            aria-hidden="true"
+          >
+            <path d="m7 7 10 10" />
+            <path d="m17 7-10 10" />
+          </svg>
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <main className="app-shell">
-      <nav
+    <main
+      className={`app-shell${readerFullscreenActive ? " app-shell--reader-fullscreen" : ""}`}
+      data-fullscreen={readerFullscreenActive ? "true" : "false"}
+    >
+      {!readerFullscreenActive ? (
+        <nav
         className={`sidebar${workspace.workspaceMode === "reader" ? " sidebar--reader" : ""}`}
         aria-label="Navigation"
       >
@@ -431,41 +696,50 @@ export default function App() {
           {settingsOpen ? (
             <DisplaySettingsPopover
               id="display-settings-popover"
-              controlsDisabled={!readerControlsEnabled}
-              settings={settings}
-              onChangeDocumentAppearanceMode={(appearance) => {
-                setSetting("documentAppearance", (currentValue) =>
-                  updateDocumentAppearanceMode(currentValue, appearance)
+              activeTheme={activeTheme}
+              activeThemeId={settings.activeThemeId}
+              readerPreferences={readerPreferences}
+              readerPreferenceStates={readerPreferenceStates}
+              themeList={themeList}
+              onCreateTheme={() => {
+                setThemePreview(null);
+                updateSettings((currentSettings) => createNewCustomTheme(currentSettings));
+              }}
+              onDeleteTheme={(themeId) => {
+                setThemePreview(null);
+                updateSettings((currentSettings) =>
+                  deleteCustomTheme(currentSettings, themeId)
                 );
               }}
-              onChangeDocumentPaperColor={(value) => {
-                setSetting("documentAppearance", (currentValue) =>
-                  updateDocumentAppearancePaperColor(currentValue, value)
+              onDuplicateTheme={(themeId) => {
+                setThemePreview(null);
+                updateSettings((currentSettings) =>
+                  duplicateTheme(currentSettings, themeId)
                 );
               }}
-              onResetActiveDocumentAppearance={() => {
-                setSetting("documentAppearance", (currentValue) =>
-                  resetActiveDocumentAppearanceProfile(currentValue)
+              onPreviewTheme={(themeDefinition) => {
+                setThemePreview(themeDefinition);
+              }}
+              onSaveThemeDraft={(themeId, themeDraft: ThemeDraft) => {
+                setThemePreview(null);
+                updateSettings((currentSettings) =>
+                  saveCustomThemeDraft(currentSettings, themeId, themeDraft)
                 );
               }}
-              onResetAllDocumentAppearance={() => {
-                setSetting("documentAppearance", (currentValue) =>
-                  resetAllDocumentAppearanceSettings(currentValue.mode)
-                );
+              onSelectTheme={(themeId) => {
+                setThemePreview(null);
+                setSetting("activeThemeId", themeId);
               }}
-              onToggleSharedDocumentPaperColor={() => {
-                setSetting("documentAppearance", (currentValue) =>
-                  toggleSharedDocumentAppearancePaper(currentValue)
-                );
-              }}
-              onChangeThemeColor={(key, value) => {
-                setSetting("themeProfile", (currentValue) => ({
+              onToggleReaderPreference={(key) => {
+                if (key === "fullscreenMode") {
+                  void toggleFullscreen();
+                  return;
+                }
+
+                setSetting("readerPreferences", (currentValue) => ({
                   ...currentValue,
-                  [key]: value
+                  [key]: !currentValue[key]
                 }));
-              }}
-              onToggleSetting={(key) => {
-                setSetting(key, (currentValue) => !currentValue);
               }}
             />
           ) : null}
@@ -478,99 +752,55 @@ export default function App() {
             aria-controls="display-settings-popover"
             aria-expanded={settingsOpen}
             onClick={() => {
-              setSettingsOpen((currentValue) => !currentValue);
+              setSettingsOpen((currentValue) => {
+                const nextValue = !currentValue;
+                if (!nextValue) {
+                  setThemePreview(null);
+                }
+                return nextValue;
+              });
             }}
           >
             <ChromeIcon label="Settings">
-              <circle cx="12" cy="12" r="3.2" />
-              <path d="M12 2.8v2.1" />
-              <path d="M12 19.1v2.1" />
-              <path d="m4.9 4.9 1.5 1.5" />
-              <path d="m17.6 17.6 1.5 1.5" />
-              <path d="M2.8 12h2.1" />
-              <path d="M19.1 12h2.1" />
-              <path d="m4.9 19.1 1.5-1.5" />
-              <path d="m17.6 6.4 1.5-1.5" />
+              <circle cx="12" cy="12" r="2.6" />
+              <path d="M12 4.2v2.1" />
+              <path d="M12 17.7v2.1" />
+              <path d="m6.35 6.35 1.48 1.48" />
+              <path d="m16.17 16.17 1.48 1.48" />
+              <path d="M4.2 12h2.1" />
+              <path d="M17.7 12h2.1" />
+              <path d="m6.35 17.65 1.48-1.48" />
+              <path d="m16.17 7.83 1.48-1.48" />
+              <path d="M9.3 5.35 8.6 3.9" />
+              <path d="m15.4 20.1-.7-1.45" />
+              <path d="m5.35 14.7-1.45.7" />
+              <path d="m20.1 9.3-1.45.7" />
             </ChromeIcon>
           </button>
         </div>
       </nav>
+      ) : null}
 
-      <header className="topbar" onMouseDown={handleTopbarMouseDown}>
-        <div className="topbar__drag">
-          <div className="topbar__brand">
-            <strong>{topbarTitle}</strong>
+      {workspace.workspaceMode === "collection" && !readerFullscreenActive ? (
+        <header className="topbar" onMouseDown={handleTopbarMouseDown}>
+          <div className="topbar__drag">
+            <div className="topbar__brand">
+              <strong>{topbarTitle}</strong>
+            </div>
+            <div className="topbar__status">
+              <span>{topbarStatus}</span>
+              {!isPassiveStatusMessage(workspace.statusMessage) ? (
+                <span>{workspace.statusMessage}</span>
+              ) : null}
+            </div>
           </div>
-          <div className="topbar__status">
-            <span>{topbarStatus}</span>
-            {!isPassiveStatusMessage(workspace.statusMessage) ? (
-              <span>{workspace.statusMessage}</span>
-            ) : null}
-          </div>
-        </div>
-        <div className="window-controls" data-no-window-drag>
-          <button
-            className="window-control"
-            type="button"
-            aria-label="Minimize window"
-            onClick={() => {
-              void appWindow.minimize();
-            }}
-          >
-            <svg
-              className="window-control__icon"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              aria-hidden="true"
-            >
-              <path d="M6 12.5h12" />
-            </svg>
-          </button>
-          <button
-            className="window-control"
-            type="button"
-            aria-label="Toggle maximize window"
-            onClick={() => {
-              void appWindow.toggleMaximize();
-            }}
-          >
-            <svg
-              className="window-control__icon"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              aria-hidden="true"
-            >
-              <rect x="6.5" y="6.5" width="11" height="11" rx="1" />
-            </svg>
-          </button>
-          <button
-            className="window-control window-control--close"
-            type="button"
-            aria-label="Close window"
-            onClick={() => {
-              void appWindow.close();
-            }}
-          >
-            <svg
-              className="window-control__icon"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              aria-hidden="true"
-            >
-              <path d="m7 7 10 10" />
-              <path d="m17 7-10 10" />
-            </svg>
-          </button>
-        </div>
-      </header>
+          {renderWindowControls()}
+        </header>
+      ) : null}
 
-      <section className="workspace">
+      <section
+        className={`workspace${workspace.workspaceMode === "reader" ? " workspace--reader" : ""}`}
+      >
         {workspace.workspaceMode === "collection" ? (
           <CollectionView
             tree={workspace.libraryTree}
@@ -618,6 +848,21 @@ export default function App() {
             onStatusChange={workspace.handleViewerStatusChange}
             registerApi={workspace.registerViewerApi}
             viewerDisplayConfig={viewerDisplayConfig}
+            documentHeaderTitle={workspace.activeDocument?.document.title ?? "Reader"}
+            documentHeaderCurrentPage={workspace.viewerSnapshot.currentPage}
+            documentHeaderPageCount={workspace.viewerSnapshot.pageCount}
+            documentHeaderZoom={workspace.viewerSnapshot.zoom}
+            viewerApi={workspace.viewerApi}
+            onHeaderMouseDown={handleTopbarMouseDown}
+            windowControls={renderWindowControls()}
+            showHeaders={!readerFullscreenActive}
+            showFullscreenHint={showFullscreenHint}
+            fullscreen={readerFullscreenActive}
+            readerPaneSplitRatio={readerPaneSplitRatio}
+            hidePaneResizeHandle={readerOverlayOpen}
+            onChangeReaderPaneSplitRatio={(nextRatio) => {
+              setSetting("readerPaneSplitRatio", nextRatio);
+            }}
           />
         )}
       </section>

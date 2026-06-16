@@ -38,11 +38,9 @@ type RuntimeTextLayerInstance = {
 };
 type TextLayerRenderState = "missing" | "mismatch" | "rendering" | "ready" | "error";
 
-const activeTextLayers = new Map<HTMLDivElement, HTMLDivElement>();
+const activeTextLayers = new Map<HTMLDivElement, HTMLSpanElement>();
 let selectionListenerController: AbortController | null = null;
 let isGlobalPointerDown = false;
-let isFirefoxTextSelection: boolean | null = null;
-let previousSelectionRange: Range | null = null;
 
 function removeNullCharacters(value: string) {
   return value.replace(/\x00/g, "");
@@ -131,11 +129,32 @@ function getContainerMetrics(container: HTMLDivElement) {
   };
 }
 
-function resetSelectionArtifacts(endOfContent: HTMLDivElement, container: HTMLDivElement) {
-  container.append(endOfContent);
-  endOfContent.style.width = "";
-  endOfContent.style.height = "";
-  endOfContent.style.userSelect = "";
+function updateSelectionTailPosition(layer: HTMLDivElement, tail: HTMLSpanElement) {
+  const spans = Array.from(layer.querySelectorAll<HTMLElement>("span")).filter(
+    (span) =>
+      !span.classList.contains("reader-page__selection-tail") &&
+      !span.classList.contains("markedContent")
+  );
+
+  if (spans.length === 0) {
+    tail.style.top = "100%";
+    return;
+  }
+
+  const layerRect = layer.getBoundingClientRect();
+  const scaleY = layer.offsetHeight > 0 ? layerRect.height / layer.offsetHeight : 1;
+  let lowestBottom = 0;
+
+  for (const span of spans) {
+    const spanRect = span.getBoundingClientRect();
+    lowestBottom = Math.max(lowestBottom, (spanRect.bottom - layerRect.top) / scaleY);
+  }
+
+  tail.style.top = `${Math.ceil(lowestBottom)}px`;
+}
+
+function resetSelectionArtifacts(selectionTail: HTMLSpanElement, container: HTMLDivElement) {
+  container.append(selectionTail);
   container.classList.remove("selecting");
 }
 
@@ -146,8 +165,6 @@ function removeGlobalSelectionListener() {
   selectionListenerController?.abort();
   selectionListenerController = null;
   isGlobalPointerDown = false;
-  isFirefoxTextSelection = null;
-  previousSelectionRange = null;
 }
 
 function enableGlobalSelectionListener() {
@@ -169,8 +186,8 @@ function enableGlobalSelectionListener() {
     "pointerup",
     () => {
       isGlobalPointerDown = false;
-      activeTextLayers.forEach((endOfContent, container) => {
-        resetSelectionArtifacts(endOfContent, container);
+      activeTextLayers.forEach((selectionTail, container) => {
+        resetSelectionArtifacts(selectionTail, container);
       });
     },
     { signal }
@@ -179,8 +196,8 @@ function enableGlobalSelectionListener() {
     "blur",
     () => {
       isGlobalPointerDown = false;
-      activeTextLayers.forEach((endOfContent, container) => {
-        resetSelectionArtifacts(endOfContent, container);
+      activeTextLayers.forEach((selectionTail, container) => {
+        resetSelectionArtifacts(selectionTail, container);
       });
     },
     { signal }
@@ -189,8 +206,8 @@ function enableGlobalSelectionListener() {
     "keyup",
     () => {
       if (!isGlobalPointerDown) {
-        activeTextLayers.forEach((endOfContent, container) => {
-          resetSelectionArtifacts(endOfContent, container);
+        activeTextLayers.forEach((selectionTail, container) => {
+          resetSelectionArtifacts(selectionTail, container);
         });
       }
     },
@@ -201,8 +218,8 @@ function enableGlobalSelectionListener() {
     () => {
       const selection = document.getSelection();
       if (!selection || selection.rangeCount === 0) {
-        activeTextLayers.forEach((endOfContent, container) => {
-          resetSelectionArtifacts(endOfContent, container);
+        activeTextLayers.forEach((selectionTail, container) => {
+          resetSelectionArtifacts(selectionTail, container);
         });
         return;
       }
@@ -220,70 +237,13 @@ function enableGlobalSelectionListener() {
         }
       }
 
-      for (const [textLayerDiv, endOfContent] of activeTextLayers) {
+      for (const [textLayerDiv, selectionTail] of activeTextLayers) {
         if (activeSelectionLayers.has(textLayerDiv)) {
           textLayerDiv.classList.add("selecting");
         } else {
-          resetSelectionArtifacts(endOfContent, textLayerDiv);
+          resetSelectionArtifacts(selectionTail, textLayerDiv);
         }
       }
-
-      const firstTextLayer = activeTextLayers.keys().next().value;
-      if (!firstTextLayer) {
-        return;
-      }
-
-      isFirefoxTextSelection ??=
-        getComputedStyle(firstTextLayer).getPropertyValue("-moz-user-select") ===
-        "none";
-      if (isFirefoxTextSelection) {
-        return;
-      }
-
-      const range = selection.getRangeAt(0);
-      const modifyingStart =
-        previousSelectionRange !== null &&
-        (range.compareBoundaryPoints(Range.END_TO_END, previousSelectionRange) === 0 ||
-          range.compareBoundaryPoints(Range.START_TO_END, previousSelectionRange) ===
-            0);
-
-      let anchor: Node | null = modifyingStart ? range.startContainer : range.endContainer;
-      if (anchor.nodeType === Node.TEXT_NODE) {
-        anchor = anchor.parentNode;
-      }
-      if (anchor instanceof HTMLElement && anchor.classList.contains("highlight")) {
-        anchor = anchor.parentNode;
-      }
-      if (!anchor) {
-        previousSelectionRange = range.cloneRange();
-        return;
-      }
-
-      if (!modifyingStart && range.endOffset === 0) {
-        do {
-          while (anchor && !anchor.previousSibling) {
-            anchor = anchor.parentNode;
-          }
-          anchor = anchor?.previousSibling ?? null;
-        } while (anchor && anchor.childNodes.length === 0);
-      }
-
-      const anchorElement = anchor instanceof Element ? anchor : null;
-      const parentTextLayer = anchorElement?.parentElement?.closest(
-        ".reader-page__text-layer, .textLayer"
-      ) as HTMLDivElement | null;
-      const endOfContent = parentTextLayer ? activeTextLayers.get(parentTextLayer) : null;
-      if (anchorElement?.parentElement && endOfContent && parentTextLayer) {
-        endOfContent.style.width = parentTextLayer.style.width;
-        endOfContent.style.height = parentTextLayer.style.height;
-        endOfContent.style.userSelect = "text";
-        anchorElement.parentElement.insertBefore(
-          endOfContent,
-          modifyingStart ? anchorElement : anchorElement.nextSibling
-        );
-      }
-
-      previousSelectionRange = range.cloneRange();
     },
     { signal }
   );
@@ -291,16 +251,33 @@ function enableGlobalSelectionListener() {
 
 function installSelectionBehavior(
   container: HTMLDivElement,
-  endOfContent: HTMLDivElement,
+  selectionTail: HTMLSpanElement,
   handleCopy: (event: ClipboardEvent) => void
 ) {
   const controller = new AbortController();
   const { signal } = controller;
 
   container.addEventListener(
-    "mousedown",
-    () => {
+    "pointerdown",
+    (event) => {
+      if (event.button !== 0) {
+        return;
+      }
       container.classList.add("selecting");
+    },
+    { signal }
+  );
+  window.addEventListener(
+    "pointerup",
+    () => {
+      resetSelectionArtifacts(selectionTail, container);
+    },
+    { signal }
+  );
+  window.addEventListener(
+    "pointercancel",
+    () => {
+      resetSelectionArtifacts(selectionTail, container);
     },
     { signal }
   );
@@ -310,13 +287,13 @@ function installSelectionBehavior(
     { signal }
   );
 
-  activeTextLayers.set(container, endOfContent);
+  activeTextLayers.set(container, selectionTail);
   enableGlobalSelectionListener();
 
   return () => {
     controller.abort();
     activeTextLayers.delete(container);
-    resetSelectionArtifacts(endOfContent, container);
+    resetSelectionArtifacts(selectionTail, container);
     removeGlobalSelectionListener();
   };
 }
@@ -426,16 +403,19 @@ const PdfTextLayer = memo(function PdfTextLayer({
           return;
         }
 
-        const endOfContent = document.createElement("div");
-        endOfContent.className = "endOfContent";
-        container.append(endOfContent);
+        const selectionTail = document.createElement("span");
+        selectionTail.className = "reader-page__selection-tail";
+        selectionTail.setAttribute("aria-hidden", "true");
+        selectionTail.textContent = "\u200B";
+        container.append(selectionTail);
+        updateSelectionTailPosition(container, selectionTail);
         textRunsRef.current = buildPageTextRunSnapshots(
           textLayer,
           runtimeTextLayer?.textDivs ?? []
         );
         cleanupSelectionBehavior = installSelectionBehavior(
           container,
-          endOfContent,
+          selectionTail,
           (event) => {
             copyTextLayerSelection(
               event,

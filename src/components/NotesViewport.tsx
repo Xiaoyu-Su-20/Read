@@ -14,6 +14,8 @@ import type {
 type NotesViewportProps = {
   note: NoteDocument | null;
   loading: boolean;
+  fullscreen: boolean;
+  headerActionsContainerId: string | null;
   navigationItems: NoteNavigationItem[];
   onChangeTitle: (title: string) => void;
   onChangeBlocks: (blocks: NoteDocument["blocks"]) => void;
@@ -32,6 +34,8 @@ type NotesViewportProps = {
 const NotesViewport = memo(function NotesViewport({
   note,
   loading,
+  fullscreen,
+  headerActionsContainerId,
   navigationItems,
   onChangeTitle,
   onChangeBlocks,
@@ -47,10 +51,15 @@ const NotesViewport = memo(function NotesViewport({
   revealRequest
 }: NotesViewportProps) {
   return (
-    <section className="notes-viewport" aria-label="Notes viewport">
+    <section
+      className={`notes-viewport${fullscreen ? " notes-viewport--fullscreen" : ""}`}
+      aria-label="Notes viewport"
+    >
       <NotesPane
         note={note}
         loading={loading}
+        fullscreen={fullscreen}
+        headerActionsContainerId={headerActionsContainerId}
         navigationItems={navigationItems}
         onChangeTitle={onChangeTitle}
         onChangeBlocks={onChangeBlocks}

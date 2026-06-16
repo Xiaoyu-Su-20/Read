@@ -19,6 +19,7 @@ describe("PageCache helpers", () => {
       cacheKey: "doc:1",
       requestKey: "doc:1",
       logicalKey: "doc:1",
+      renderZoom: 1,
       renderVariant: "raw",
       normalizationToken: null,
       textLayerTransform: { sourceWidth: 612, sourceHeight: 792, matrix: [1, 0, 0, 1, 0, 0] }
@@ -32,6 +33,7 @@ describe("PageCache helpers", () => {
       cacheKey: "doc:2",
       requestKey: "doc:2",
       logicalKey: "doc:2",
+      renderZoom: 1,
       renderVariant: "raw",
       normalizationToken: null,
       textLayerTransform: { sourceWidth: 612, sourceHeight: 792, matrix: [1, 0, 0, 1, 0, 0] }
@@ -48,6 +50,7 @@ describe("PageCache helpers", () => {
       cacheKey: "doc:3",
       requestKey: "doc:3",
       logicalKey: "doc:3",
+      renderZoom: 1,
       renderVariant: "raw",
       normalizationToken: null,
       textLayerTransform: { sourceWidth: 612, sourceHeight: 792, matrix: [1, 0, 0, 1, 0, 0] }

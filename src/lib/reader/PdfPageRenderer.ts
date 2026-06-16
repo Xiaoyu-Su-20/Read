@@ -47,6 +47,7 @@ export function toCachedRenderedPage(
     ...payload,
     imageUrl: convertFileSrc(payload.imagePath),
     requestKey: payload.cacheKey,
-    logicalKey: makePageCacheKey(documentId, payload.pageNumber, zoom)
+    logicalKey: makePageCacheKey(documentId, payload.pageNumber, zoom),
+    renderZoom: zoom
   };
 }

@@ -1,24 +1,108 @@
-export type ThemeProfile = {
+export type ThemeSurfaceTone = "light" | "dark";
+
+export type ThemeSources = {
   workspace: string;
   chrome: string;
-  text: string;
+  uiText: string;
+  documentPaper: string;
+  documentInk: string;
   accent: string;
   interactive: string;
   danger: string;
 };
 
-export type ThemeProfileKey = keyof ThemeProfile;
+export type ThemeSourceKey = keyof ThemeSources;
 
-export const themeProfileDefinitions: Array<{
-  key: ThemeProfileKey;
+export type ViewerDisplayConfig = {
+  mode: ThemeSurfaceTone;
+  paperColor: string;
+  inkColor: string;
+  imageFilter: string;
+};
+
+export type DocumentRenderTheme = {
+  surfaceTone: ThemeSurfaceTone;
+};
+
+export type ThemeKind = "builtin" | "custom";
+
+export type ThemeDefinition = {
+  id: string;
+  name: string;
+  kind: ThemeKind;
+  source: ThemeSources;
+  document: DocumentRenderTheme;
+};
+
+export type ThemeDraft = {
+  name: string;
+  source: ThemeSources;
+  document: DocumentRenderTheme;
+};
+
+export type ThemeSourceDefinition = {
+  key: Exclude<ThemeSourceKey, "danger">;
   label: string;
-}> = [
-  { key: "workspace", label: "Workspace" },
-  { key: "chrome", label: "Chrome" },
-  { key: "text", label: "Text" },
-  { key: "accent", label: "Accent" },
-  { key: "interactive", label: "Interactive" },
-  { key: "danger", label: "Danger" }
+};
+
+export type ThemeSourceSectionDefinition = {
+  key: "application" | "document" | "interaction";
+  label: string;
+  definitions: ThemeSourceDefinition[];
+};
+
+export type ResolvedTheme = {
+  source: ThemeSources;
+  overlaySurface: string;
+  overlaySurfaceStrong: string;
+  overlayBorder: string;
+  contextMenuSurface: string;
+  contextMenuHover: string;
+  textPrimary: string;
+  textSecondary: string;
+  textMuted: string;
+  iconColor: string;
+  selectionBackground: string;
+  selectionText: string;
+  focusRing: string;
+  switchOn: string;
+  activeSurface: string;
+  pageLinkBackground: string;
+  pageLinkBorder: string;
+  pageLinkText: string;
+  pageLinkHoverBackground: string;
+  viewerDisplayConfig: ViewerDisplayConfig;
+  cssVariables: Record<string, string>;
+};
+
+export const DEFAULT_ACTIVE_THEME_ID = "builtin-midnight";
+
+export const themeSourceEditorSections: ThemeSourceSectionDefinition[] = [
+  {
+    key: "application",
+    label: "Application",
+    definitions: [
+      { key: "workspace", label: "Workspace" },
+      { key: "chrome", label: "Chrome" },
+      { key: "uiText", label: "UI Text" }
+    ]
+  },
+  {
+    key: "document",
+    label: "Document",
+    definitions: [
+      { key: "documentPaper", label: "Paper" },
+      { key: "documentInk", label: "Ink" }
+    ]
+  },
+  {
+    key: "interaction",
+    label: "Interaction",
+    definitions: [
+      { key: "accent", label: "Accent" },
+      { key: "interactive", label: "Interactive" }
+    ]
+  }
 ];
 
 const HEX_COLOR_PATTERN = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
@@ -29,8 +113,26 @@ type RgbColor = {
   blue: number;
 };
 
+type HslColor = {
+  hue: number;
+  saturation: number;
+  lightness: number;
+};
+
 function clampChannel(value: number) {
   return Math.min(Math.max(Math.round(value), 0), 255);
+}
+
+function clampUnit(value: number) {
+  return Math.min(Math.max(value, 0), 1);
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function formatCssNumber(value: number) {
+  return Number.parseFloat(value.toFixed(3)).toString();
 }
 
 function toHexChannel(value: number) {
@@ -58,8 +160,74 @@ function toHexColor({ red, green, blue }: RgbColor) {
   return `#${toHexChannel(red)}${toHexChannel(green)}${toHexChannel(blue)}`;
 }
 
+function normalizeRgbChannel(channel: number) {
+  const normalized = channel / 255;
+  return normalized <= 0.03928
+    ? normalized / 12.92
+    : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function toHslColor(color: string): HslColor {
+  const { red, green, blue } = parseHexColor(color);
+  const r = red / 255;
+  const g = green / 255;
+  const b = blue / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const delta = max - min;
+  const lightness = (max + min) / 2;
+
+  if (delta === 0) {
+    return {
+      hue: 0,
+      saturation: 0,
+      lightness
+    };
+  }
+
+  const saturation =
+    lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+
+  let hue = 0;
+  switch (max) {
+    case r:
+      hue = ((g - b) / delta + (g < b ? 6 : 0)) / 6;
+      break;
+    case g:
+      hue = ((b - r) / delta + 2) / 6;
+      break;
+    default:
+      hue = ((r - g) / delta + 4) / 6;
+      break;
+  }
+
+  return {
+    hue: hue * 360,
+    saturation,
+    lightness
+  };
+}
+
+function getRelativeLuminance(color: string) {
+  const { red, green, blue } = parseHexColor(color);
+
+  return (
+    0.2126 * normalizeRgbChannel(red) +
+    0.7152 * normalizeRgbChannel(green) +
+    0.0722 * normalizeRgbChannel(blue)
+  );
+}
+
+function contrastRatio(colorA: string, colorB: string) {
+  const luminanceA = getRelativeLuminance(colorA);
+  const luminanceB = getRelativeLuminance(colorB);
+  const lighter = Math.max(luminanceA, luminanceB);
+  const darker = Math.min(luminanceA, luminanceB);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 function mixColors(base: string, blend: string, blendAmount: number) {
-  const safeBlendAmount = Math.min(Math.max(blendAmount, 0), 1);
+  const safeBlendAmount = clampUnit(blendAmount);
   const baseColor = parseHexColor(base);
   const blendColor = parseHexColor(blend);
 
@@ -72,8 +240,7 @@ function mixColors(base: string, blend: string, blendAmount: number) {
 
 function withAlpha(color: string, alpha: number) {
   const rgb = parseHexColor(color);
-  const safeAlpha = Math.min(Math.max(alpha, 0), 1);
-  return `rgba(${rgb.red}, ${rgb.green}, ${rgb.blue}, ${safeAlpha})`;
+  return `rgba(${rgb.red}, ${rgb.green}, ${rgb.blue}, ${clampUnit(alpha)})`;
 }
 
 function lighten(color: string, amount: number) {
@@ -84,18 +251,142 @@ function darken(color: string, amount: number) {
   return mixColors(color, "#000000", amount);
 }
 
-export function createDefaultThemeProfile(): ThemeProfile {
+function ensureReadableTextColor(
+  preferred: string,
+  backgroundHint: string,
+  minimumRatio = 4.2
+) {
+  if (contrastRatio(preferred, backgroundHint) >= minimumRatio) {
+    return preferred;
+  }
+
+  const darkCandidate = "#0d1116";
+  const lightCandidate = "#f7fbff";
+  return contrastRatio(darkCandidate, backgroundHint) >= contrastRatio(lightCandidate, backgroundHint)
+    ? darkCandidate
+    : lightCandidate;
+}
+
+function createViewerFilterRecipe(
+  source: ThemeSources,
+  surfaceTone: ThemeSurfaceTone
+) {
+  const paperLuminance = getRelativeLuminance(source.documentPaper);
+  const inkLuminance = getRelativeLuminance(source.documentInk);
+  const paperInkContrast = contrastRatio(source.documentPaper, source.documentInk);
+  const inkHsl = toHslColor(source.documentInk);
+  const contrastFactor = clampUnit((paperInkContrast - 1) / 8);
+  const sepiaAmount =
+    surfaceTone === "dark"
+      ? clampNumber(inkHsl.saturation * 0.5, 0, 0.52)
+      : clampNumber(inkHsl.saturation * 0.34, 0, 0.4);
+  const saturateAmount =
+    surfaceTone === "dark"
+      ? clampNumber(1.2 + inkHsl.saturation * 2.2, 1.2, 3.1)
+      : clampNumber(1 + inkHsl.saturation * 1.6, 1, 2.6);
+  const brightness =
+    surfaceTone === "dark"
+      ? clampNumber(0.78 + paperLuminance * 0.22 + inkLuminance * 0.08, 0.74, 0.96)
+      : clampNumber(0.96 + paperLuminance * 0.08, 0.92, 1.08);
+  const contrast =
+    surfaceTone === "dark"
+      ? clampNumber(0.9 + contrastFactor * 0.16, 0.88, 1.06)
+      : clampNumber(0.92 + contrastFactor * 0.16, 0.9, 1.08);
+  const filterParts = [
+    surfaceTone === "dark" ? "invert(1)" : "",
+    surfaceTone === "dark" ? "hue-rotate(180deg)" : "",
+    "grayscale(1)",
+    `sepia(${formatCssNumber(sepiaAmount)})`,
+    `saturate(${formatCssNumber(saturateAmount)})`,
+    `hue-rotate(${Math.round(inkHsl.hue)}deg)`,
+    `brightness(${formatCssNumber(brightness)})`,
+    `contrast(${formatCssNumber(contrast)})`
+  ].filter(Boolean);
+
+  return filterParts.join(" ");
+}
+
+export function createDefaultThemeSources(): ThemeSources {
   return {
     workspace: "#13191e",
     chrome: "#13191e",
-    text: "#d8d8d8",
+    uiText: "#d8d8d8",
+    documentPaper: "#20242a",
+    documentInk: "#d8d8d8",
     accent: "#d4aa63",
     interactive: "#7682da",
     danger: "#b34444"
   };
 }
 
-export function normalizeThemeColor(value: unknown, fallback: string) {
+export function createDefaultDocumentRenderTheme(): DocumentRenderTheme {
+  return {
+    surfaceTone: "dark"
+  };
+}
+
+export const builtinThemeDefinitions: ThemeDefinition[] = [
+  {
+    id: "builtin-light",
+    name: "Light",
+    kind: "builtin",
+    source: {
+      workspace: "#e8e1d5",
+      chrome: "#f1ece2",
+      uiText: "#2f261c",
+      documentPaper: "#f7f1e5",
+      documentInk: "#2f261c",
+      accent: "#7b5b33",
+      interactive: "#4e6fc4",
+      danger: "#b5594f"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
+    id: DEFAULT_ACTIVE_THEME_ID,
+    name: "Midnight Reading",
+    kind: "builtin",
+    source: {
+      workspace: "#13191e",
+      chrome: "#13191e",
+      uiText: "#d8d8d8",
+      documentPaper: "#20242a",
+      documentInk: "#d8d8d8",
+      accent: "#d4aa63",
+      interactive: "#7682da",
+      danger: "#b34444"
+    },
+    document: {
+      surfaceTone: "dark"
+    }
+  },
+  {
+    id: "builtin-sepia",
+    name: "Sepia",
+    kind: "builtin",
+    source: {
+      workspace: "#211a14",
+      chrome: "#2b241d",
+      uiText: "#2d241a",
+      documentPaper: "#e7d9bb",
+      documentInk: "#3c2d1b",
+      accent: "#9d7646",
+      interactive: "#7e95c4",
+      danger: "#b16255"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  }
+];
+
+const builtinThemeMap = new Map(
+  builtinThemeDefinitions.map((themeDefinition) => [themeDefinition.id, themeDefinition] as const)
+);
+
+export function normalizeThemeSourceColor(value: unknown, fallback: string) {
   if (typeof value !== "string") {
     return fallback;
   }
@@ -112,87 +403,372 @@ export function normalizeThemeColor(value: unknown, fallback: string) {
   return normalizedValue;
 }
 
-export function normalizeThemeProfile(candidate: unknown): ThemeProfile {
-  const defaults = createDefaultThemeProfile();
+function normalizeThemeSurfaceTone(value: unknown, fallback: ThemeSurfaceTone) {
+  return value === "light" ? "light" : value === "dark" ? "dark" : fallback;
+}
+
+export function normalizeThemeSources(candidate: unknown): ThemeSources {
+  const defaults = createDefaultThemeSources();
   const record =
     typeof candidate === "object" && candidate !== null && !Array.isArray(candidate)
-      ? candidate
+      ? (candidate as Record<string, unknown>)
       : {};
 
   return {
-    workspace: normalizeThemeColor((record as Record<string, unknown>).workspace, defaults.workspace),
-    chrome: normalizeThemeColor((record as Record<string, unknown>).chrome, defaults.chrome),
-    text: normalizeThemeColor((record as Record<string, unknown>).text, defaults.text),
-    accent: normalizeThemeColor((record as Record<string, unknown>).accent, defaults.accent),
-    interactive: normalizeThemeColor((record as Record<string, unknown>).interactive, defaults.interactive),
-    danger: normalizeThemeColor((record as Record<string, unknown>).danger, defaults.danger)
+    workspace: normalizeThemeSourceColor(record.workspace, defaults.workspace),
+    chrome: normalizeThemeSourceColor(record.chrome, defaults.chrome),
+    uiText: normalizeThemeSourceColor(record.uiText, defaults.uiText),
+    documentPaper: normalizeThemeSourceColor(record.documentPaper, defaults.documentPaper),
+    documentInk: normalizeThemeSourceColor(record.documentInk, defaults.documentInk),
+    accent: normalizeThemeSourceColor(record.accent, defaults.accent),
+    interactive: normalizeThemeSourceColor(record.interactive, defaults.interactive),
+    danger: normalizeThemeSourceColor(record.danger, defaults.danger)
   };
 }
 
-export function deriveThemeCssVariables(profile: ThemeProfile): Record<string, string> {
-  const workspaceBase = profile.workspace;
-  const workspaceElevated = darken(lighten(profile.workspace, 0.02), 0.02);
-  const chromeSurface = withAlpha(profile.chrome, 0.9);
-  const chromeSurfaceStrong = withAlpha(darken(profile.chrome, 0.06), 0.96);
-  const chromeBorder = lighten(profile.chrome, 0.08);
-  const textPrimary = profile.text;
-  const textSecondary = mixColors(profile.text, profile.workspace, 0.28);
-  const textTertiary = withAlpha(profile.text, 0.58);
-  const accentPrimary = profile.accent;
-  const accentSoft = withAlpha(profile.accent, 0.18);
-  const interactiveHover = withAlpha(profile.text, 0.05);
-  const interactiveActive = withAlpha(profile.interactive, 0.22);
-  const interactiveSwitchOn = withAlpha(profile.interactive, 0.9);
-  const interactiveFocus = withAlpha(profile.interactive, 0.55);
-  const overlaySurface = withAlpha(darken(profile.chrome, 0.08), 0.96);
-  const overlaySurfaceStrong = withAlpha(darken(profile.chrome, 0.14), 0.98);
-  const overlayBorder = withAlpha(profile.text, 0.08);
-  const notesSurface = withAlpha(profile.chrome, 0.9);
-  const notesText = lighten(profile.text, 0.1);
-  const notesMuted = withAlpha(lighten(profile.text, 0.12), 0.76);
-  const dangerSurface = withAlpha(profile.danger, 0.18);
-  const dangerSurfaceStrong = withAlpha(profile.danger, 0.85);
-  const dangerText = lighten(profile.danger, 0.36);
+export function normalizeDocumentRenderTheme(candidate: unknown): DocumentRenderTheme {
+  const defaults = createDefaultDocumentRenderTheme();
+  const record =
+    typeof candidate === "object" && candidate !== null && !Array.isArray(candidate)
+      ? (candidate as Record<string, unknown>)
+      : {};
 
   return {
-    "--theme-workspace": profile.workspace,
-    "--theme-chrome": profile.chrome,
-    "--theme-text": profile.text,
-    "--theme-accent": profile.accent,
-    "--theme-interactive": profile.interactive,
-    "--theme-danger": profile.danger,
-    "--workspace-base": workspaceBase,
-    "--workspace-elevated": workspaceElevated,
-    "--chrome-surface": chromeSurface,
-    "--chrome-surface-strong": chromeSurfaceStrong,
-    "--chrome-border": chromeBorder,
-    "--chrome-hover": interactiveHover,
-    "--chrome-active": interactiveActive,
-    "--text-primary": textPrimary,
-    "--text-secondary": textSecondary,
-    "--text-tertiary": textTertiary,
-    "--accent-primary": accentPrimary,
-    "--accent-soft": accentSoft,
-    "--interactive-hover": interactiveHover,
-    "--interactive-active": interactiveActive,
-    "--interactive-switch-on": interactiveSwitchOn,
-    "--interactive-focus": interactiveFocus,
-    "--overlay-surface": overlaySurface,
-    "--overlay-surface-strong": overlaySurfaceStrong,
-    "--overlay-border": overlayBorder,
-    "--notes-surface": notesSurface,
-    "--notes-text": notesText,
-    "--notes-text-muted": notesMuted,
-    "--feedback-danger-surface": dangerSurface,
-    "--feedback-danger-surface-strong": dangerSurfaceStrong,
-    "--feedback-danger-text": dangerText,
-    "--bg": workspaceBase,
-    "--bg-soft": workspaceElevated,
-    "--panel": chromeSurfaceStrong,
-    "--panel-border": chromeBorder,
-    "--note-text-muted": notesMuted,
-    "--text": textPrimary,
-    "--muted": textSecondary,
-    "--accent": accentPrimary
+    surfaceTone: normalizeThemeSurfaceTone(record.surfaceTone, defaults.surfaceTone)
   };
+}
+
+function normalizeLegacyThemeSources(
+  candidate: unknown,
+  documentTone: ThemeSurfaceTone
+): ThemeSources {
+  const defaults = createDefaultThemeSources();
+  const record =
+    typeof candidate === "object" && candidate !== null && !Array.isArray(candidate)
+      ? (candidate as Record<string, unknown>)
+      : {};
+
+  const legacyText = normalizeThemeSourceColor(record.text, defaults.uiText);
+  const legacyPaper = normalizeThemeSourceColor(record.paper, defaults.documentPaper);
+  const fallbackPaper =
+    documentTone === "light"
+      ? builtinThemeDefinitions[0].source.documentPaper
+      : defaults.documentPaper;
+
+  return {
+    workspace: normalizeThemeSourceColor(record.workspace, defaults.workspace),
+    chrome: normalizeThemeSourceColor(record.chrome, defaults.chrome),
+    uiText: legacyText,
+    documentPaper: normalizeThemeSourceColor(record.paper, fallbackPaper || legacyPaper),
+    documentInk: legacyText,
+    accent: normalizeThemeSourceColor(record.accent, defaults.accent),
+    interactive: normalizeThemeSourceColor(record.interactive, defaults.interactive),
+    danger: normalizeThemeSourceColor(record.danger, defaults.danger)
+  };
+}
+
+export function normalizeCustomThemeDefinition(
+  candidate: unknown,
+  fallback?: ThemeDefinition
+): ThemeDefinition | null {
+  const record =
+    typeof candidate === "object" && candidate !== null && !Array.isArray(candidate)
+      ? (candidate as Record<string, unknown>)
+      : null;
+  if (!record) {
+    return null;
+  }
+
+  const fallbackTheme = fallback ?? createCustomThemeDefinition("custom-theme", "Custom Theme");
+  const id =
+    typeof record.id === "string" && record.id.trim().length > 0
+      ? record.id.trim()
+      : fallbackTheme.id;
+  const name =
+    typeof record.name === "string" && record.name.trim().length > 0
+      ? record.name.trim()
+      : fallbackTheme.name;
+  const document = normalizeDocumentRenderTheme(record.document);
+  const sourceCandidate =
+    record.source ??
+    (typeof record.colors === "object" && record.colors !== null ? record.colors : null);
+
+  return {
+    id,
+    name,
+    kind: "custom",
+    source:
+      sourceCandidate && isRecordLike(sourceCandidate) && "uiText" in sourceCandidate
+        ? normalizeThemeSources(sourceCandidate)
+        : normalizeLegacyThemeSources(sourceCandidate, document.surfaceTone),
+    document
+  };
+}
+
+function isRecordLike(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function createCustomThemeDefinition(
+  id: string,
+  name: string,
+  sourceTheme?: ThemeDefinition
+): ThemeDefinition {
+  const fallbackTheme =
+    sourceTheme ?? builtinThemeMap.get(DEFAULT_ACTIVE_THEME_ID) ?? builtinThemeDefinitions[0];
+
+  return {
+    id,
+    name,
+    kind: "custom",
+    source: { ...fallbackTheme.source },
+    document: { ...fallbackTheme.document }
+  };
+}
+
+export function createThemeDraft(themeDefinition: ThemeDefinition): ThemeDraft {
+  return {
+    name: themeDefinition.name,
+    source: { ...themeDefinition.source },
+    document: { ...themeDefinition.document }
+  };
+}
+
+export function applyThemeDraft(
+  themeDefinition: ThemeDefinition,
+  themeDraft: ThemeDraft
+): ThemeDefinition {
+  return {
+    ...themeDefinition,
+    name: themeDraft.name.trim() || themeDefinition.name,
+    source: { ...themeDraft.source },
+    document: { ...themeDraft.document }
+  };
+}
+
+export function isBuiltinThemeId(themeId: string) {
+  return builtinThemeMap.has(themeId);
+}
+
+export function getBuiltinTheme(themeId: string) {
+  return builtinThemeMap.get(themeId) ?? null;
+}
+
+export function resolveThemeById(
+  activeThemeId: string,
+  customThemes: readonly ThemeDefinition[]
+): ThemeDefinition {
+  return (
+    customThemes.find((themeDefinition) => themeDefinition.id === activeThemeId) ??
+    builtinThemeMap.get(activeThemeId) ??
+    builtinThemeMap.get(DEFAULT_ACTIVE_THEME_ID) ??
+    builtinThemeDefinitions[0]
+  );
+}
+
+export function createViewerDisplayConfig(themeDefinition: ThemeDefinition): ViewerDisplayConfig {
+  return {
+    mode: themeDefinition.document.surfaceTone,
+    paperColor: themeDefinition.source.documentPaper,
+    inkColor: themeDefinition.source.documentInk,
+    imageFilter: createViewerFilterRecipe(
+      themeDefinition.source,
+      themeDefinition.document.surfaceTone
+    )
+  };
+}
+
+export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
+  const { source } = themeDefinition;
+  const workspaceBase = source.workspace;
+  const workspaceElevated = darken(lighten(source.workspace, 0.02), 0.02);
+  const chromeSurface = withAlpha(source.chrome, 0.9);
+  const chromeSurfaceStrong = withAlpha(darken(source.chrome, 0.06), 0.96);
+  const chromeBorder = lighten(source.chrome, 0.08);
+  const textPrimary = source.uiText;
+  const textSecondary = withAlpha(source.uiText, 0.72);
+  const textMuted = withAlpha(source.uiText, 0.52);
+  const iconColor = withAlpha(source.uiText, 0.86);
+  const accentPrimary = source.accent;
+  const accentSoft = withAlpha(source.accent, 0.18);
+  const interactiveHover = withAlpha(source.uiText, 0.05);
+  const interactiveActive = withAlpha(source.interactive, 0.22);
+  const switchOn = withAlpha(source.interactive, 0.9);
+  const focusRing = withAlpha(lighten(source.interactive, 0.22), 0.62);
+  const overlaySurface = withAlpha(mixColors(source.chrome, "#000000", 0.18), 0.96);
+  const overlaySurfaceStrong = withAlpha(mixColors(source.chrome, "#000000", 0.22), 0.98);
+  const overlayBorder = withAlpha(source.uiText, 0.08);
+  const contextMenuSurface = withAlpha(mixColors(source.chrome, "#000000", 0.22), 0.98);
+  const contextMenuHover = withAlpha(source.uiText, 0.06);
+  const selectionBackground = withAlpha(source.interactive, 0.32);
+  const selectionText = ensureReadableTextColor(source.uiText, source.interactive, 4);
+  const pageLinkBackground = withAlpha(source.interactive, 0.13);
+  const pageLinkBorder = withAlpha(source.interactive, 0.2);
+  const pageLinkText = ensureReadableTextColor(
+    mixColors(source.uiText, source.interactive, 0.18),
+    source.interactive,
+    3.2
+  );
+  const pageLinkHoverBackground = withAlpha(source.interactive, 0.2);
+  const pageLinkHoverBorder = withAlpha(source.interactive, 0.24);
+  const pageLinkSelectedBackground = withAlpha(source.interactive, 0.28);
+  const pageLinkSelectedBorder = withAlpha(source.interactive, 0.38);
+  const pageLinkSelectedText = ensureReadableTextColor(
+    mixColors(source.uiText, source.interactive, 0.3),
+    source.interactive,
+    3.2
+  );
+  const settingsNavText = withAlpha(lighten(source.uiText, 0.08), 0.72);
+  const settingsNavTextActive = lighten(source.uiText, 0.16);
+  const settingsLabelText = withAlpha(lighten(source.uiText, 0.06), 0.88);
+  const settingsMutedText = withAlpha(lighten(source.uiText, 0.08), 0.68);
+  const settingsControlBg = withAlpha(source.uiText, 0.04);
+  const settingsControlBgHover = withAlpha(source.uiText, 0.07);
+  const settingsControlBorder = withAlpha(source.uiText, 0.09);
+  const settingsControlText = withAlpha(lighten(source.uiText, 0.12), 0.92);
+  const settingsAccentSurface = withAlpha(source.interactive, 0.22);
+  const settingsAccentSurfaceStrong = withAlpha(source.interactive, 0.24);
+  const settingsAccentBorder = withAlpha(lighten(source.interactive, 0.16), 0.28);
+  const settingsAccentFocus = focusRing;
+  const settingsAccentFocusRing = withAlpha(lighten(source.interactive, 0.24), 0.16);
+  const settingsSwitchOff = withAlpha(source.uiText, 0.18);
+  const settingsSwitchHandle = lighten(source.uiText, 0.18);
+  const splitterLine = withAlpha(lighten(source.uiText, 0.1), 0.18);
+  const splitterLineActive = withAlpha(lighten(source.uiText, 0.16), 0.34);
+  const splitterGripBorder = withAlpha(lighten(source.uiText, 0.12), 0.18);
+  const splitterGripBorderActive = withAlpha(lighten(source.uiText, 0.16), 0.3);
+  const splitterGripSurfaceStart = withAlpha(lighten(source.chrome, 0.12), 0.98);
+  const splitterGripSurfaceEnd = withAlpha(darken(source.chrome, 0.02), 0.98);
+  const splitterGripShadow = `0 4px 12px ${withAlpha("#000000", 0.22)}`;
+  const splitterGripShadowActive = `0 6px 14px ${withAlpha("#000000", 0.28)}`;
+  const splitterGripInset = `inset 0 1px 0 ${withAlpha("#ffffff", 0.04)}`;
+  const splitterGripInsetActive = `inset 0 1px 0 ${withAlpha("#ffffff", 0.06)}`;
+  const splitterDot = withAlpha(lighten(source.uiText, 0.04), 0.55);
+  const splitterDotActive = withAlpha(lighten(source.uiText, 0.14), 0.82);
+  const notesSurface = withAlpha(source.chrome, 0.9);
+  const notesText = lighten(source.uiText, 0.1);
+  const notesMuted = withAlpha(lighten(source.uiText, 0.12), 0.76);
+  const dangerSurface = withAlpha(source.danger, 0.18);
+  const dangerSurfaceStrong = withAlpha(source.danger, 0.85);
+  const dangerText = lighten(source.danger, 0.36);
+  const viewerDisplayConfig = createViewerDisplayConfig(themeDefinition);
+
+  return {
+    source,
+    overlaySurface,
+    overlaySurfaceStrong,
+    overlayBorder,
+    contextMenuSurface,
+    contextMenuHover,
+    textPrimary,
+    textSecondary,
+    textMuted,
+    iconColor,
+    selectionBackground,
+    selectionText,
+    focusRing,
+    switchOn,
+    activeSurface: interactiveActive,
+    pageLinkBackground,
+    pageLinkBorder,
+    pageLinkText,
+    pageLinkHoverBackground,
+    viewerDisplayConfig,
+    cssVariables: {
+      "--theme-workspace": source.workspace,
+      "--theme-chrome": source.chrome,
+      "--theme-ui-text": source.uiText,
+      "--theme-document-paper": source.documentPaper,
+      "--theme-document-ink": source.documentInk,
+      "--theme-accent": source.accent,
+      "--theme-interactive": source.interactive,
+      "--theme-danger": source.danger,
+      "--theme-paper": source.documentPaper,
+      "--theme-text": source.uiText,
+      "--workspace-base": workspaceBase,
+      "--workspace-elevated": workspaceElevated,
+      "--chrome-surface": chromeSurface,
+      "--chrome-surface-strong": chromeSurfaceStrong,
+      "--chrome-border": chromeBorder,
+      "--chrome-hover": interactiveHover,
+      "--chrome-active": interactiveActive,
+      "--text-primary": textPrimary,
+      "--text-secondary": textSecondary,
+      "--text-tertiary": textMuted,
+      "--icon-color": iconColor,
+      "--accent-primary": accentPrimary,
+      "--accent-soft": accentSoft,
+      "--interactive-hover": interactiveHover,
+      "--interactive-active": interactiveActive,
+      "--interactive-switch-on": switchOn,
+      "--interactive-focus": focusRing,
+      "--selection-background": selectionBackground,
+      "--selection-text": selectionText,
+      "--focus-ring": focusRing,
+      "--active-surface": interactiveActive,
+      "--overlay-surface": overlaySurface,
+      "--overlay-surface-strong": overlaySurfaceStrong,
+      "--overlay-border": overlayBorder,
+      "--context-menu-surface": contextMenuSurface,
+      "--context-menu-hover": contextMenuHover,
+      "--page-link-background": pageLinkBackground,
+      "--page-link-border": pageLinkBorder,
+      "--page-link-text": pageLinkText,
+      "--page-link-hover-background": pageLinkHoverBackground,
+      "--page-link-hover-border": pageLinkHoverBorder,
+      "--page-link-hover-text": pageLinkText,
+      "--page-link-selected-background": pageLinkSelectedBackground,
+      "--page-link-selected-border": pageLinkSelectedBorder,
+      "--page-link-selected-text": pageLinkSelectedText,
+      "--settings-nav-text": settingsNavText,
+      "--settings-nav-text-active": settingsNavTextActive,
+      "--settings-label-text": settingsLabelText,
+      "--settings-muted-text": settingsMutedText,
+      "--settings-control-bg": settingsControlBg,
+      "--settings-control-bg-hover": settingsControlBgHover,
+      "--settings-control-border": settingsControlBorder,
+      "--settings-control-text": settingsControlText,
+      "--settings-accent-surface": settingsAccentSurface,
+      "--settings-accent-surface-strong": settingsAccentSurfaceStrong,
+      "--settings-accent-border": settingsAccentBorder,
+      "--settings-accent-focus": settingsAccentFocus,
+      "--settings-accent-focus-ring": settingsAccentFocusRing,
+      "--settings-switch-off": settingsSwitchOff,
+      "--settings-switch-handle": settingsSwitchHandle,
+      "--splitter-line": splitterLine,
+      "--splitter-line-active": splitterLineActive,
+      "--splitter-grip-border": splitterGripBorder,
+      "--splitter-grip-border-active": splitterGripBorderActive,
+      "--splitter-grip-surface-start": splitterGripSurfaceStart,
+      "--splitter-grip-surface-end": splitterGripSurfaceEnd,
+      "--splitter-grip-shadow": splitterGripShadow,
+      "--splitter-grip-shadow-active": splitterGripShadowActive,
+      "--splitter-grip-inset": splitterGripInset,
+      "--splitter-grip-inset-active": splitterGripInsetActive,
+      "--splitter-dot": splitterDot,
+      "--splitter-dot-active": splitterDotActive,
+      "--notes-surface": notesSurface,
+      "--notes-text": notesText,
+      "--notes-text-muted": notesMuted,
+      "--paper-surface": source.documentPaper,
+      "--paper-surface-dark": source.documentPaper,
+      "--paper-shadow": withAlpha("#000000", themeDefinition.document.surfaceTone === "dark" ? 0.42 : 0.35),
+      "--feedback-danger-surface": dangerSurface,
+      "--feedback-danger-surface-strong": dangerSurfaceStrong,
+      "--feedback-danger-text": dangerText,
+      "--bg": workspaceBase,
+      "--bg-soft": workspaceElevated,
+      "--panel": chromeSurfaceStrong,
+      "--panel-border": chromeBorder,
+      "--note-text-muted": notesMuted,
+      "--text": textPrimary,
+      "--muted": textSecondary,
+      "--accent": accentPrimary,
+      "--paper": source.documentPaper
+    }
+  };
+}
+
+export function deriveThemeCssVariables(themeDefinition: ThemeDefinition): Record<string, string> {
+  return resolveTheme(themeDefinition).cssVariables;
 }

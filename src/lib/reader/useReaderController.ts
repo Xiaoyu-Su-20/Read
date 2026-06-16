@@ -28,17 +28,21 @@ import {
   type RapidTurnLastInput,
   type RapidTurnOverlayModel
 } from "./rapidTurn";
+import {
+  clampZoom,
+  normalizeZoom,
+  scaleZoomByKeyboardDirection,
+  scaleZoomByWheelDelta
+} from "./zoom";
 
 const RENDER_CACHE_SIZE = 20;
-const MIN_ZOOM = 0.7;
-const MAX_ZOOM = 2.5;
-const ZOOM_STEP = 0.1;
 const PAGE_TURN_COMMIT_THROTTLE_MS = 150;
 const PRELOAD_DELAY_MS = 150;
 const NAVIGATION_SAVE_DEBOUNCE_MS = 700;
 const BOOKMARK_SAVE_DEBOUNCE_MS = 200;
 const KEYBOARD_RAPID_TURN_WINDOW_MS = 220;
 const WHEEL_RAPID_TURN_WINDOW_MS = 180;
+const ZOOM_COMMIT_DEBOUNCE_MS = 120;
 
 type UseReaderControllerArgs = {
   document: DocumentPayload | null;
@@ -70,10 +74,6 @@ type NormalizationReadyEvent = {
 
 function clampPage(page: number, pageCount: number) {
   return Math.min(Math.max(Math.round(page), 1), Math.max(pageCount, 1));
-}
-
-function clampZoom(zoom: number) {
-  return Math.min(Math.max(zoom, MIN_ZOOM), MAX_ZOOM);
 }
 
 function shouldIgnoreRenderResponse(requestSequence: number, activeSequence: number) {
@@ -113,7 +113,8 @@ export function useReaderController({
   const [pageCount, setPageCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [targetPage, setTargetPage] = useState(1);
-  const [zoom, setZoom] = useState(1);
+  const [displayZoom, setDisplayZoom] = useState(1);
+  const [committedZoom, setCommittedZoom] = useState(1);
   const [documentError, setDocumentError] = useState<string | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [loadingDocument, setLoadingDocument] = useState(false);
@@ -148,6 +149,7 @@ export function useReaderController({
   const saveInFlightRef = useRef(false);
   const preloadTimerRef = useRef<number | null>(null);
   const pageCommitTimerRef = useRef<number | null>(null);
+  const zoomCommitTimerRef = useRef<number | null>(null);
   const pendingCommittedPageRef = useRef<number | null>(null);
   const lastPageCommitAtRef = useRef(0);
   const rapidTurnWheelFinalizeTimerRef = useRef<number | null>(null);
@@ -173,11 +175,51 @@ export function useReaderController({
     }
   }
 
+  function clearZoomCommitTimer() {
+    if (zoomCommitTimerRef.current !== null) {
+      window.clearTimeout(zoomCommitTimerRef.current);
+      zoomCommitTimerRef.current = null;
+    }
+  }
+
   function clearScheduledSave() {
     if (saveTimerRef.current !== null) {
       window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
+  }
+
+  function updateZoom(nextZoom: number, reason: string, options?: { commitImmediately?: boolean }) {
+    const normalizedZoom = normalizeZoom(nextZoom);
+    setDisplayZoom(normalizedZoom);
+
+    if (options?.commitImmediately) {
+      clearZoomCommitTimer();
+      setCommittedZoom((currentZoom) => (Math.abs(currentZoom - normalizedZoom) < 0.001 ? currentZoom : normalizedZoom));
+      debugAction("reader.zoom-commit", {
+        currentPage,
+        reason,
+        zoom: normalizedZoom
+      });
+      return;
+    }
+
+    clearZoomCommitTimer();
+    zoomCommitTimerRef.current = window.setTimeout(() => {
+      zoomCommitTimerRef.current = null;
+      setCommittedZoom((currentZoom) => {
+        if (Math.abs(currentZoom - normalizedZoom) < 0.001) {
+          return currentZoom;
+        }
+
+        debugAction("reader.zoom-commit", {
+          currentPage,
+          reason,
+          zoom: normalizedZoom
+        });
+        return normalizedZoom;
+      });
+    }, ZOOM_COMMIT_DEBOUNCE_MS);
   }
 
   function hideRapidTurnOverlay(reason: string) {
@@ -226,7 +268,7 @@ export function useReaderController({
 
     const nextPage = clampPage(target.pageIndex + 1, pageCount || target.pageIndex + 1);
     if (typeof target.zoom === "number" && Number.isFinite(target.zoom) && target.zoom > 0) {
-      setZoom(clampZoom(target.zoom));
+      updateZoom(target.zoom, reason, { commitImmediately: true });
     }
     requestPageTurnWithIntent(nextPage, reason);
   }
@@ -586,7 +628,9 @@ export function useReaderController({
       setPageCount(0);
       setCurrentPage(1);
       setTargetPage(1);
-      setZoom(1);
+      clearZoomCommitTimer();
+      setDisplayZoom(1);
+      setCommittedZoom(1);
       clearScheduledSave();
       dirtyStateRef.current = false;
       lastPersistedSignatureRef.current = null;
@@ -602,7 +646,9 @@ export function useReaderController({
     setPageCount(nextPageCount);
     setCurrentPage(nextPage);
     setTargetPage(nextPage);
-    setZoom(nextZoom);
+    clearZoomCommitTimer();
+    setDisplayZoom(nextZoom);
+    setCommittedZoom(nextZoom);
     const rawNextState = {
       ...document.state,
       lastPage: nextPage,
@@ -631,6 +677,7 @@ export function useReaderController({
     return () => {
       const runtimeSession = runtimeSessionRef.current;
       runtimeSessionRef.current = null;
+      clearZoomCommitTimer();
       if (runtimeSession) {
         void runtimeSession.dispose();
       }
@@ -701,6 +748,7 @@ export function useReaderController({
       window.document.removeEventListener("visibilitychange", flushOnVisibilityChange);
       window.removeEventListener("blur", flushOnWindowBlur);
       window.removeEventListener("beforeunload", flushOnBeforeUnload);
+      clearZoomCommitTimer();
       finalizeRapidTurn("controller-unmount");
       flushReaderState("controller-unmount");
     };
@@ -710,27 +758,29 @@ export function useReaderController({
     onSnapshotChange({
       currentPage: targetPage,
       pageCount,
-      zoom
+      zoom: displayZoom
     });
+  }, [displayZoom, onSnapshotChange, pageCount, targetPage]);
 
+  useEffect(() => {
     setReaderState((current) => {
       if (!current) {
         return current;
       }
-      if (current.lastPage === targetPage && Math.abs(current.zoom - zoom) < 0.001) {
+      if (current.lastPage === targetPage && Math.abs(current.zoom - committedZoom) < 0.001) {
         return current;
       }
       const nextState = {
         ...current,
         lastPage: targetPage,
-        zoom
+        zoom: committedZoom
       };
       readerStateRef.current = nextState;
       markReaderStateDirty(nextState, "navigation");
       onStateChange(nextState);
       return nextState;
     });
-  }, [onSnapshotChange, onStateChange, pageCount, targetPage, zoom]);
+  }, [committedZoom, onStateChange, targetPage]);
 
   useEffect(() => {
     if (!document || !displayedPage) {
@@ -783,6 +833,9 @@ export function useReaderController({
     };
   }, [displayedPage, document, onOutlineChange]);
 
+  const displayedPageDocumentId = document?.document.id ?? null;
+  const displayedPageNumber = displayedPage?.pageNumber ?? null;
+
   useEffect(() => {
     if (!document || !displayedPage) {
       debugAction("reader.text-layer-cleared", {
@@ -823,7 +876,6 @@ export function useReaderController({
       renderedHeight: displayedPage.height,
       renderedWidth: displayedPage.width
     });
-    setDisplayedPageTextLayer(null);
     setDisplayedPageTextDebugStatus({
       itemCount: 0,
       pageNumber,
@@ -871,7 +923,7 @@ export function useReaderController({
     return () => {
       cancelled = true;
     };
-  }, [displayedPage, document]);
+  }, [displayedPageDocumentId, displayedPageNumber]);
 
   useEffect(() => {
     if (!document) {
@@ -886,7 +938,7 @@ export function useReaderController({
       return;
     }
 
-    const logicalKey = makePageCacheKey(document.document.id, currentPage, zoom);
+    const logicalKey = makePageCacheKey(document.document.id, currentPage, committedZoom);
     const cachedPage = pageCache.current.getByLogicalKey(logicalKey);
     const requestSequence = renderSequenceRef.current + 1;
     renderSequenceRef.current = requestSequence;
@@ -894,7 +946,7 @@ export function useReaderController({
     debugAction("reader.render-request", {
       documentId: document.document.id,
       currentPage,
-      zoom,
+      zoom: committedZoom,
       requestSequence,
       cached: Boolean(cachedPage)
     });
@@ -918,11 +970,11 @@ export function useReaderController({
     const process = startDebugProcess("reader.render-page", {
       documentId: document.document.id,
       page: currentPage,
-      zoom,
+      zoom: committedZoom,
       requestSequence
     });
 
-    void renderVisiblePdfPage(document.document.id, currentPage, zoom)
+    void renderVisiblePdfPage(document.document.id, currentPage, committedZoom)
       .then((page) => {
         if (shouldIgnoreRenderResponse(requestSequence, renderSequenceRef.current)) {
           process.checkpoint("stale-response", {
@@ -966,7 +1018,7 @@ export function useReaderController({
         setLoadingDocument(false);
         onStatusChange("Unable to render this PDF page.");
       });
-  }, [currentPage, displayedPage, document, onStatusChange, zoom]);
+  }, [committedZoom, currentPage, displayedPage, document, onStatusChange]);
 
   useEffect(() => {
     if (!incomingPage || !incomingReady) {
@@ -1037,7 +1089,7 @@ export function useReaderController({
       }
 
       for (const pageNumber of adjacentPages) {
-        const key = makePageCacheKey(document.document.id, pageNumber, zoom);
+        const key = makePageCacheKey(document.document.id, pageNumber, committedZoom);
         if (pageCache.current.hasLogicalKey(key) || preloadInFlight.current.has(key)) {
           debugAction("reader.preload-skipped", {
             key,
@@ -1051,10 +1103,10 @@ export function useReaderController({
         debugAction("reader.preload-scheduled", {
           anchorPage,
           page: pageNumber,
-          zoom
+          zoom: committedZoom
         });
         const normalizationGeneration = normalizationGenerationRef.current;
-        void renderVisiblePdfPage(document.document.id, pageNumber, zoom)
+        void renderVisiblePdfPage(document.document.id, pageNumber, committedZoom)
           .then((page) => {
             if (normalizationGeneration === normalizationGenerationRef.current) {
               pageCache.current.set(page.cacheKey, page);
@@ -1072,7 +1124,7 @@ export function useReaderController({
         preloadTimerRef.current = null;
       }
     };
-  }, [currentPage, displayedPage, document, pageCount, zoom]);
+  }, [committedZoom, currentPage, displayedPage, document, pageCount]);
 
   useEffect(() => {
     const api: ViewerApi | null = document
@@ -1084,6 +1136,12 @@ export function useReaderController({
           previousPage: () => {
             const nextPage = clampPage(targetPage - 1, pageCount);
             requestPageTurnWithIntent(nextPage, "previous-page");
+          },
+          zoomIn: () => {
+            updateZoom(scaleZoomByKeyboardDirection(displayZoom, "in"), "header");
+          },
+          zoomOut: () => {
+            updateZoom(scaleZoomByKeyboardDirection(displayZoom, "out"), "header");
           },
           goToPage: (page) => {
             requestPageTurnWithIntent(clampPage(page, pageCount), "go-to-page");
@@ -1153,7 +1211,8 @@ export function useReaderController({
   return {
     currentPage,
     pageCount,
-    zoom,
+    displayZoom,
+    committedZoom,
     displayedPage,
     incomingPage,
     rapidTurnOverlay,
@@ -1164,7 +1223,31 @@ export function useReaderController({
     documentError,
     renderError,
     handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-      if (event.altKey || event.shiftKey || event.metaKey || event.ctrlKey) {
+      if (event.altKey) {
+        return;
+      }
+
+      if (event.ctrlKey || event.metaKey) {
+        const zoomInKey =
+          event.key === "+" || event.key === "=" || event.key === "Add" || event.key === "NumpadAdd";
+        const zoomOutKey =
+          event.key === "-" || event.key === "_" || event.key === "Subtract" || event.key === "NumpadSubtract";
+
+        if (zoomInKey || zoomOutKey) {
+          event.preventDefault();
+          const nextZoom = scaleZoomByKeyboardDirection(displayZoom, zoomInKey ? "in" : "out");
+          debugAction("reader.zoom-keyboard", {
+            currentPage,
+            displayZoom,
+            key: event.key,
+            nextZoom
+          });
+          updateZoom(nextZoom, "keyboard");
+        }
+        return;
+      }
+
+      if (event.shiftKey) {
         return;
       }
 
@@ -1220,19 +1303,13 @@ export function useReaderController({
 
       if (event.ctrlKey || event.metaKey) {
         const delta = event.deltaY === 0 ? event.deltaX : event.deltaY;
-        setZoom((currentZoom) => {
-          const nextZoom =
-            delta < 0
-              ? Math.min(currentZoom + ZOOM_STEP, MAX_ZOOM)
-              : Math.max(currentZoom - ZOOM_STEP, MIN_ZOOM);
-
-          debugAction("reader.zoom-wheel", {
-            currentPage,
-            nextZoom
-          });
-
-          return Number(nextZoom.toFixed(2));
+        const nextZoom = scaleZoomByWheelDelta(displayZoom, delta);
+        debugAction("reader.zoom-wheel", {
+          currentPage,
+          displayZoom,
+          nextZoom
         });
+        updateZoom(nextZoom, "wheel");
         return;
       }
 
@@ -1261,11 +1338,28 @@ export function useReaderController({
         });
       }
     },
-    markIncomingReady(requestKey: string) {
+    markIncomingReady(requestKey: string, imageElement?: HTMLImageElement | null) {
       if (requestKey !== incomingPageKeyRef.current) {
         return;
       }
-      setIncomingReady(true);
+
+      const finalizeReady = () => {
+        if (requestKey !== incomingPageKeyRef.current) {
+          return;
+        }
+        setIncomingReady(true);
+      };
+
+      if (imageElement && typeof imageElement.decode === "function") {
+        void imageElement.decode().then(finalizeReady).catch(() => {
+          if (imageElement.complete) {
+            finalizeReady();
+          }
+        });
+        return;
+      }
+
+      finalizeReady();
     }
   };
 }

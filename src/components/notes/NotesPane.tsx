@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { logNoteDebugEvent } from "../../lib/api";
 import {
@@ -35,6 +36,8 @@ import NoteEditor, { type NoteEditorHandle } from "./NoteEditor";
 type NotesPaneProps = {
   note: NoteDocument | null;
   loading: boolean;
+  fullscreen: boolean;
+  headerActionsContainerId: string | null;
   navigationItems: NoteNavigationItem[];
   onChangeTitle: (title: string) => void;
   onChangeBlocks: (blocks: NoteDocument["blocks"]) => void;
@@ -105,7 +108,7 @@ function isMenuInteractiveTarget(target: EventTarget | null) {
     target instanceof HTMLElement &&
     Boolean(
       target.closest(
-        ".editor-context-menu, .block-type-submenu, .notes-find-panel, .notes-inline-dialog, .notes-popover, .notes-rail, .notes-pane__scrollbar"
+        ".editor-context-menu, .block-type-submenu, .notes-find-panel, .notes-inline-dialog, .notes-popover, .notes-header-tools, .notes-pane__scrollbar"
       )
     )
   );
@@ -148,6 +151,8 @@ function collectNoteFindMatches(note: NoteDocument | null, query: string): NoteF
 const NotesPane = memo(function NotesPane({
   note,
   loading,
+  fullscreen,
+  headerActionsContainerId,
   navigationItems,
   onChangeTitle,
   onChangeBlocks,
@@ -206,6 +211,10 @@ const NotesPane = memo(function NotesPane({
     blockId: string;
     query: string;
   } | null>(null);
+  const headerActionsContainer =
+    typeof document !== "undefined" && headerActionsContainerId
+      ? document.getElementById(headerActionsContainerId)
+      : null;
   const findMatches = useMemo(
     () => collectNoteFindMatches(note, findQuery),
     [findQuery, note]
@@ -858,10 +867,93 @@ const NotesPane = memo(function NotesPane({
     };
   }, []);
 
+  const notesHeaderTools = (
+    <div className="notes-header-tools">
+      <div className="notes-header-tools__item">
+        <NavigationButton
+          open={navigationOpen}
+          onToggle={() => {
+            closeMenu();
+            setMoreOpen(false);
+            setRenamingTitle(false);
+            setRenameDraft("");
+            setPageLinkDialog(null);
+            setNavigationOpen((current) => !current);
+          }}
+        />
+        {navigationOpen ? (
+          <div className="notes-popover notes-popover--navigation">
+            <span className="eyebrow">Navigation</span>
+            {navigationItems.length === 0 ? (
+              <p className="notes-popover__empty">Add a heading to build note navigation.</p>
+            ) : (
+              <div className="notes-navigation">
+                {navigationItems.map((item) => (
+                  <button
+                    key={item.id}
+                    className={`notes-navigation__item notes-navigation__item--level-${item.level}`}
+                    type="button"
+                    onClick={() => {
+                      editorRef.current?.scrollToBlock(item.blockId);
+                      setNavigationOpen(false);
+                    }}
+                  >
+                    {item.title}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="notes-header-tools__item">
+        <NotesMoreMenuButton
+          open={moreOpen}
+          onToggle={() => {
+            closeMenu();
+            setNavigationOpen(false);
+            setRenamingTitle(false);
+            setRenameDraft("");
+            setPageLinkDialog(null);
+            setMoreOpen((current) => !current);
+          }}
+        />
+        {moreOpen ? (
+          <div className="notes-popover notes-popover--menu">
+            <button
+              className="notes-popover__action"
+              type="button"
+              onClick={() => {
+                setNavigationOpen(false);
+                setMoreOpen(false);
+                setPageLinkDialog(null);
+                setRenameDraft(note?.title ?? "");
+                setRenamingTitle(true);
+              }}
+            >
+              Rename note
+            </button>
+            <button
+              className="notes-popover__action"
+              type="button"
+              onClick={() => {
+                void onCopyAllText();
+                setMoreOpen(false);
+              }}
+            >
+              Copy all text
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+
   return (
     <aside
       ref={paneRef}
-      className="notes-pane"
+      className={`notes-pane${fullscreen ? " notes-pane--fullscreen" : ""}`}
       aria-label="Notes"
       onKeyDownCapture={(event) => {
         const key = event.key.toLowerCase();
@@ -1027,89 +1119,7 @@ const NotesPane = memo(function NotesPane({
           }}
         />
       </div>
-
-      <div className="notes-rail" aria-label="Note tools">
-        <div className="notes-rail__stack">
-          <div className="notes-rail__item">
-            <NavigationButton
-              open={navigationOpen}
-              onToggle={() => {
-                closeMenu();
-                setMoreOpen(false);
-                setRenamingTitle(false);
-                setRenameDraft("");
-                setPageLinkDialog(null);
-                setNavigationOpen((current) => !current);
-              }}
-            />
-            {navigationOpen ? (
-              <div className="notes-popover notes-popover--navigation">
-                <span className="eyebrow">Navigation</span>
-                {navigationItems.length === 0 ? (
-                  <p className="notes-popover__empty">Add a heading to build note navigation.</p>
-                ) : (
-                  <div className="notes-navigation">
-                    {navigationItems.map((item) => (
-                      <button
-                        key={item.id}
-                        className={`notes-navigation__item notes-navigation__item--level-${item.level}`}
-                        type="button"
-                        onClick={() => {
-                          editorRef.current?.scrollToBlock(item.blockId);
-                          setNavigationOpen(false);
-                        }}
-                      >
-                        {item.title}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="notes-rail__item">
-            <NotesMoreMenuButton
-              open={moreOpen}
-              onToggle={() => {
-                closeMenu();
-                setNavigationOpen(false);
-                setRenamingTitle(false);
-                setRenameDraft("");
-                setPageLinkDialog(null);
-                setMoreOpen((current) => !current);
-              }}
-            />
-            {moreOpen ? (
-              <div className="notes-popover notes-popover--menu">
-                <button
-                  className="notes-popover__action"
-                  type="button"
-                  onClick={() => {
-                    setNavigationOpen(false);
-                    setMoreOpen(false);
-                    setPageLinkDialog(null);
-                    setRenameDraft(note?.title ?? "");
-                    setRenamingTitle(true);
-                  }}
-                >
-                  Rename note
-                </button>
-                <button
-                  className="notes-popover__action"
-                  type="button"
-                  onClick={() => {
-                    void onCopyAllText();
-                    setMoreOpen(false);
-                  }}
-                >
-                  Copy all text
-                </button>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </div>
+      {headerActionsContainer ? createPortal(notesHeaderTools, headerActionsContainer) : null}
 
       {renamingTitle ? (
         <div className="notes-inline-dialog notes-inline-dialog--rename" role="dialog" aria-label="Rename note">

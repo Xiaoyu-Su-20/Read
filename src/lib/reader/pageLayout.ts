@@ -1,46 +1,24 @@
-export const PAGE_CENTER_TRANSITION_BAND_PX = 160;
-
-function clamp01(value: number) {
-  return Math.min(Math.max(value, 0), 1);
-}
-
 function roundOffset(value: number) {
   return Math.max(0, Math.floor(value));
 }
 
-export function smoothstep(value: number) {
-  const clamped = clamp01(value);
-  return clamped * clamped * (3 - 2 * clamped);
-}
-
-export function computePageAxisOffset(
-  viewportSize: number,
-  pageSize: number,
-  transitionBandPx = PAGE_CENTER_TRANSITION_BAND_PX
-) {
+export function computePageAxisOffset(viewportSize: number, pageSize: number) {
   const extraSpace = viewportSize - pageSize;
   if (extraSpace <= 0) {
     return 0;
   }
 
-  const centeredOffset = extraSpace / 2;
-  if (extraSpace >= transitionBandPx) {
-    return roundOffset(centeredOffset);
-  }
-
-  const t = smoothstep(extraSpace / transitionBandPx);
-  return roundOffset(centeredOffset * t);
+  return roundOffset(extraSpace / 2);
 }
 
 export function computePageShellOffsets(
   viewportWidth: number,
   viewportHeight: number,
   pageWidth: number,
-  pageHeight: number,
-  transitionBandPx = PAGE_CENTER_TRANSITION_BAND_PX
+  pageHeight: number
 ) {
   return {
-    offsetX: computePageAxisOffset(viewportWidth, pageWidth, transitionBandPx),
-    offsetY: computePageAxisOffset(viewportHeight, pageHeight, transitionBandPx)
+    offsetX: computePageAxisOffset(viewportWidth, pageWidth),
+    offsetY: computePageAxisOffset(viewportHeight, pageHeight)
   };
 }

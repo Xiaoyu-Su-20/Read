@@ -4,6 +4,7 @@ export type CachedRenderedPage = RenderedPagePayload & {
   imageUrl: string;
   requestKey: string;
   logicalKey: string;
+  renderZoom: number;
 };
 
 export function makePageCacheKey(documentId: string, pageNumber: number, zoom = 1) {

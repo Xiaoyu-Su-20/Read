@@ -1,13 +1,10 @@
-import { memo, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 
-import {
-  resolveViewerImageFilter,
-  resolveViewerPaperColor,
-  type ViewerDisplayConfig
-} from "../lib/app/settingsRegistry";
+import { type ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import { isDebugModeEnabled } from "../lib/debugLog";
 import { computePageShellOffsets } from "../lib/reader/pageLayout";
 import { useReaderController } from "../lib/reader/useReaderController";
+import { resolveSurfaceScale } from "../lib/reader/zoom";
 import type { DocumentPayload, DocumentState, OutlineItem, ViewerApi, ViewerSnapshot } from "../lib/types";
 import PdfTextLayer from "./PdfTextLayer";
 import RapidTurnOverlay from "./RapidTurnOverlay";
@@ -32,10 +29,29 @@ const PdfViewer = memo(function PdfViewer({
   viewerDisplayConfig
 }: PdfViewerProps) {
   const scrollSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const scrollbarRef = useRef<HTMLDivElement | null>(null);
+  const scrollbarMetricsRef = useRef({
+    trackHeight: 0,
+    thumbHeight: 0,
+    maxThumbTop: 0,
+    maxScroll: 0
+  });
+  const scrollbarDragRef = useRef<{
+    pointerId: number;
+    startClientY: number;
+    startScrollTop: number;
+  } | null>(null);
   const [pageOffsets, setPageOffsets] = useState({ offsetX: 0, offsetY: 0 });
+  const [scrollbarState, setScrollbarState] = useState({
+    visible: false,
+    thumbHeight: 0,
+    thumbTop: 0
+  });
   const {
     displayedPage,
     incomingPage,
+    displayZoom,
+    committedZoom,
     isRendering,
     loadingDocument,
     documentError,
@@ -56,9 +72,14 @@ const PdfViewer = memo(function PdfViewer({
     registerApi
   });
 
+  const layoutPage = displayedPage ?? incomingPage;
+  const renderedZoom = layoutPage?.renderZoom ?? committedZoom;
+  const surfaceScale = resolveSurfaceScale(displayZoom, renderedZoom);
+  const scaledWidth = layoutPage ? layoutPage.width * surfaceScale : 0;
+  const scaledHeight = layoutPage ? layoutPage.height * surfaceScale : 0;
+
   useLayoutEffect(() => {
     const scrollSurface = scrollSurfaceRef.current;
-    const layoutPage = displayedPage ?? incomingPage;
     if (!scrollSurface || !layoutPage) {
       setPageOffsets((current) =>
         current.offsetX === 0 && current.offsetY === 0
@@ -72,8 +93,8 @@ const PdfViewer = memo(function PdfViewer({
       const nextOffsets = computePageShellOffsets(
         scrollSurface.clientWidth,
         scrollSurface.clientHeight,
-        layoutPage.width,
-        layoutPage.height
+        scaledWidth,
+        scaledHeight
       );
       setPageOffsets((current) =>
         Math.abs(current.offsetX - nextOffsets.offsetX) < 0.5 &&
@@ -98,16 +119,103 @@ const PdfViewer = memo(function PdfViewer({
       resizeObserver?.disconnect();
       window.removeEventListener("resize", updateOverflowState);
     };
-  }, [displayedPage, incomingPage]);
+  }, [layoutPage, scaledHeight, scaledWidth]);
 
   const pageLayoutStyle = {
     ["--page-offset-x"]: `${pageOffsets.offsetX.toFixed(2)}px`,
     ["--page-offset-y"]: `${pageOffsets.offsetY.toFixed(2)}px`
   } as CSSProperties;
   const appearanceStyle = {
-    ["--viewer-paper-color"]: resolveViewerPaperColor(viewerDisplayConfig),
-    ["--viewer-image-filter"]: resolveViewerImageFilter(viewerDisplayConfig)
+    ["--viewer-paper-color"]: viewerDisplayConfig.paperColor,
+    ["--viewer-ink-color"]: viewerDisplayConfig.inkColor,
+    ["--viewer-image-filter"]: viewerDisplayConfig.imageFilter
   } as CSSProperties;
+
+  useEffect(() => {
+    const scrollSurfaceElement = scrollSurfaceRef.current;
+    if (!scrollSurfaceElement) {
+      return;
+    }
+    const scrollSurface = scrollSurfaceElement;
+
+    function updateReaderScrollbar() {
+      const nextTrackHeight = Math.max(scrollSurface.clientHeight - 14, 0);
+      const nextMaxScroll = Math.max(
+        scrollSurface.scrollHeight - scrollSurface.clientHeight,
+        0
+      );
+
+      if (nextTrackHeight <= 0 || nextMaxScroll <= 0) {
+        scrollbarMetricsRef.current = {
+          trackHeight: 0,
+          thumbHeight: 0,
+          maxThumbTop: 0,
+          maxScroll: 0
+        };
+        setScrollbarState({
+          visible: false,
+          thumbHeight: 0,
+          thumbTop: 0
+        });
+        return;
+      }
+
+      const scrollRatio = scrollSurface.clientHeight / scrollSurface.scrollHeight;
+      const thumbHeight = Math.max(32, nextTrackHeight * scrollRatio);
+      const maxThumbTop = Math.max(nextTrackHeight - thumbHeight, 0);
+      const thumbTop =
+        nextMaxScroll === 0 ? 0 : (scrollSurface.scrollTop / nextMaxScroll) * maxThumbTop;
+
+      scrollbarMetricsRef.current = {
+        trackHeight: nextTrackHeight,
+        thumbHeight,
+        maxThumbTop,
+        maxScroll: nextMaxScroll
+      };
+      setScrollbarState({
+        visible: true,
+        thumbHeight,
+        thumbTop
+      });
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const activeDrag = scrollbarDragRef.current;
+      if (!activeDrag) {
+        return;
+      }
+
+      const { maxScroll, maxThumbTop } = scrollbarMetricsRef.current;
+      if (maxScroll <= 0 || maxThumbTop <= 0) {
+        return;
+      }
+
+      const deltaY = event.clientY - activeDrag.startClientY;
+      const scrollDelta = (deltaY / maxThumbTop) * maxScroll;
+      scrollSurface.scrollTop = activeDrag.startScrollTop + scrollDelta;
+    }
+
+    function handlePointerUp(event: PointerEvent) {
+      if (scrollbarDragRef.current?.pointerId !== event.pointerId) {
+        return;
+      }
+      scrollbarDragRef.current = null;
+    }
+
+    updateReaderScrollbar();
+    scrollSurface.addEventListener("scroll", updateReaderScrollbar, { passive: true });
+    window.addEventListener("resize", updateReaderScrollbar);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+
+    return () => {
+      scrollSurface.removeEventListener("scroll", updateReaderScrollbar);
+      window.removeEventListener("resize", updateReaderScrollbar);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      scrollbarDragRef.current = null;
+    };
+  }, [displayedPage, incomingPage, scaledHeight, scaledWidth]);
 
   if (!document) {
     return (
@@ -152,35 +260,51 @@ const PdfViewer = memo(function PdfViewer({
         <div className="reader-page" style={pageLayoutStyle}>
           {displayedPage || incomingPage ? (
             <div className="pdf-page-layer">
-              <div className="reader-page__surface">
-                {displayedPage ? (
-                  <>
-                    <img
-                      key={displayedPage.requestKey}
-                      className="reader-page__image reader-page__image--displayed"
-                      src={displayedPage.imageUrl}
-                      alt={`Page ${displayedPage.pageNumber}`}
-                      draggable={false}
-                    />
-                    <PdfTextLayer
-                      pageNumber={displayedPage.pageNumber}
-                      textLayer={displayedPageTextLayer}
-                      renderedWidth={displayedPage.width}
-                      renderedHeight={displayedPage.height}
-                      renderTransform={displayedPage.textLayerTransform}
-                    />
-                  </>
-                ) : null}
+              <div
+                className="reader-page__surface-shell"
+                style={{
+                  width: `${scaledWidth}px`,
+                  height: `${scaledHeight}px`
+                }}
+              >
+                <div
+                  className="reader-page__surface"
+                  style={{
+                    width: `${layoutPage?.width ?? 0}px`,
+                    height: `${layoutPage?.height ?? 0}px`,
+                    transform: `scale(${surfaceScale})`
+                  }}
+                >
+                  {displayedPage ? (
+                    <>
+                      <img
+                        key={displayedPage.requestKey}
+                        className="reader-page__image reader-page__image--displayed"
+                        src={displayedPage.imageUrl}
+                        alt={`Page ${displayedPage.pageNumber}`}
+                        draggable={false}
+                      />
+                      <PdfTextLayer
+                        pageNumber={displayedPage.pageNumber}
+                        textLayer={displayedPageTextLayer}
+                        renderedWidth={displayedPage.width}
+                        renderedHeight={displayedPage.height}
+                        renderTransform={displayedPage.textLayerTransform}
+                      />
+                    </>
+                  ) : null}
+                </div>
 
                 {incomingPage ? (
                   <img
                     key={incomingPage.requestKey}
                     className="reader-page__image reader-page__image--incoming"
                     src={incomingPage.imageUrl}
-                    alt={`Page ${incomingPage.pageNumber}`}
+                    alt=""
+                    aria-hidden="true"
                     draggable={false}
-                    onLoad={() => {
-                      markIncomingReady(incomingPage.requestKey);
+                    onLoad={(event) => {
+                      markIncomingReady(incomingPage.requestKey, event.currentTarget);
                     }}
                   />
                 ) : null}
@@ -209,6 +333,53 @@ const PdfViewer = memo(function PdfViewer({
       ) : null}
 
       {rapidTurnOverlay?.visible ? <RapidTurnOverlay overlay={rapidTurnOverlay} /> : null}
+
+      <div
+        ref={scrollbarRef}
+        className={scrollbarState.visible ? "reader-scrollbar reader-scrollbar--visible" : "reader-scrollbar"}
+        onPointerDown={(event) => {
+          const scrollbarElement = scrollbarRef.current;
+          if (!scrollbarElement || event.target !== event.currentTarget) {
+            return;
+          }
+
+          const trackRect = scrollbarElement.getBoundingClientRect();
+          const { thumbHeight, maxScroll, maxThumbTop } = scrollbarMetricsRef.current;
+          if (maxScroll <= 0 || maxThumbTop <= 0) {
+            return;
+          }
+
+          const nextThumbTop = event.clientY - trackRect.top - thumbHeight / 2;
+          const clampedThumbTop = Math.max(0, Math.min(nextThumbTop, maxThumbTop));
+          const scrollSurface = scrollSurfaceRef.current;
+          if (!scrollSurface) {
+            return;
+          }
+          scrollSurface.scrollTop = (clampedThumbTop / maxThumbTop) * maxScroll;
+        }}
+      >
+        <div
+          className="reader-scrollbar-thumb"
+          style={{
+            height: `${scrollbarState.thumbHeight}px`,
+            transform: `translateY(${scrollbarState.thumbTop}px)`
+          }}
+          onPointerDown={(event) => {
+            const scrollSurface = scrollSurfaceRef.current;
+            if (!scrollSurface) {
+              return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            scrollbarDragRef.current = {
+              pointerId: event.pointerId,
+              startClientY: event.clientY,
+              startScrollTop: scrollSurface.scrollTop
+            };
+          }}
+        />
+      </div>
 
       {isDebugModeEnabled && displayedPage ? (
         <div className="reader-page__status reader-page__status--debug" role="status">

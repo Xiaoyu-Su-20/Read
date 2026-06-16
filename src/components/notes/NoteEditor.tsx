@@ -43,6 +43,7 @@ import {
   updatePageLinkTarget
 } from "../../lib/noteEditorDom";
 import { logNoteDebugEvent } from "../../lib/api";
+import { computeCenteredChildScrollTop } from "./noteEditorScroll";
 import {
   commitNoteHistoryState,
   createNoteHistoryState,
@@ -462,9 +463,35 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         if (!bodyRef.current) {
           return;
         }
-        findBlockElement(bodyRef.current, blockId)?.scrollIntoView({
-          behavior: "smooth",
-          block: "center"
+
+        const blockElement = findBlockElement(bodyRef.current, blockId);
+        const scrollSurface = bodyRef.current.closest(".notes-pane__scroll-surface");
+        if (!blockElement) {
+          return;
+        }
+
+        if (!(scrollSurface instanceof HTMLDivElement)) {
+          blockElement.scrollIntoView({
+            behavior: "smooth",
+            block: "center"
+          });
+          return;
+        }
+
+        const scrollRect = scrollSurface.getBoundingClientRect();
+        const blockRect = blockElement.getBoundingClientRect();
+        const blockTopWithinScrollSurface =
+          scrollSurface.scrollTop + (blockRect.top - scrollRect.top);
+        const nextScrollTop = computeCenteredChildScrollTop({
+          childHeight: blockRect.height,
+          childTop: blockTopWithinScrollSurface,
+          containerHeight: scrollSurface.clientHeight,
+          scrollHeight: scrollSurface.scrollHeight
+        });
+
+        scrollSurface.scrollTo({
+          top: nextScrollTop,
+          behavior: "smooth"
         });
       },
       copySelection() {

@@ -222,6 +222,8 @@ export type NoteHistoryMergeKey =
 export type ViewerApi = {
   nextPage: () => void;
   previousPage: () => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
   goToPage: (page: number) => void;
   navigateToTarget: (target: PdfNavigationTarget) => void;
   searchPort: import("../search/model/SearchRequest").PdfSearchPort;

@@ -25,7 +25,7 @@ pub use cache::RenderCache;
 pub use cache::MAX_RENDER_CACHE_ENTRIES;
 use jpeg_windows::write_pixmap_as_jpeg;
 
-const RENDERER_VERSION: &str = "mupdf-v3";
+const RENDERER_VERSION: &str = "mupdf-v4";
 const BASE_PDF_RENDER_SCALE: f32 = 1.0;
 const JPEG_QUALITY: u32 = 82;
 const MIN_RENDER_ZOOM: f32 = 0.1;
@@ -348,8 +348,10 @@ impl PdfRenderStore {
             .map_err(|error| {
                 AppError::Render(format!("Unable to allocate normalized page: {error}"))
             })?;
+        // Clear normalized renders to white so the reader's configurable paper surface
+        // remains the effective background in both light and dark appearance pipelines.
         pixmap
-            .clear_with(frame.background_gray as i32)
+            .clear_with(255)
             .map_err(|error| {
                 AppError::Render(format!("Unable to clear normalized page: {error}"))
             })?;

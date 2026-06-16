@@ -1,42 +1,43 @@
+import { DEFAULT_READER_PANE_SPLIT_RATIO, normalizeReaderPaneSplitRatio } from "../reader/paneLayout";
 import {
-  createDefaultThemeProfile,
+  DEFAULT_ACTIVE_THEME_ID,
+  applyThemeDraft,
+  builtinThemeDefinitions,
+  createCustomThemeDefinition,
+  createDefaultThemeSources,
+  createThemeDraft,
   deriveThemeCssVariables,
-  normalizeThemeColor,
-  normalizeThemeProfile,
-  type ThemeProfile
+  isBuiltinThemeId,
+  normalizeCustomThemeDefinition,
+  normalizeDocumentRenderTheme,
+  normalizeThemeSourceColor,
+  resolveTheme,
+  resolveThemeById,
+  themeSourceEditorSections,
+  type DocumentRenderTheme,
+  type ThemeDefinition,
+  type ThemeDraft,
+  type ThemeSourceKey,
+  type ThemeSources,
+  type ThemeSurfaceTone,
+  type ViewerDisplayConfig
 } from "./themeProfile";
 
 export const APP_SETTINGS_STORAGE_KEY = "calm-reader.settings";
-export const APP_SETTINGS_VERSION = 3;
+export const APP_SETTINGS_VERSION = 6;
 
-export type DocumentAppearanceMode = "light" | "dark";
-export type AppearanceProfileSource = "default" | "custom";
-
-export type AppearanceProfile = {
-  paperColor: string;
-  paperColorSource: AppearanceProfileSource;
-  brightness: number;
-  contrast: number;
-};
-
-export type DarkAppearanceProfile = AppearanceProfile & {
-  inversion: number;
-};
-
-export type DocumentAppearanceSettings = {
-  mode: DocumentAppearanceMode;
-  useOnePaperColorForBoth: boolean;
-  light: AppearanceProfile;
-  dark: DarkAppearanceProfile;
-};
-
-export type AppSettingsSchema = {
-  documentAppearance: DocumentAppearanceSettings;
+export type ReaderPreferences = {
   fullscreenMode: boolean;
   showPageNumbers: boolean;
   twoPageView: boolean;
   verticalScrolling: boolean;
-  themeProfile: ThemeProfile;
+};
+
+export type AppSettingsSchema = {
+  readerPaneSplitRatio: number;
+  readerPreferences: ReaderPreferences;
+  activeThemeId: string;
+  customThemes: ThemeDefinition[];
 };
 
 export type AppSettingKey = keyof AppSettingsSchema;
@@ -46,7 +47,52 @@ export type AppSettingsPayload = {
   settings: AppSettingsSchema;
 };
 
-export type ViewerDisplayConfig = DocumentAppearanceSettings;
+export type ThemeEditorConfig = {
+  activeTheme: ThemeDefinition;
+  canEdit: boolean;
+  canDelete: boolean;
+  sourceSections: typeof themeSourceEditorSections;
+};
+
+type LegacyDocumentAppearanceMode = "light" | "dark";
+type LegacyAppearanceProfileSource = "default" | "custom";
+
+type LegacyAppearanceProfile = {
+  paperColor: string;
+  paperColorSource: LegacyAppearanceProfileSource;
+  brightness: number;
+  contrast: number;
+};
+
+type LegacyDarkAppearanceProfile = LegacyAppearanceProfile & {
+  inversion: number;
+};
+
+type LegacyDocumentAppearanceSettings = {
+  mode: LegacyDocumentAppearanceMode;
+  useOnePaperColorForBoth: boolean;
+  light: LegacyAppearanceProfile;
+  dark: LegacyDarkAppearanceProfile;
+};
+
+type LegacyThemeProfile = {
+  workspace: string;
+  chrome: string;
+  text: string;
+  accent: string;
+  interactive: string;
+  danger: string;
+};
+
+type LegacySettingsV4 = {
+  documentAppearance: LegacyDocumentAppearanceSettings;
+  readerPaneSplitRatio: number;
+  fullscreenMode: boolean;
+  showPageNumbers: boolean;
+  twoPageView: boolean;
+  verticalScrolling: boolean;
+  themeProfile: LegacyThemeProfile;
+};
 
 type AppSettingDefinition<Key extends AppSettingKey> = {
   defaultValue: AppSettingsSchema[Key];
@@ -65,8 +111,67 @@ function normalizeBoolean(value: unknown, fallback: boolean) {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function normalizeMode(value: unknown): DocumentAppearanceMode {
+function normalizeString(value: unknown, fallback: string) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+function normalizeReaderPreferences(value: unknown): ReaderPreferences {
+  const record = isRecord(value) ? value : {};
+
+  return {
+    fullscreenMode: normalizeBoolean(record.fullscreenMode, false),
+    showPageNumbers: normalizeBoolean(record.showPageNumbers, true),
+    twoPageView: normalizeBoolean(record.twoPageView, false),
+    verticalScrolling: normalizeBoolean(record.verticalScrolling, true)
+  };
+}
+
+function normalizeCustomThemes(value: unknown): ThemeDefinition[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const nextThemes: ThemeDefinition[] = [];
+  const seenThemeIds = new Set<string>();
+
+  for (const themeCandidate of value) {
+    const normalizedTheme = normalizeCustomThemeDefinition(themeCandidate);
+    if (!normalizedTheme) {
+      continue;
+    }
+    if (isBuiltinThemeId(normalizedTheme.id) || seenThemeIds.has(normalizedTheme.id)) {
+      continue;
+    }
+
+    seenThemeIds.add(normalizedTheme.id);
+    nextThemes.push(normalizedTheme);
+  }
+
+  return nextThemes;
+}
+
+function normalizeActiveThemeId(
+  value: unknown,
+  customThemes: readonly ThemeDefinition[]
+) {
+  const candidate = normalizeString(value, DEFAULT_ACTIVE_THEME_ID);
+  if (isBuiltinThemeId(candidate)) {
+    return candidate;
+  }
+
+  return customThemes.some((themeDefinition) => themeDefinition.id === candidate)
+    ? candidate
+    : DEFAULT_ACTIVE_THEME_ID;
+}
+
+function normalizeLegacyMode(value: unknown): LegacyDocumentAppearanceMode {
   return value === "dark" ? "dark" : "light";
+}
+
+function normalizeLegacyAppearanceProfileSource(
+  value: unknown
+): LegacyAppearanceProfileSource {
+  return value === "custom" ? "custom" : "default";
 }
 
 function normalizeNumber(value: unknown, fallback: number, min: number, max: number) {
@@ -77,11 +182,7 @@ function normalizeNumber(value: unknown, fallback: number, min: number, max: num
   return Math.min(Math.max(value, min), max);
 }
 
-function normalizePaperColorSource(value: unknown): AppearanceProfileSource {
-  return value === "custom" ? "custom" : "default";
-}
-
-export function createDefaultLightAppearanceProfile(): AppearanceProfile {
+function createDefaultLegacyLightAppearanceProfile(): LegacyAppearanceProfile {
   return {
     paperColor: "#c8c2b8",
     paperColorSource: "default",
@@ -90,7 +191,7 @@ export function createDefaultLightAppearanceProfile(): AppearanceProfile {
   };
 }
 
-export function createDefaultDarkAppearanceProfile(): DarkAppearanceProfile {
+function createDefaultLegacyDarkAppearanceProfile(): LegacyDarkAppearanceProfile {
   return {
     paperColor: "#20242a",
     paperColorSource: "default",
@@ -100,38 +201,38 @@ export function createDefaultDarkAppearanceProfile(): DarkAppearanceProfile {
   };
 }
 
-export function createDefaultDocumentAppearanceSettings(): DocumentAppearanceSettings {
+function createDefaultLegacyDocumentAppearanceSettings(): LegacyDocumentAppearanceSettings {
   return {
     mode: "light",
     useOnePaperColorForBoth: false,
-    light: createDefaultLightAppearanceProfile(),
-    dark: createDefaultDarkAppearanceProfile()
+    light: createDefaultLegacyLightAppearanceProfile(),
+    dark: createDefaultLegacyDarkAppearanceProfile()
   };
 }
 
-function normalizeAppearanceProfile(
+function normalizeLegacyAppearanceProfile(
   value: unknown,
-  defaults: AppearanceProfile
-): AppearanceProfile {
+  defaults: LegacyAppearanceProfile
+): LegacyAppearanceProfile {
   const record = isRecord(value) ? value : {};
-  const paperColor = normalizeThemeColor(record.paperColor, defaults.paperColor);
+  const paperColor = normalizeThemeSourceColor(record.paperColor, defaults.paperColor);
 
   return {
     paperColor,
     paperColorSource:
       paperColor === defaults.paperColor
-        ? normalizePaperColorSource(record.paperColorSource)
+        ? normalizeLegacyAppearanceProfileSource(record.paperColorSource)
         : "custom",
     brightness: normalizeNumber(record.brightness, defaults.brightness, 0.25, 2),
     contrast: normalizeNumber(record.contrast, defaults.contrast, 0.25, 2)
   };
 }
 
-function normalizeDarkAppearanceProfile(
+function normalizeLegacyDarkAppearanceProfile(
   value: unknown,
-  defaults: DarkAppearanceProfile
-): DarkAppearanceProfile {
-  const normalizedBase = normalizeAppearanceProfile(value, defaults);
+  defaults: LegacyDarkAppearanceProfile
+): LegacyDarkAppearanceProfile {
+  const normalizedBase = normalizeLegacyAppearanceProfile(value, defaults);
   const record = isRecord(value) ? value : {};
 
   return {
@@ -145,12 +246,15 @@ function extractLegacyPaperColor(value: unknown) {
     return null;
   }
 
-  return normalizeThemeColor(value.paper, createDefaultLightAppearanceProfile().paperColor);
+  return normalizeThemeSourceColor(
+    value.paper,
+    createDefaultLegacyLightAppearanceProfile().paperColor
+  );
 }
 
-function syncPaperColorAcrossProfiles(
-  settings: DocumentAppearanceSettings
-): DocumentAppearanceSettings {
+function syncLegacyPaperColorAcrossProfiles(
+  settings: LegacyDocumentAppearanceSettings
+): LegacyDocumentAppearanceSettings {
   const sourceProfile = settings.mode === "dark" ? settings.dark : settings.light;
   return {
     ...settings,
@@ -167,15 +271,15 @@ function syncPaperColorAcrossProfiles(
   };
 }
 
-function normalizeDocumentAppearanceFromLegacy(
+function normalizeLegacyDocumentAppearanceFromLegacy(
   modeCandidate: unknown,
   legacyPaperColor: string | null
-): DocumentAppearanceSettings {
-  const defaults = createDefaultDocumentAppearanceSettings();
+): LegacyDocumentAppearanceSettings {
+  const defaults = createDefaultLegacyDocumentAppearanceSettings();
 
   return {
     ...defaults,
-    mode: normalizeMode(modeCandidate),
+    mode: normalizeLegacyMode(modeCandidate),
     light: legacyPaperColor
       ? {
           ...defaults.light,
@@ -186,180 +290,79 @@ function normalizeDocumentAppearanceFromLegacy(
   };
 }
 
-export function normalizeDocumentAppearanceSettings(
+function normalizeLegacyDocumentAppearanceSettings(
   value: unknown
-): DocumentAppearanceSettings {
+): LegacyDocumentAppearanceSettings {
   if (!isRecord(value) || !("mode" in value) || !("light" in value) || !("dark" in value)) {
-    return normalizeDocumentAppearanceFromLegacy(value, null);
+    return normalizeLegacyDocumentAppearanceFromLegacy(value, null);
   }
 
-  const defaults = createDefaultDocumentAppearanceSettings();
+  const defaults = createDefaultLegacyDocumentAppearanceSettings();
   const normalized = {
-    mode: normalizeMode(value.mode),
+    mode: normalizeLegacyMode(value.mode),
     useOnePaperColorForBoth: normalizeBoolean(value.useOnePaperColorForBoth, false),
-    light: normalizeAppearanceProfile(value.light, defaults.light),
-    dark: normalizeDarkAppearanceProfile(value.dark, defaults.dark)
-  } satisfies DocumentAppearanceSettings;
+    light: normalizeLegacyAppearanceProfile(value.light, defaults.light),
+    dark: normalizeLegacyDarkAppearanceProfile(value.dark, defaults.dark)
+  } satisfies LegacyDocumentAppearanceSettings;
 
-  return normalized.useOnePaperColorForBoth ? syncPaperColorAcrossProfiles(normalized) : normalized;
+  return normalized.useOnePaperColorForBoth
+    ? syncLegacyPaperColorAcrossProfiles(normalized)
+    : normalized;
 }
 
-export function getActiveAppearanceProfile(
-  documentAppearance: DocumentAppearanceSettings
-): AppearanceProfile | DarkAppearanceProfile {
-  return documentAppearance.mode === "dark"
-    ? documentAppearance.dark
-    : documentAppearance.light;
-}
-
-export function updateDocumentAppearanceMode(
-  current: DocumentAppearanceSettings,
-  nextMode: DocumentAppearanceMode
-) {
-  return normalizeDocumentAppearanceSettings({
-    ...current,
-    mode: nextMode
-  });
-}
-
-export function updateDocumentAppearancePaperColor(
-  current: DocumentAppearanceSettings,
-  nextPaperColor: string
-) {
-  const activeKey = current.mode === "dark" ? "dark" : "light";
-  const activeProfile = current[activeKey];
-
-  const nextSettings: DocumentAppearanceSettings = {
-    ...current,
-    [activeKey]: {
-      ...activeProfile,
-      paperColor: nextPaperColor,
-      paperColorSource: "custom"
-    }
-  };
-
-  return current.useOnePaperColorForBoth
-    ? syncPaperColorAcrossProfiles(nextSettings)
-    : normalizeDocumentAppearanceSettings(nextSettings);
-}
-
-export function toggleSharedDocumentAppearancePaper(
-  current: DocumentAppearanceSettings
-) {
-  const nextValue = !current.useOnePaperColorForBoth;
-  const nextSettings = normalizeDocumentAppearanceSettings({
-    ...current,
-    useOnePaperColorForBoth: nextValue
-  });
-
-  return nextValue ? syncPaperColorAcrossProfiles(nextSettings) : nextSettings;
-}
-
-export function resetActiveDocumentAppearanceProfile(
-  current: DocumentAppearanceSettings
-) {
-  const defaults = createDefaultDocumentAppearanceSettings();
-  const activeKey = current.mode === "dark" ? "dark" : "light";
-
-  const nextSettings: DocumentAppearanceSettings = {
-    ...current,
-    [activeKey]: defaults[activeKey]
-  };
-
-  return current.useOnePaperColorForBoth
-    ? syncPaperColorAcrossProfiles(nextSettings)
-    : normalizeDocumentAppearanceSettings(nextSettings);
-}
-
-export function resetAllDocumentAppearanceSettings(
-  currentMode: DocumentAppearanceMode
-) {
-  return normalizeDocumentAppearanceSettings({
-    ...createDefaultDocumentAppearanceSettings(),
-    mode: currentMode
-  });
-}
-
-export function resolveViewerPaperColor(documentAppearance: DocumentAppearanceSettings) {
-  return getActiveAppearanceProfile(documentAppearance).paperColor;
-}
-
-function buildImageFilter(
-  profile: AppearanceProfile | DarkAppearanceProfile,
-  mode: DocumentAppearanceMode
-) {
-  const filterParts: string[] = [];
-  if (mode === "dark") {
-    const darkProfile = profile as DarkAppearanceProfile;
-    if (darkProfile.inversion > 0) {
-      filterParts.push(`invert(${darkProfile.inversion})`, "hue-rotate(180deg)");
-    }
-  }
-
-  filterParts.push(`brightness(${profile.brightness})`, `contrast(${profile.contrast})`);
-  return filterParts.join(" ");
-}
-
-export function resolveViewerImageFilter(documentAppearance: DocumentAppearanceSettings) {
-  const activeProfile = getActiveAppearanceProfile(documentAppearance);
-  return buildImageFilter(activeProfile, documentAppearance.mode);
-}
-
-export const appSettingsRegistry = {
-  documentAppearance: {
-    defaultValue: createDefaultDocumentAppearanceSettings(),
-    normalize: normalizeDocumentAppearanceSettings
-  },
-  fullscreenMode: {
-    defaultValue: false,
-    normalize: (value) => normalizeBoolean(value, false)
-  },
-  showPageNumbers: {
-    defaultValue: true,
-    normalize: (value) => normalizeBoolean(value, true)
-  },
-  twoPageView: {
-    defaultValue: false,
-    normalize: (value) => normalizeBoolean(value, false)
-  },
-  verticalScrolling: {
-    defaultValue: true,
-    normalize: (value) => normalizeBoolean(value, true)
-  },
-  themeProfile: {
-    defaultValue: createDefaultThemeProfile(),
-    normalize: normalizeThemeProfile
-  }
-} satisfies AppSettingsRegistry;
-
-export function createDefaultAppSettings(): AppSettingsSchema {
-  return {
-    documentAppearance: appSettingsRegistry.documentAppearance.defaultValue,
-    fullscreenMode: appSettingsRegistry.fullscreenMode.defaultValue,
-    showPageNumbers: appSettingsRegistry.showPageNumbers.defaultValue,
-    twoPageView: appSettingsRegistry.twoPageView.defaultValue,
-    verticalScrolling: appSettingsRegistry.verticalScrolling.defaultValue,
-    themeProfile: appSettingsRegistry.themeProfile.defaultValue
-  };
-}
-
-export function createDefaultAppSettingsPayload(): AppSettingsPayload {
-  return {
-    version: APP_SETTINGS_VERSION,
-    settings: createDefaultAppSettings()
-  };
-}
-
-export function normalizeAppSettings(candidate: unknown): AppSettingsSchema {
+function normalizeLegacyThemeProfile(candidate: unknown): LegacyThemeProfile {
+  const defaults = createDefaultThemeSources();
   const record = isRecord(candidate) ? candidate : {};
 
   return {
-    documentAppearance: appSettingsRegistry.documentAppearance.normalize(record.documentAppearance),
-    fullscreenMode: appSettingsRegistry.fullscreenMode.normalize(record.fullscreenMode),
-    showPageNumbers: appSettingsRegistry.showPageNumbers.normalize(record.showPageNumbers),
-    twoPageView: appSettingsRegistry.twoPageView.normalize(record.twoPageView),
-    verticalScrolling: appSettingsRegistry.verticalScrolling.normalize(record.verticalScrolling),
-    themeProfile: appSettingsRegistry.themeProfile.normalize(record.themeProfile)
+    workspace: normalizeThemeSourceColor(record.workspace, defaults.workspace),
+    chrome: normalizeThemeSourceColor(record.chrome, defaults.chrome),
+    text: normalizeThemeSourceColor(record.text, defaults.uiText),
+    accent: normalizeThemeSourceColor(record.accent, defaults.accent),
+    interactive: normalizeThemeSourceColor(record.interactive, defaults.interactive),
+    danger: normalizeThemeSourceColor(record.danger, defaults.danger)
+  };
+}
+
+function normalizeLegacySettingsV4(candidate: unknown): LegacySettingsV4 {
+  const record = isRecord(candidate) ? candidate : {};
+
+  return {
+    documentAppearance: normalizeLegacyDocumentAppearanceSettings(record.documentAppearance),
+    readerPaneSplitRatio: normalizeReaderPaneSplitRatio(record.readerPaneSplitRatio),
+    fullscreenMode: normalizeBoolean(record.fullscreenMode, false),
+    showPageNumbers: normalizeBoolean(record.showPageNumbers, true),
+    twoPageView: normalizeBoolean(record.twoPageView, false),
+    verticalScrolling: normalizeBoolean(record.verticalScrolling, true),
+    themeProfile: normalizeLegacyThemeProfile(record.themeProfile)
+  };
+}
+
+function createMigratedCustomTheme(
+  legacySettings: LegacySettingsV4
+): ThemeDefinition {
+  const activeProfile =
+    legacySettings.documentAppearance.mode === "dark"
+      ? legacySettings.documentAppearance.dark
+      : legacySettings.documentAppearance.light;
+
+  return {
+    id: "custom-migrated",
+    name: "Migrated Theme",
+    kind: "custom",
+    source: {
+      workspace: legacySettings.themeProfile.workspace,
+      chrome: legacySettings.themeProfile.chrome,
+      uiText: legacySettings.themeProfile.text,
+      documentPaper: activeProfile.paperColor,
+      documentInk: legacySettings.themeProfile.text,
+      accent: legacySettings.themeProfile.accent,
+      interactive: legacySettings.themeProfile.interactive,
+      danger: legacySettings.themeProfile.danger
+    },
+    document: {
+      surfaceTone: legacySettings.documentAppearance.mode
+    }
   };
 }
 
@@ -390,10 +393,107 @@ function migrateFromVersionTwo(candidate: unknown) {
 
   return {
     ...candidate,
-    documentAppearance: normalizeDocumentAppearanceFromLegacy(
+    documentAppearance: normalizeLegacyDocumentAppearanceFromLegacy(
       candidate.documentAppearance,
       extractLegacyPaperColor(candidate.themeProfile)
     )
+  };
+}
+
+function migrateFromVersionFour(candidate: unknown): AppSettingsSchema {
+  const legacySettings = normalizeLegacySettingsV4(candidate);
+  const migratedTheme = createMigratedCustomTheme(legacySettings);
+
+  return normalizeAppSettings({
+    readerPaneSplitRatio: legacySettings.readerPaneSplitRatio,
+    readerPreferences: {
+      fullscreenMode: legacySettings.fullscreenMode,
+      showPageNumbers: legacySettings.showPageNumbers,
+      twoPageView: legacySettings.twoPageView,
+      verticalScrolling: legacySettings.verticalScrolling
+    },
+    activeThemeId: migratedTheme.id,
+    customThemes: [migratedTheme]
+  });
+}
+
+function migrateFromVersionFive(candidate: unknown): AppSettingsSchema {
+  return normalizeAppSettings(candidate);
+}
+
+function generateThemeId() {
+  return `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createUniqueThemeName(
+  existingThemes: readonly ThemeDefinition[],
+  baseName: string
+) {
+  const trimmedBaseName = baseName.trim() || "Custom Theme";
+  const existingNames = new Set(existingThemes.map((themeDefinition) => themeDefinition.name));
+  if (!existingNames.has(trimmedBaseName)) {
+    return trimmedBaseName;
+  }
+
+  let suffix = 2;
+  while (existingNames.has(`${trimmedBaseName} ${suffix}`)) {
+    suffix += 1;
+  }
+
+  return `${trimmedBaseName} ${suffix}`;
+}
+
+export const appSettingsRegistry = {
+  readerPaneSplitRatio: {
+    defaultValue: DEFAULT_READER_PANE_SPLIT_RATIO,
+    normalize: normalizeReaderPaneSplitRatio
+  },
+  readerPreferences: {
+    defaultValue: {
+      fullscreenMode: false,
+      showPageNumbers: true,
+      twoPageView: false,
+      verticalScrolling: true
+    },
+    normalize: normalizeReaderPreferences
+  },
+  activeThemeId: {
+    defaultValue: DEFAULT_ACTIVE_THEME_ID,
+    normalize: (value) => normalizeString(value, DEFAULT_ACTIVE_THEME_ID)
+  },
+  customThemes: {
+    defaultValue: [],
+    normalize: normalizeCustomThemes
+  }
+} satisfies AppSettingsRegistry;
+
+export function createDefaultAppSettings(): AppSettingsSchema {
+  return {
+    readerPaneSplitRatio: appSettingsRegistry.readerPaneSplitRatio.defaultValue,
+    readerPreferences: appSettingsRegistry.readerPreferences.defaultValue,
+    activeThemeId: appSettingsRegistry.activeThemeId.defaultValue,
+    customThemes: appSettingsRegistry.customThemes.defaultValue
+  };
+}
+
+export function createDefaultAppSettingsPayload(): AppSettingsPayload {
+  return {
+    version: APP_SETTINGS_VERSION,
+    settings: createDefaultAppSettings()
+  };
+}
+
+export function normalizeAppSettings(candidate: unknown): AppSettingsSchema {
+  const record = isRecord(candidate) ? candidate : {};
+  const customThemes = appSettingsRegistry.customThemes.normalize(record.customThemes);
+
+  return {
+    readerPaneSplitRatio: appSettingsRegistry.readerPaneSplitRatio.normalize(
+      record.readerPaneSplitRatio
+    ),
+    readerPreferences: appSettingsRegistry.readerPreferences.normalize(record.readerPreferences),
+    activeThemeId: normalizeActiveThemeId(record.activeThemeId, customThemes),
+    customThemes
   };
 }
 
@@ -420,6 +520,17 @@ export function migrateAppSettingsPayload(candidate: unknown): AppSettingsPayloa
       case 2:
         nextSettingsCandidate = migrateFromVersionTwo(nextSettingsCandidate);
         version = 3;
+        break;
+      case 3:
+        version = 4;
+        break;
+      case 4:
+        nextSettingsCandidate = migrateFromVersionFour(nextSettingsCandidate);
+        version = 5;
+        break;
+      case 5:
+        nextSettingsCandidate = migrateFromVersionFive(nextSettingsCandidate);
+        version = 6;
         break;
       default:
         version = APP_SETTINGS_VERSION;
@@ -453,11 +564,180 @@ export function serializeAppSettingsPayload(payload: AppSettingsPayload) {
   return JSON.stringify(payload);
 }
 
+export function createViewerDisplayConfig(themeDefinition: ThemeDefinition): ViewerDisplayConfig {
+  return resolveTheme(themeDefinition).viewerDisplayConfig;
+}
+
+export function resolveViewerPaperColor(viewerDisplayConfig: ViewerDisplayConfig) {
+  return viewerDisplayConfig.paperColor;
+}
+
+export function resolveViewerImageFilter(viewerDisplayConfig: ViewerDisplayConfig) {
+  return viewerDisplayConfig.imageFilter;
+}
+
+export function createThemePreview(themeDefinition: ThemeDefinition) {
+  return {
+    id: themeDefinition.id,
+    name: themeDefinition.name,
+    kind: themeDefinition.kind,
+    workspaceColor: themeDefinition.source.workspace,
+    paperColor: themeDefinition.source.documentPaper,
+    textColor: themeDefinition.source.uiText
+  };
+}
+
+export function createNewCustomTheme(settings: AppSettingsSchema): AppSettingsSchema {
+  const activeTheme = resolveThemeById(settings.activeThemeId, settings.customThemes);
+  const themeList = [...builtinThemeDefinitions, ...settings.customThemes];
+  const themeName = createUniqueThemeName(themeList, "New Theme");
+  const nextTheme = createCustomThemeDefinition(generateThemeId(), themeName, activeTheme);
+
+  return normalizeAppSettings({
+    ...settings,
+    activeThemeId: nextTheme.id,
+    customThemes: [...settings.customThemes, nextTheme]
+  });
+}
+
+export function duplicateTheme(settings: AppSettingsSchema, themeId: string): AppSettingsSchema {
+  const sourceTheme = resolveThemeById(themeId, settings.customThemes);
+  const themeList = [...builtinThemeDefinitions, ...settings.customThemes];
+  const nextTheme = createCustomThemeDefinition(
+    generateThemeId(),
+    createUniqueThemeName(themeList, `${sourceTheme.name} Copy`),
+    sourceTheme
+  );
+
+  return normalizeAppSettings({
+    ...settings,
+    activeThemeId: nextTheme.id,
+    customThemes: [...settings.customThemes, nextTheme]
+  });
+}
+
+export function deleteCustomTheme(
+  settings: AppSettingsSchema,
+  themeId: string
+): AppSettingsSchema {
+  if (isBuiltinThemeId(themeId)) {
+    return settings;
+  }
+
+  const nextThemes = settings.customThemes.filter(
+    (themeDefinition) => themeDefinition.id !== themeId
+  );
+  const nextActiveThemeId =
+    settings.activeThemeId === themeId ? DEFAULT_ACTIVE_THEME_ID : settings.activeThemeId;
+
+  return normalizeAppSettings({
+    ...settings,
+    activeThemeId: nextActiveThemeId,
+    customThemes: nextThemes
+  });
+}
+
+export function saveCustomThemeDraft(
+  settings: AppSettingsSchema,
+  themeId: string,
+  themeDraft: ThemeDraft
+): AppSettingsSchema {
+  if (isBuiltinThemeId(themeId)) {
+    return settings;
+  }
+
+  return normalizeAppSettings({
+    ...settings,
+    customThemes: settings.customThemes.map((themeDefinition) =>
+      themeDefinition.id === themeId
+        ? applyThemeDraft(themeDefinition, themeDraft)
+        : themeDefinition
+    )
+  });
+}
+
+export function updateThemeDraftColor(
+  themeDraft: ThemeDraft,
+  key: ThemeSourceKey,
+  value: string
+): ThemeDraft {
+  return {
+    ...themeDraft,
+    source: {
+      ...themeDraft.source,
+      [key]: normalizeThemeSourceColor(value, themeDraft.source[key])
+    }
+  };
+}
+
+export function updateThemeDraftName(themeDraft: ThemeDraft, value: string): ThemeDraft {
+  return {
+    ...themeDraft,
+    name: value
+  };
+}
+
+export function updateThemeDraftDocument(
+  themeDraft: ThemeDraft,
+  value: Partial<DocumentRenderTheme>
+): ThemeDraft {
+  return {
+    ...themeDraft,
+    document: normalizeDocumentRenderTheme({
+      ...themeDraft.document,
+      ...value
+    })
+  };
+}
+
 export const appSettingsSelectors = {
+  readerPaneSplitRatio(settings: AppSettingsSchema) {
+    return settings.readerPaneSplitRatio;
+  },
+  readerPreferences(settings: AppSettingsSchema) {
+    return settings.readerPreferences;
+  },
+  themeList(settings: AppSettingsSchema) {
+    return [...builtinThemeDefinitions, ...settings.customThemes];
+  },
+  activeTheme(settings: AppSettingsSchema) {
+    return resolveThemeById(settings.activeThemeId, settings.customThemes);
+  },
+  themePresetCards(settings: AppSettingsSchema) {
+    return [...builtinThemeDefinitions, ...settings.customThemes].map(createThemePreview);
+  },
+  themeEditorConfig(settings: AppSettingsSchema): ThemeEditorConfig {
+    const activeTheme = resolveThemeById(settings.activeThemeId, settings.customThemes);
+    return {
+      activeTheme,
+      canEdit: activeTheme.kind === "custom",
+      canDelete: activeTheme.kind === "custom",
+      sourceSections: themeSourceEditorSections
+    };
+  },
   viewerDisplayConfig(settings: AppSettingsSchema): ViewerDisplayConfig {
-    return settings.documentAppearance;
+    return createViewerDisplayConfig(resolveThemeById(settings.activeThemeId, settings.customThemes));
   },
   themeCssVariables(settings: AppSettingsSchema) {
-    return deriveThemeCssVariables(settings.themeProfile);
+    return deriveThemeCssVariables(resolveThemeById(settings.activeThemeId, settings.customThemes));
   }
+};
+
+export {
+  applyThemeDraft,
+  builtinThemeDefinitions,
+  createThemeDraft,
+  deriveThemeCssVariables,
+  resolveTheme,
+  resolveThemeById,
+  themeSourceEditorSections
+};
+
+export type {
+  ThemeDefinition,
+  ThemeDraft,
+  ThemeSources,
+  ThemeSourceKey,
+  ThemeSurfaceTone,
+  ViewerDisplayConfig
 };

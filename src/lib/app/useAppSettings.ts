@@ -63,9 +63,30 @@ export function useAppSettings() {
     });
   }
 
+  function updateSettings(
+    value:
+      | AppSettingsSchema
+      | ((currentSettings: AppSettingsSchema) => AppSettingsSchema)
+  ) {
+    setPayload((currentPayload) => {
+      const nextSettings =
+        typeof value === "function"
+          ? (value as (currentSettings: AppSettingsSchema) => AppSettingsSchema)(
+              currentPayload.settings
+            )
+          : value;
+
+      return {
+        ...currentPayload,
+        settings: normalizeAppSettings(nextSettings)
+      };
+    });
+  }
+
   return {
     settings: payload.settings,
     selectors: appSettingsSelectors,
-    setSetting
+    setSetting,
+    updateSettings
   };
 }
