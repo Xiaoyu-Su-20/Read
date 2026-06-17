@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   clampReaderPaneSplitRatio,
+  clampReaderPaneSplitRatioWithMinDocumentWidth,
   DEFAULT_READER_PANE_SPLIT_RATIO,
   deriveReaderPaneLayout,
   getReaderPaneNotesRatio,
@@ -58,6 +59,11 @@ describe("paneLayout helpers", () => {
       maxRatio: 0.5
     });
     expect(clampReaderPaneSplitRatio(0.2, 620)).toBe(0.5);
+  });
+
+  it("can clamp the document pane to a stronger locked-fit minimum width", () => {
+    expect(clampReaderPaneSplitRatioWithMinDocumentWidth(0.2, 1200, 640)).toBe(0.5338);
+    expect(clampReaderPaneSplitRatioWithMinDocumentWidth(0.8, 1200, 640)).toBe(0.7331);
   });
 
   it("converts pointer position into a ratio and derives the matching notes ratio", () => {

@@ -218,7 +218,7 @@ describe("UnifiedSearchController", () => {
     controller.setQuery("the");
     await vi.advanceTimersByTimeAsync(180);
     expect(controller.getSnapshot().committedView.groups.map((group) => group.id)).toEqual([
-      "notes", "current-page", "nearby-pages", "across-document", "documents"
+      "notes", "nearby-page", "across-document", "pdf-names"
     ]);
     expect(controller.getSnapshot().committedView.groups.find((group) => group.id === "across-document")?.action?.kind)
       .toBe("search-entire-document");
@@ -277,6 +277,34 @@ describe("UnifiedSearchController", () => {
     controller.cancel();
     expect(controller.getSnapshot().phase).toBe("cancelled");
     expect(controller.getSnapshot().committedView.groups).toEqual(committed.groups);
+  });
+
+  it("dismisses without clearing the query or committed results", async () => {
+    const source = documentSource();
+    const controller = new UnifiedSearchController(createSearchPlan, new Map([[source.id, source]]));
+    controller.setContext({
+      currentPage: 1,
+      totalPages: 0,
+      activeDocumentId: null,
+      currentNote: null,
+      pdfPort: null,
+      documents: [documentRecord]
+    });
+    controller.open();
+    controller.setQuery("structure");
+    await vi.advanceTimersByTimeAsync(140);
+
+    const committed = controller.getSnapshot().committedView;
+    controller.dismiss();
+
+    expect(controller.getSnapshot().open).toBe(false);
+    expect(controller.getSnapshot().inputQuery).toBe("structure");
+    expect(controller.getSnapshot().committedView).toEqual(committed);
+
+    controller.open();
+    expect(controller.getSnapshot().open).toBe(true);
+    expect(controller.getSnapshot().inputQuery).toBe("structure");
+    expect(controller.getSnapshot().committedView).toEqual(committed);
   });
 
   it("defers final sorting during keyboard selection and sorts when selection clears", async () => {

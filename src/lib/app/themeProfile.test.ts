@@ -9,7 +9,6 @@ describe("themeProfile resolver", () => {
       name: "Custom",
       kind: "custom",
       source: {
-        workspace: "#101820",
         chrome: "#18222c",
         uiText: "#dde7f0",
         documentPaper: "#1f262d",

@@ -55,7 +55,7 @@ function capabilitySignature(context: UnifiedSearchContext) {
 
 function supportsGroup(context: UnifiedSearchContext, groupId: SearchGroupId) {
   if (groupId === "notes") return Boolean(context.currentNote);
-  if (groupId === "documents") return context.documents.length > 0;
+  if (groupId === "pdf-names") return context.documents.length > 0;
   return Boolean(context.pdfPort && context.totalPages > 0);
 }
 
@@ -145,9 +145,34 @@ export class UnifiedSearchController {
 
   open(query?: string) {
     if (!this.state.open) {
-      this.patch({ open: true, committedView: emptyCommittedView(this.context, this.state.inputQuery) });
+      this.patch({ open: true });
     }
-    if (query !== undefined && query !== this.state.inputQuery) this.setQuery(query);
+    if (query !== undefined && query !== this.state.inputQuery) {
+      this.setQuery(query);
+      return;
+    }
+
+    if (
+      this.state.inputQuery.trim() &&
+      (this.state.committedView.query !== this.state.inputQuery ||
+        this.state.committedView.stale ||
+        this.state.phase === "cancelled")
+    ) {
+      this.cancelGeneration();
+      this.markCommittedViewStale();
+      this.beginGeneration(false);
+    }
+  }
+
+  dismiss() {
+    this.cancelGeneration();
+    this.patch({
+      open: false,
+      liveGeneration: null,
+      phase: this.state.inputQuery.trim() ? "complete" : "idle",
+      activeResultId: null,
+      selectionOrigin: null
+    });
   }
 
   close() {
@@ -248,10 +273,9 @@ export class UnifiedSearchController {
   private visibleResults() {
     const initialLimits: Record<SearchGroupId, number> = {
       notes: 3,
-      "current-page": 3,
-      "nearby-pages": 5,
+      "nearby-page": 5,
       "across-document": 5,
-      documents: 5
+      "pdf-names": 5
     };
     return this.state.committedView.groups.flatMap((group) =>
       group.results.slice(0, this.state.expandedGroups.has(group.id) ? group.results.length : initialLimits[group.id])

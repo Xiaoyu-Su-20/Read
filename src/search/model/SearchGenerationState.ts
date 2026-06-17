@@ -10,8 +10,8 @@ export type SearchGenerationState = {
 };
 
 function groupForPage(pageNumber: number, ranking: SearchRankingPolicy): SearchGroupId {
-  if (pageNumber === ranking.currentPage) return "current-page";
-  if (ranking.nearbyPages.has(pageNumber)) return "nearby-pages";
+  if (pageNumber === ranking.currentPage) return "nearby-page";
+  if (ranking.nearbyPages.has(pageNumber)) return "nearby-page";
   return "across-document";
 }
 
@@ -102,7 +102,7 @@ export class SearchGeneration {
 
   private groupsForStage(stage: SearchStage) {
     if (stage.sourceId === "notes") return new Set<SearchGroupId>(["notes"]);
-    if (stage.sourceId === "document-name") return new Set<SearchGroupId>(["documents"]);
+    if (stage.sourceId === "document-name") return new Set<SearchGroupId>(["pdf-names"]);
     return new Set((stage.pageNumbers ?? []).map((page) => groupForPage(page, this.ranking)));
   }
 
@@ -116,9 +116,9 @@ export class SearchGeneration {
     if (kindCount >= limit) {
       this.truncatedGroups.add(
         result.kind === "note" ? "notes"
-          : result.kind === "document" ? "documents"
-            : result.location === "current" ? "current-page"
-              : result.location === "nearby" ? "nearby-pages" : "across-document"
+          : result.kind === "document" ? "pdf-names"
+            : result.location === "current" || result.location === "nearby" ? "nearby-page"
+              : "across-document"
       );
       return;
     }

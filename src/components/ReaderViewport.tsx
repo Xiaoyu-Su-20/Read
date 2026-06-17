@@ -12,6 +12,7 @@ type ReaderViewportProps = {
   onStateChange: (state: DocumentState | null) => void;
   registerApi: (api: ViewerApi | null) => void;
   viewerDisplayConfig: ViewerDisplayConfig;
+  suspendAutoFitDuringPaneResize: boolean;
 };
 
 const ReaderViewport = memo(function ReaderViewport({
@@ -21,7 +22,8 @@ const ReaderViewport = memo(function ReaderViewport({
   onStatusChange,
   onStateChange,
   registerApi,
-  viewerDisplayConfig
+  viewerDisplayConfig,
+  suspendAutoFitDuringPaneResize
 }: ReaderViewportProps) {
   return (
     <section className="reader-viewport" aria-label="Reader viewport">
@@ -33,6 +35,7 @@ const ReaderViewport = memo(function ReaderViewport({
         onStatusChange={onStatusChange}
         registerApi={registerApi}
         viewerDisplayConfig={viewerDisplayConfig}
+        suspendAutoFitDuringPaneResize={suspendAutoFitDuringPaneResize}
       />
     </section>
   );

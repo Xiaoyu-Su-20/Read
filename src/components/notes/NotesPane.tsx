@@ -37,6 +37,7 @@ type NotesPaneProps = {
   note: NoteDocument | null;
   loading: boolean;
   fullscreen: boolean;
+  onToggleFullscreen: () => void | Promise<void>;
   headerActionsContainerId: string | null;
   navigationItems: NoteNavigationItem[];
   onChangeTitle: (title: string) => void;
@@ -99,6 +100,33 @@ function NotesMoreMenuButton({
   );
 }
 
+function FullscreenButton({
+  fullscreen,
+  onToggle
+}: {
+  fullscreen: boolean;
+  onToggle: () => void | Promise<void>;
+}) {
+  return (
+    <button
+      className={`notes-header-action notes-header-action--fullscreen${fullscreen ? " notes-header-action--active" : ""}`}
+      type="button"
+      aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+      aria-pressed={fullscreen}
+      onClick={() => {
+        void onToggle();
+      }}
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+        <path d="M9 5.75H5.75V9" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M15 5.75h3.25V9" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M9 18.25H5.75V15" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M15 18.25h3.25V15" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </button>
+  );
+}
+
 function isContextMenuTarget(target: EventTarget | null) {
   return target instanceof HTMLElement && Boolean(target.closest(".note-editor"));
 }
@@ -152,6 +180,7 @@ const NotesPane = memo(function NotesPane({
   note,
   loading,
   fullscreen,
+  onToggleFullscreen,
   headerActionsContainerId,
   navigationItems,
   onChangeTitle,
@@ -947,6 +976,10 @@ const NotesPane = memo(function NotesPane({
           </div>
         ) : null}
       </div>
+
+      <div className="notes-header-tools__item notes-header-tools__item--fullscreen">
+        <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
+      </div>
     </div>
   );
 
@@ -957,7 +990,7 @@ const NotesPane = memo(function NotesPane({
       aria-label="Notes"
       onKeyDownCapture={(event) => {
         const key = event.key.toLowerCase();
-        const isFind = (event.metaKey || event.ctrlKey) && key === "f" && !event.shiftKey;
+        const isFind = (event.metaKey || event.ctrlKey) && key === "f" && event.shiftKey;
         const isUndo = (event.metaKey || event.ctrlKey) && key === "z" && !event.shiftKey;
         const isRedo =
           (event.metaKey || event.ctrlKey) && ((key === "z" && event.shiftKey) || key === "y");

@@ -16,16 +16,32 @@ export const pdfTextSearch: SearchSource = {
         const location = pageNumber === request.currentPage
           ? "current"
           : request.nearbyPages.has(pageNumber) ? "nearby" : "across";
-        return findMatchIndexes(text, request.normalizedQuery, 3).map((matchIndex, resultIndex) => ({
-          id: `pdf:${pageNumber}:${matchIndex}`,
-          kind: "pdf" as const,
-          sourceId: "pdf-text" as const,
-          title: `Page ${pageNumber}`,
-          pageNumber,
-          matchIndex: resultIndex,
-          location,
-          ...makeSnippet(text, matchIndex, request.normalizedQuery.length)
-        }));
+        return findMatchIndexes(text, request.normalizedQuery, 3).flatMap((matchIndex, resultIndex) => {
+          const preview = makeSnippet(text, matchIndex, request.normalizedQuery.length);
+          if (!preview || preview.highlights.length === 0) {
+            return [];
+          }
+
+          const firstHighlight = preview.highlights[0];
+          if (
+            !firstHighlight ||
+            firstHighlight.start < 0 ||
+            firstHighlight.end > preview.snippet.length
+          ) {
+            return [];
+          }
+
+          return [{
+            id: `pdf:${pageNumber}:${matchIndex}`,
+            kind: "pdf" as const,
+            sourceId: "pdf-text" as const,
+            title: `Page ${pageNumber}`,
+            pageNumber,
+            matchIndex: resultIndex,
+            location,
+            ...preview
+          }];
+        });
       }));
       if (signal.aborted) return;
       completedPages += batchPages.length;

@@ -9,6 +9,7 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::{Arc, Condvar, Mutex},
+    time::Instant,
 };
 
 use debug::process as debug_process;
@@ -624,16 +625,54 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            let startup_started_at = Instant::now();
+            crate::debug::action(
+                "app.setup:start",
+                json!({
+                    "elapsedMs": 0,
+                }),
+            );
+
             let app_dir = app.path().app_data_dir()?;
+            crate::debug::action(
+                "app.setup:app-data-dir",
+                json!({
+                    "appDir": app_dir.to_string_lossy().to_string(),
+                    "elapsedMs": startup_started_at.elapsed().as_millis(),
+                }),
+            );
+
             let document_dir = app.path().document_dir()?.join("Reader");
+            crate::debug::action(
+                "app.setup:document-dir",
+                json!({
+                    "documentDir": document_dir.to_string_lossy().to_string(),
+                    "elapsedMs": startup_started_at.elapsed().as_millis(),
+                }),
+            );
+
             let paths = store::paths::StorePaths::new(app_dir, document_dir);
             paths.ensure_storage_dirs()?;
+            crate::debug::action(
+                "app.setup:storage-ready",
+                json!({
+                    "elapsedMs": startup_started_at.elapsed().as_millis(),
+                }),
+            );
+
             let normalization_cache = new_manifest_cache();
             let normalization_worker = NormalizationWorker::start(
                 app.handle().clone(),
                 paths,
                 normalization_cache.clone(),
             );
+            crate::debug::action(
+                "app.setup:normalization-worker-ready",
+                json!({
+                    "elapsedMs": startup_started_at.elapsed().as_millis(),
+                }),
+            );
+
             app.manage(AppState {
                 lock: Arc::new(Mutex::new(())),
                 render_cache: Arc::new(Mutex::new(RenderCache::default())),
@@ -641,6 +680,12 @@ pub fn run() {
                 normalization_worker,
                 normalization_cache,
             });
+            crate::debug::action(
+                "app.setup:finish",
+                json!({
+                    "elapsedMs": startup_started_at.elapsed().as_millis(),
+                }),
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

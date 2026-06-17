@@ -4,7 +4,13 @@ import { type ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import { isDebugModeEnabled } from "../lib/debugLog";
 import { computePageShellOffsets } from "../lib/reader/pageLayout";
 import { useReaderController } from "../lib/reader/useReaderController";
-import { resolveSurfaceScale } from "../lib/reader/zoom";
+import {
+  AUTO_MAXIMIZE_HORIZONTAL_MARGIN_PX,
+  hasMeaningfulZoomDelta,
+  resolveAutoMaximizeZoom,
+  resolveSurfaceScale,
+  shouldAutoFitReaderPage
+} from "../lib/reader/zoom";
 import type { DocumentPayload, DocumentState, OutlineItem, ViewerApi, ViewerSnapshot } from "../lib/types";
 import PdfTextLayer from "./PdfTextLayer";
 import RapidTurnOverlay from "./RapidTurnOverlay";
@@ -17,6 +23,7 @@ type PdfViewerProps = {
   onStateChange: (state: DocumentState | null) => void;
   registerApi: (api: ViewerApi | null) => void;
   viewerDisplayConfig: ViewerDisplayConfig;
+  suspendAutoFitDuringPaneResize: boolean;
 };
 
 const PdfViewer = memo(function PdfViewer({
@@ -26,8 +33,10 @@ const PdfViewer = memo(function PdfViewer({
   onStatusChange,
   onStateChange,
   registerApi,
-  viewerDisplayConfig
+  viewerDisplayConfig,
+  suspendAutoFitDuringPaneResize
 }: PdfViewerProps) {
+  const AUTO_MAXIMIZE_RESIZE_SETTLE_MS = 160;
   const scrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const scrollbarRef = useRef<HTMLDivElement | null>(null);
   const scrollbarMetricsRef = useRef({
@@ -47,9 +56,12 @@ const PdfViewer = memo(function PdfViewer({
     thumbHeight: 0,
     thumbTop: 0
   });
+  const appliedScrollResetTokenRef = useRef<number | null>(null);
+  const autoMaximizeMinDocumentWidthRef = useRef<number | null>(null);
   const {
     displayedPage,
     incomingPage,
+    fitMode,
     displayZoom,
     committedZoom,
     isRendering,
@@ -59,24 +71,175 @@ const PdfViewer = memo(function PdfViewer({
     displayedPageTextLayer,
     displayedPageTextDebugStatus,
     rapidTurnOverlay,
+    scrollResetRequest,
     handleKeyDown,
     handleNavigationKeyUp,
     handleWheel,
-    markIncomingReady
+    markIncomingReady,
+    previewAutoMaximizeZoom,
+    commitAutoMaximizeZoom,
+    reportAutoMaximizeZoom
   } = useReaderController({
     document,
     onOutlineChange,
     onSnapshotChange,
     onStatusChange,
     onStateChange,
-    registerApi
+    registerApi,
+    getAutoMaximizeMinDocumentWidth: () => autoMaximizeMinDocumentWidthRef.current
   });
+  const displayZoomRef = useRef(displayZoom);
+  const fitTargetZoomRef = useRef<number | null>(null);
+  const fitCommitTimerRef = useRef<number | null>(null);
 
   const layoutPage = displayedPage ?? incomingPage;
   const renderedZoom = layoutPage?.renderZoom ?? committedZoom;
   const surfaceScale = resolveSurfaceScale(displayZoom, renderedZoom);
   const scaledWidth = layoutPage ? layoutPage.width * surfaceScale : 0;
   const scaledHeight = layoutPage ? layoutPage.height * surfaceScale : 0;
+
+  useEffect(() => {
+    if (!layoutPage || !shouldAutoFitReaderPage(fitMode)) {
+      autoMaximizeMinDocumentWidthRef.current = null;
+      return;
+    }
+
+    autoMaximizeMinDocumentWidthRef.current = Number(
+      (scaledWidth + AUTO_MAXIMIZE_HORIZONTAL_MARGIN_PX * 2).toFixed(2)
+    );
+  }, [fitMode, layoutPage, scaledWidth]);
+
+  useEffect(() => {
+    displayZoomRef.current = displayZoom;
+  }, [displayZoom]);
+
+  useLayoutEffect(() => {
+    const scrollSurface = scrollSurfaceRef.current;
+    if (
+      !scrollSurface ||
+      !layoutPage ||
+      !shouldAutoFitReaderPage(fitMode) ||
+      suspendAutoFitDuringPaneResize
+    ) {
+      if (fitCommitTimerRef.current !== null) {
+        window.clearTimeout(fitCommitTimerRef.current);
+        fitCommitTimerRef.current = null;
+      }
+      return;
+    }
+
+    const clearFitCommitTimer = () => {
+      if (fitCommitTimerRef.current !== null) {
+        window.clearTimeout(fitCommitTimerRef.current);
+        fitCommitTimerRef.current = null;
+      }
+    };
+
+    const updateAutoMaximizeZoom = () => {
+      const baseWidth = layoutPage.width / Math.max(renderedZoom, 0.0001);
+      const baseHeight = layoutPage.height / Math.max(renderedZoom, 0.0001);
+      const viewportRect = scrollSurface.getBoundingClientRect();
+      const nextZoom = resolveAutoMaximizeZoom(
+        viewportRect.width,
+        viewportRect.height,
+        baseWidth,
+        baseHeight
+      );
+
+      if (nextZoom === null) {
+        return;
+      }
+
+      reportAutoMaximizeZoom(nextZoom);
+      if (!hasMeaningfulZoomDelta(nextZoom, fitTargetZoomRef.current)) {
+        return;
+      }
+
+      fitTargetZoomRef.current = nextZoom;
+      previewAutoMaximizeZoom(nextZoom);
+      clearFitCommitTimer();
+      fitCommitTimerRef.current = window.setTimeout(() => {
+        fitCommitTimerRef.current = null;
+        if (!shouldAutoFitReaderPage(fitMode)) {
+          return;
+        }
+
+        const settledTargetZoom = fitTargetZoomRef.current;
+        if (settledTargetZoom === null || !hasMeaningfulZoomDelta(settledTargetZoom, committedZoom)) {
+          return;
+        }
+
+        commitAutoMaximizeZoom(settledTargetZoom);
+      }, AUTO_MAXIMIZE_RESIZE_SETTLE_MS);
+    };
+
+    updateAutoMaximizeZoom();
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => {
+            updateAutoMaximizeZoom();
+          });
+
+    resizeObserver?.observe(scrollSurface);
+    window.addEventListener("resize", updateAutoMaximizeZoom);
+
+    return () => {
+      clearFitCommitTimer();
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateAutoMaximizeZoom);
+    };
+  }, [
+    committedZoom,
+    commitAutoMaximizeZoom,
+    fitMode,
+    layoutPage,
+    previewAutoMaximizeZoom,
+    renderedZoom,
+    reportAutoMaximizeZoom,
+    suspendAutoFitDuringPaneResize
+  ]);
+
+  useLayoutEffect(() => {
+    const scrollSurface = scrollSurfaceRef.current;
+    if (!scrollSurface || !displayedPage || !scrollResetRequest) {
+      return;
+    }
+
+    if (displayedPage.pageNumber !== scrollResetRequest.pageNumber) {
+      return;
+    }
+
+    if (appliedScrollResetTokenRef.current === scrollResetRequest.token) {
+      return;
+    }
+
+    appliedScrollResetTokenRef.current = scrollResetRequest.token;
+    const resetScrollPosition = () => {
+      if (!scrollSurfaceRef.current) {
+        return;
+      }
+
+      scrollSurfaceRef.current.scrollLeft = 0;
+      scrollSurfaceRef.current.scrollTop =
+        scrollResetRequest.position === "top"
+          ? 0
+          : Math.max(
+              scrollSurfaceRef.current.scrollHeight - scrollSurfaceRef.current.clientHeight,
+              0
+            );
+    };
+
+    const firstFrame = window.requestAnimationFrame(() => {
+      const secondFrame = window.requestAnimationFrame(resetScrollPosition);
+      return () => window.cancelAnimationFrame(secondFrame);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+    };
+  }, [displayedPage, scrollResetRequest]);
 
   useLayoutEffect(() => {
     const scrollSurface = scrollSurfaceRef.current;

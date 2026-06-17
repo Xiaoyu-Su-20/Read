@@ -3,18 +3,29 @@ import type { SearchRankingPolicy } from "../model/SearchPlan";
 
 const GROUP_LIMITS = {
   notes: 50,
-  "current-page": 200,
-  "nearby-pages": 200,
+  "nearby-page": 200,
   "across-document": 200,
-  documents: 50
+  "pdf-names": 50
 } as const;
 
 export const SEARCH_GROUP_DEFINITIONS = [
   { id: "notes" as const, label: "Notes", matches: (r: SearchResult) => r.kind === "note" },
-  { id: "current-page" as const, label: "Document · Current page", matches: (r: SearchResult) => r.kind === "pdf" && r.location === "current" },
-  { id: "nearby-pages" as const, label: "Document · Nearby pages", matches: (r: SearchResult) => r.kind === "pdf" && r.location === "nearby" },
-  { id: "across-document" as const, label: "Document · Across document", matches: (r: SearchResult) => r.kind === "pdf" && r.location === "across" },
-  { id: "documents" as const, label: "Documents", matches: (r: SearchResult) => r.kind === "document" }
+  {
+    id: "nearby-page" as const,
+    label: "Document · Nearby Page",
+    matches: (r: SearchResult) =>
+      r.kind === "pdf" && (r.location === "current" || r.location === "nearby")
+  },
+  {
+    id: "across-document" as const,
+    label: "Document · Across document",
+    matches: (r: SearchResult) => r.kind === "pdf" && r.location === "across"
+  },
+  {
+    id: "pdf-names" as const,
+    label: "PDF Names",
+    matches: (r: SearchResult) => r.kind === "document"
+  }
 ] as const;
 
 export function rankSearchResults(results: Iterable<SearchResult>, policy: SearchRankingPolicy) {

@@ -1,7 +1,6 @@
 export type ThemeSurfaceTone = "light" | "dark";
 
 export type ThemeSources = {
-  workspace: string;
   chrome: string;
   uiText: string;
   documentPaper: string;
@@ -82,7 +81,6 @@ export const themeSourceEditorSections: ThemeSourceSectionDefinition[] = [
     key: "application",
     label: "Application",
     definitions: [
-      { key: "workspace", label: "Workspace" },
       { key: "chrome", label: "Chrome" },
       { key: "uiText", label: "UI Text" }
     ]
@@ -308,7 +306,6 @@ function createViewerFilterRecipe(
 
 export function createDefaultThemeSources(): ThemeSources {
   return {
-    workspace: "#13191e",
     chrome: "#13191e",
     uiText: "#d8d8d8",
     documentPaper: "#20242a",
@@ -331,7 +328,6 @@ export const builtinThemeDefinitions: ThemeDefinition[] = [
     name: "Light",
     kind: "builtin",
     source: {
-      workspace: "#e8e1d5",
       chrome: "#f1ece2",
       uiText: "#2f261c",
       documentPaper: "#f7f1e5",
@@ -349,7 +345,6 @@ export const builtinThemeDefinitions: ThemeDefinition[] = [
     name: "Midnight Reading",
     kind: "builtin",
     source: {
-      workspace: "#13191e",
       chrome: "#13191e",
       uiText: "#d8d8d8",
       documentPaper: "#20242a",
@@ -367,7 +362,6 @@ export const builtinThemeDefinitions: ThemeDefinition[] = [
     name: "Sepia",
     kind: "builtin",
     source: {
-      workspace: "#211a14",
       chrome: "#2b241d",
       uiText: "#2d241a",
       documentPaper: "#e7d9bb",
@@ -415,7 +409,6 @@ export function normalizeThemeSources(candidate: unknown): ThemeSources {
       : {};
 
   return {
-    workspace: normalizeThemeSourceColor(record.workspace, defaults.workspace),
     chrome: normalizeThemeSourceColor(record.chrome, defaults.chrome),
     uiText: normalizeThemeSourceColor(record.uiText, defaults.uiText),
     documentPaper: normalizeThemeSourceColor(record.documentPaper, defaults.documentPaper),
@@ -456,7 +449,6 @@ function normalizeLegacyThemeSources(
       : defaults.documentPaper;
 
   return {
-    workspace: normalizeThemeSourceColor(record.workspace, defaults.workspace),
     chrome: normalizeThemeSourceColor(record.chrome, defaults.chrome),
     uiText: legacyText,
     documentPaper: normalizeThemeSourceColor(record.paper, fallbackPaper || legacyPaper),
@@ -580,8 +572,8 @@ export function createViewerDisplayConfig(themeDefinition: ThemeDefinition): Vie
 
 export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
   const { source } = themeDefinition;
-  const workspaceBase = source.workspace;
-  const workspaceElevated = darken(lighten(source.workspace, 0.02), 0.02);
+  const workspaceBase = source.chrome;
+  const workspaceElevated = darken(lighten(source.chrome, 0.02), 0.02);
   const chromeSurface = withAlpha(source.chrome, 0.9);
   const chromeSurfaceStrong = withAlpha(darken(source.chrome, 0.06), 0.96);
   const chromeBorder = lighten(source.chrome, 0.08);
@@ -675,7 +667,7 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
     pageLinkHoverBackground,
     viewerDisplayConfig,
     cssVariables: {
-      "--theme-workspace": source.workspace,
+      "--theme-workspace": workspaceBase,
       "--theme-chrome": source.chrome,
       "--theme-ui-text": source.uiText,
       "--theme-document-paper": source.documentPaper,

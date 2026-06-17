@@ -7,6 +7,7 @@ import type {
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  clampReaderPaneSplitRatioWithMinDocumentWidth,
   deriveReaderPaneLayout,
   getReaderPaneNotesRatio,
   getReaderPaneSplitRatioFromPointer,
@@ -17,6 +18,7 @@ import {
 type UseReaderPaneLayoutControllerArgs = {
   preferredRatio: number;
   onCommitRatio: (nextRatio: number) => void;
+  minDocumentWidthPx?: number | null;
 };
 
 type ReaderPaneSeparatorProps = {
@@ -79,13 +81,15 @@ function updateWorkspaceRatio(
 
 export function useReaderPaneLayoutController({
   preferredRatio,
-  onCommitRatio
+  onCommitRatio,
+  minDocumentWidthPx
 }: UseReaderPaneLayoutControllerArgs): UseReaderPaneLayoutControllerResult {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const separatorRef = useRef<HTMLElement | null>(null);
   const draggingPointerIdRef = useRef<number | null>(null);
   const preferredRatioRef = useRef(preferredRatio);
   const previewRatioRef = useRef(preferredRatio);
+  const minDocumentWidthRef = useRef<number | null>(minDocumentWidthPx ?? null);
   const [isDragging, setIsDragging] = useState(false);
   const [isStackedLayout, setIsStackedLayout] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
@@ -98,12 +102,28 @@ export function useReaderPaneLayoutController({
     return containerRef.current?.getBoundingClientRect().width ?? 0;
   }
 
+  function clampPreviewRatio(nextRatio: number, containerWidth: number) {
+    if (
+      typeof minDocumentWidthRef.current === "number" &&
+      Number.isFinite(minDocumentWidthRef.current)
+    ) {
+      return clampReaderPaneSplitRatioWithMinDocumentWidth(
+        nextRatio,
+        containerWidth,
+        minDocumentWidthRef.current
+      );
+    }
+
+    return nextRatio;
+  }
+
   function applyPreviewRatio(nextRatio: number, containerWidth = getContainerWidth()) {
-    previewRatioRef.current = nextRatio;
+    const clampedRatio = clampPreviewRatio(nextRatio, containerWidth);
+    previewRatioRef.current = clampedRatio;
     return updateWorkspaceRatio(
       containerRef.current,
       separatorRef.current,
-      nextRatio,
+      clampedRatio,
       containerWidth
     );
   }
@@ -111,7 +131,9 @@ export function useReaderPaneLayoutController({
   function commitPreviewRatio() {
     draggingPointerIdRef.current = null;
     setIsDragging(false);
-    const layout = applyPreviewRatio(previewRatioRef.current, getContainerWidth() || 1200);
+    const containerWidth = getContainerWidth() || 1200;
+    const committedRatio = clampPreviewRatio(previewRatioRef.current, containerWidth);
+    const layout = applyPreviewRatio(committedRatio, containerWidth);
     const nextRatio = layout.constrainedRatio;
     if (Math.abs(nextRatio - preferredRatioRef.current) > 0.0001) {
       onCommitRatio(nextRatio);
@@ -120,10 +142,13 @@ export function useReaderPaneLayoutController({
 
   useEffect(() => {
     preferredRatioRef.current = preferredRatio;
+    minDocumentWidthRef.current = minDocumentWidthPx ?? null;
     if (!isDragging) {
-      applyPreviewRatio(preferredRatio, getContainerWidth() || 1200);
+      const containerWidth = getContainerWidth() || 1200;
+      const nextRatio = clampPreviewRatio(preferredRatio, containerWidth);
+      applyPreviewRatio(nextRatio, containerWidth);
     }
-  }, [isDragging, preferredRatio]);
+  }, [isDragging, minDocumentWidthPx, preferredRatio]);
 
   useEffect(() => {
     if (typeof document === "undefined") {
@@ -210,13 +235,15 @@ export function useReaderPaneLayoutController({
       }
 
       event.preventDefault();
-      const nextRatio = nudgeReaderPaneSplitRatio(
+      const candidateRatio = nudgeReaderPaneSplitRatio(
         previewRatioRef.current,
         event.key === "ArrowLeft" ? "left" : "right",
         getContainerWidth() || 1200
       );
+      const containerWidth = getContainerWidth() || 1200;
+      const nextRatio = clampPreviewRatio(candidateRatio, containerWidth);
       preferredRatioRef.current = nextRatio;
-      applyPreviewRatio(nextRatio, getContainerWidth() || 1200);
+      applyPreviewRatio(nextRatio, containerWidth);
       onCommitRatio(nextRatio);
     },
     onPointerDown(event) {

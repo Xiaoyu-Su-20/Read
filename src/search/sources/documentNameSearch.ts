@@ -10,6 +10,8 @@ export const documentNameSearch: SearchSource = {
       const searchable = `${document.title} ${document.fileName}`;
       const matchIndex = searchable.toLocaleLowerCase().indexOf(request.normalizedQuery);
       if (matchIndex < 0) return [];
+      const preview = makeSnippet(searchable, matchIndex, request.normalizedQuery.length);
+      if (!preview) return [];
       return [{
         id: `document:${document.id}`,
         kind: "document" as const,
@@ -17,7 +19,7 @@ export const documentNameSearch: SearchSource = {
         title: document.title,
         documentId: document.id,
         available: document.availability === "available",
-        ...makeSnippet(searchable, matchIndex, request.normalizedQuery.length)
+        ...preview
       }];
     }).slice(0, 51);
     if (!signal.aborted) {

@@ -129,6 +129,34 @@ export function clampReaderPaneSplitRatio(
   ).constrainedRatio;
 }
 
+export function clampReaderPaneSplitRatioWithMinDocumentWidth(
+  ratio: number,
+  containerWidth: number,
+  minDocumentWidth: number,
+  splitterWidth = READER_PANE_SPLITTER_LINE_WIDTH_PX
+) {
+  const usableWidth = getReaderPaneUsableWidth(containerWidth, splitterWidth);
+  if (usableWidth <= 0) {
+    return 0.5;
+  }
+
+  const normalizedRatio = normalizeRatio(ratio);
+  const minDocumentRatio = Math.max(
+    MIN_READER_PANE_WIDTH_PX,
+    Math.min(minDocumentWidth, usableWidth)
+  ) / usableWidth;
+  const maxDocumentRatio = Math.max(
+    minDocumentRatio,
+    (usableWidth - MIN_READER_PANE_WIDTH_PX) / usableWidth
+  );
+
+  if (minDocumentRatio >= maxDocumentRatio) {
+    return roundRatio(clampValue(minDocumentRatio, 0.5, 1));
+  }
+
+  return roundRatio(clampValue(normalizedRatio, minDocumentRatio, maxDocumentRatio));
+}
+
 export function normalizeReaderPaneSplitRatio(value: unknown) {
   const fallback = DEFAULT_READER_PANE_SPLIT_RATIO;
   if (typeof value !== "number" || !Number.isFinite(value)) {

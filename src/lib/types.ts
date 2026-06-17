@@ -28,8 +28,10 @@ export type Bookmark = {
   createdAt: string;
 };
 
+export type ReaderFitMode = "free" | "auto-maximize" | "width";
+
 export type ReaderPreferences = {
-  fitMode: string;
+  fitMode: ReaderFitMode;
 };
 
 export type PdfNavigationFit = "xyz" | "fit" | "fitH" | "fitV" | "fitR" | "unknown";
@@ -224,6 +226,10 @@ export type ViewerApi = {
   previousPage: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
+  getAutoMaximizeZoom: () => number | null;
+  getAutoMaximizeMinDocumentWidth: () => number | null;
+  getFitMode: () => ReaderFitMode;
+  setFitMode: (fitMode: ReaderFitMode) => void;
   goToPage: (page: number) => void;
   navigateToTarget: (target: PdfNavigationTarget) => void;
   searchPort: import("../search/model/SearchRequest").PdfSearchPort;

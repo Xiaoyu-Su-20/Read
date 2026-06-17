@@ -10,11 +10,13 @@ vi.mock("../lib/reader/useReaderController", () => ({
   useReaderController: vi.fn(() => ({
     currentPage: 1,
     pageCount: 12,
+    fitMode: "auto-maximize",
     displayZoom: 1,
     committedZoom: 1,
     displayedPage: null,
     incomingPage: null,
     rapidTurnOverlay: null,
+    scrollResetRequest: null,
     displayedPageTextLayer: null,
     displayedPageTextDebugStatus: {
       itemCount: 0,
@@ -28,7 +30,10 @@ vi.mock("../lib/reader/useReaderController", () => ({
     handleKeyDown: vi.fn(),
     handleNavigationKeyUp: vi.fn(),
     handleWheel: vi.fn(),
-    markIncomingReady: vi.fn()
+    markIncomingReady: vi.fn(),
+    previewAutoMaximizeZoom: vi.fn(),
+    commitAutoMaximizeZoom: vi.fn(),
+    reportAutoMaximizeZoom: vi.fn()
   }))
 }));
 
@@ -93,11 +98,13 @@ async function renderViewer(
   vi.mocked(useReaderController).mockReturnValue({
     currentPage: 1,
     pageCount: 12,
+    fitMode: "auto-maximize",
     displayZoom: options?.displayZoom ?? 1,
     committedZoom: options?.committedZoom ?? 1,
     displayedPage: options?.displayedPage ?? null,
     incomingPage: options?.incomingPage ?? null,
     rapidTurnOverlay: null,
+    scrollResetRequest: null,
     displayedPageTextLayer: null,
     displayedPageTextDebugStatus: {
       itemCount: 0,
@@ -111,7 +118,10 @@ async function renderViewer(
     handleKeyDown: vi.fn(),
     handleNavigationKeyUp: vi.fn(),
     handleWheel: vi.fn(),
-    markIncomingReady: vi.fn()
+    markIncomingReady: vi.fn(),
+    previewAutoMaximizeZoom: vi.fn(),
+    commitAutoMaximizeZoom: vi.fn(),
+    reportAutoMaximizeZoom: vi.fn()
   });
 
   return renderToStaticMarkup(
@@ -122,6 +132,7 @@ async function renderViewer(
       onStatusChange: vi.fn(),
       onStateChange: vi.fn(),
       registerApi: vi.fn(),
+      suspendAutoFitDuringPaneResize: false,
       viewerDisplayConfig: {
         mode,
         paperColor: mode === "dark" ? "#20242a" : "#f7f1e5",

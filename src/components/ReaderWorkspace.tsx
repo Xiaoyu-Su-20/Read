@@ -3,8 +3,10 @@ import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import NotesViewport from "./NotesViewport";
 import PaneResizeHandle from "./PaneResizeHandle";
 import ReaderViewport from "./ReaderViewport";
+import WorkspaceSearchField from "../search/components/WorkspaceSearchField";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import { useReaderPaneLayoutController } from "../lib/reader/useReaderPaneLayoutController";
+import { normalizeReaderFitMode } from "../lib/reader/zoom";
 import type {
   DocumentPayload,
   DocumentState,
@@ -17,6 +19,7 @@ import type {
   ViewerApi,
   ViewerSnapshot
 } from "../lib/types";
+import type { UnifiedSearchController } from "../search/controller/UnifiedSearchController";
 
 type ReaderWorkspaceProps = {
   document: DocumentPayload | null;
@@ -47,9 +50,15 @@ type ReaderWorkspaceProps = {
   viewerApi: ViewerApi | null;
   onHeaderMouseDown: (event: ReactMouseEvent<HTMLElement>) => void;
   windowControls: ReactNode;
+  searchController: UnifiedSearchController;
+  searchFocusRequest: number;
+  onSearchOpenDocument: (documentId: string) => Promise<void>;
+  onSearchGoToPage: (pageNumber: number) => void;
+  onSearchRevealNoteBlock: (blockId: string) => void;
   showHeaders: boolean;
   showFullscreenHint: boolean;
   fullscreen: boolean;
+  onToggleFullscreen: () => void | Promise<void>;
   readerPaneSplitRatio: number;
   hidePaneResizeHandle: boolean;
   onChangeReaderPaneSplitRatio: (nextRatio: number) => void;
@@ -84,23 +93,41 @@ export default function ReaderWorkspace({
   viewerApi,
   onHeaderMouseDown,
   windowControls,
+  searchController,
+  searchFocusRequest,
+  onSearchOpenDocument,
+  onSearchGoToPage,
+  onSearchRevealNoteBlock,
   showHeaders,
   showFullscreenHint,
   fullscreen,
+  onToggleFullscreen,
   readerPaneSplitRatio,
   hidePaneResizeHandle,
   onChangeReaderPaneSplitRatio
 }: ReaderWorkspaceProps) {
+  const documentFitMode = normalizeReaderFitMode(readerState?.preferences.fitMode);
+  const autoMaximizeMinDocumentWidth =
+    documentFitMode === "auto-maximize"
+      ? viewerApi?.getAutoMaximizeMinDocumentWidth() ?? null
+      : null;
   const { containerRef, workspaceStyle, isDragging, isStackedLayout, separatorProps } =
     useReaderPaneLayoutController({
       preferredRatio: readerPaneSplitRatio,
-      onCommitRatio: onChangeReaderPaneSplitRatio
+      onCommitRatio: onChangeReaderPaneSplitRatio,
+      minDocumentWidthPx: autoMaximizeMinDocumentWidth
     });
   const hasOpenDocument = document != null && documentHeaderPageCount > 0;
   const documentPageLabel = hasOpenDocument
     ? `${documentHeaderCurrentPage} / ${documentHeaderPageCount}`
     : "No document";
   const documentZoomLabel = `${Math.round(documentHeaderZoom * 100)}%`;
+  const autoMaximizeZoom = viewerApi?.getAutoMaximizeZoom() ?? null;
+  const zoomInDisabled =
+    !hasOpenDocument ||
+    (documentFitMode === "auto-maximize" &&
+      autoMaximizeZoom !== null &&
+      documentHeaderZoom >= autoMaximizeZoom - 0.005);
 
   return (
     <div
@@ -178,7 +205,7 @@ export default function ReaderWorkspace({
               className="reader-workspace__header-button reader-workspace__header-button--compact"
               type="button"
               aria-label="Zoom in"
-              disabled={!hasOpenDocument}
+              disabled={zoomInDisabled}
               data-no-window-drag
               onClick={() => viewerApi?.zoomIn()}
             >
@@ -186,6 +213,52 @@ export default function ReaderWorkspace({
                 <path d="M12 6v12" />
                 <path d="M6 12h12" />
               </svg>
+            </button>
+            <button
+              className="reader-workspace__header-button reader-workspace__header-button--lock"
+              type="button"
+              aria-label={
+                documentFitMode === "free"
+                  ? "Switch to auto maximize"
+                  : "Switch to free zoom"
+              }
+              aria-pressed={documentFitMode === "auto-maximize"}
+              disabled={!hasOpenDocument}
+              data-no-window-drag
+              onClick={() =>
+                viewerApi?.setFitMode(
+                  documentFitMode === "free" ? "auto-maximize" : "free"
+                )
+              }
+            >
+              {documentFitMode === "free" ? (
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.95"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M7.35 11V7.55C7.35 5.15 8.9 3.65 12.05 3.65C14.15 3.65 15.42 4.48 16.15 5.72" />
+                  <path d="M7.35 11H4.85V20.35H12.6" />
+                  <path d="M7.35 11H19.15V20.35H16.65" />
+                </svg>
+              ) : (
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.95"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M7.35 11V7.55C7.35 5.15 8.95 3.65 12 3.65C15.05 3.65 16.65 5.15 16.65 7.55V11" />
+                  <path d="M7.35 11H4.85V20.35H12.6" />
+                  <path d="M7.35 11H16.65" />
+                  <path d="M16.65 11H19.15V20.35H16.65" />
+                </svg>
+              )}
             </button>
           </div>
         </div>
@@ -198,6 +271,15 @@ export default function ReaderWorkspace({
           onMouseDown={onHeaderMouseDown}
         >
           <div className="reader-workspace__notes-header-trailing" data-no-window-drag>
+            <div className="reader-workspace__notes-header-search">
+              <WorkspaceSearchField
+                controller={searchController}
+                focusRequest={searchFocusRequest}
+                onOpenDocument={onSearchOpenDocument}
+                onGoToPage={onSearchGoToPage}
+                onRevealNoteBlock={onSearchRevealNoteBlock}
+              />
+            </div>
             <div
               id="reader-workspace-notes-header-tools"
               className="reader-workspace__notes-header-tools"
@@ -224,6 +306,7 @@ export default function ReaderWorkspace({
           onStatusChange={onStatusChange}
           registerApi={registerApi}
           viewerDisplayConfig={viewerDisplayConfig}
+          suspendAutoFitDuringPaneResize={isDragging && documentFitMode === "auto-maximize"}
         />
       </div>
       <div className="reader-workspace__notes">
@@ -231,6 +314,7 @@ export default function ReaderWorkspace({
           note={note}
           loading={notesLoading}
           fullscreen={fullscreen}
+          onToggleFullscreen={onToggleFullscreen}
           navigationItems={noteNavigationItems}
           onChangeTitle={onChangeNoteTitle}
           onChangeBlocks={onChangeNoteBlocks}

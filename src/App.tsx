@@ -7,7 +7,6 @@ import CollectionView from "./components/CollectionView";
 import DisplaySettingsPopover from "./components/DisplaySettingsPopover";
 import OutlineOverlay from "./components/OutlineOverlay";
 import ReaderWorkspace from "./components/ReaderWorkspace";
-import UnifiedSearchOverlay from "./search/components/UnifiedSearchOverlay";
 import { createUnifiedSearchController } from "./search";
 import { openLibraryFolder } from "./lib/api";
 import { isPassiveStatusMessage } from "./lib/app/helpers";
@@ -49,10 +48,6 @@ function isEditableTarget(target: EventTarget | null) {
   return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
 }
 
-function isNotesTarget(target: EventTarget | null) {
-  return target instanceof HTMLElement && Boolean(target.closest(".notes-pane"));
-}
-
 function shouldStartWindowDrag(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -88,11 +83,12 @@ export default function App() {
   const { settings, selectors, setSetting, updateSettings } = useAppSettings();
   const palette = usePaletteController();
   const searchController = useMemo(() => createUnifiedSearchController(), []);
-  const searchOverlayOpen = useSyncExternalStore(
+  const searchUiOpen = useSyncExternalStore(
     searchController.subscribe,
     () => searchController.getSnapshot().open,
     () => false
   );
+  const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const [noteRevealRequest, setNoteRevealRequest] = useState<import("./lib/types").NoteRevealRequest | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -112,7 +108,7 @@ export default function App() {
     ? createViewerDisplayConfig(themePreview)
     : selectors.viewerDisplayConfig(settings);
   const readerPaneSplitRatio = selectors.readerPaneSplitRatio(settings);
-  const readerOverlayOpen = palette.paletteOpen || searchOverlayOpen || outlineOpen;
+  const readerOverlayOpen = palette.paletteOpen || searchUiOpen || outlineOpen;
   const readerFullscreenActive =
     workspace.workspaceMode === "reader" && fullscreenState === "fullscreen";
   const fullscreenTransitionActive =
@@ -277,7 +273,11 @@ export default function App() {
     palette.closePalette();
     setOutlineOpen(false);
     setSettingsOpen(false);
+    if (workspace.workspaceMode !== "reader") {
+      workspace.setWorkspaceMode("reader");
+    }
     searchController.open();
+    setSearchFocusRequest((current) => current + 1);
   }
   const flows = useLibraryFlows({
     libraryTree: workspace.libraryTree,
@@ -418,12 +418,6 @@ export default function App() {
 
       if ((event.ctrlKey || event.metaKey) && normalizedKey === "f") {
         if (event.shiftKey) {
-          event.preventDefault();
-          openUnifiedSearch();
-          return;
-        }
-
-        if (isNotesTarget(event.target)) {
           return;
         }
 
@@ -451,7 +445,7 @@ export default function App() {
         }
 
         palette.closePalette();
-        searchController.close();
+        searchController.dismiss();
         setOutlineOpen(false);
         return;
       }
@@ -524,6 +518,10 @@ export default function App() {
   useEffect(() => {
     setOutlineOpen(false);
   }, [workspace.activeDocumentId]);
+
+  useEffect(() => {
+    searchController.dismiss();
+  }, [searchController, workspace.activeDocumentId]);
 
   const topbarTitle =
     workspace.selectedCollection?.folder.name ?? "Library";
@@ -855,9 +853,17 @@ export default function App() {
             viewerApi={workspace.viewerApi}
             onHeaderMouseDown={handleTopbarMouseDown}
             windowControls={renderWindowControls()}
+            searchController={searchController}
+            searchFocusRequest={searchFocusRequest}
+            onSearchOpenDocument={workspace.handleOpenDocument}
+            onSearchGoToPage={workspace.goToReaderPage}
+            onSearchRevealNoteBlock={(blockId) => {
+              setNoteRevealRequest((current) => ({ blockId, sequence: (current?.sequence ?? 0) + 1 }));
+            }}
             showHeaders={!readerFullscreenActive}
             showFullscreenHint={showFullscreenHint}
             fullscreen={readerFullscreenActive}
+            onToggleFullscreen={toggleFullscreen}
             readerPaneSplitRatio={readerPaneSplitRatio}
             hidePaneResizeHandle={readerOverlayOpen}
             onChangeReaderPaneSplitRatio={(nextRatio) => {
@@ -889,14 +895,6 @@ export default function App() {
         }}
       />
 
-      <UnifiedSearchOverlay
-        controller={searchController}
-        onOpenDocument={workspace.handleOpenDocument}
-        onGoToPage={workspace.goToReaderPage}
-        onRevealNoteBlock={(blockId) => {
-          setNoteRevealRequest((current) => ({ blockId, sequence: (current?.sequence ?? 0) + 1 }));
-        }}
-      />
     </main>
   );
 }

@@ -24,7 +24,7 @@ import {
 } from "./themeProfile";
 
 export const APP_SETTINGS_STORAGE_KEY = "calm-reader.settings";
-export const APP_SETTINGS_VERSION = 6;
+export const APP_SETTINGS_VERSION = 7;
 
 export type ReaderPreferences = {
   fullscreenMode: boolean;
@@ -76,7 +76,6 @@ type LegacyDocumentAppearanceSettings = {
 };
 
 type LegacyThemeProfile = {
-  workspace: string;
   chrome: string;
   text: string;
   accent: string;
@@ -315,7 +314,6 @@ function normalizeLegacyThemeProfile(candidate: unknown): LegacyThemeProfile {
   const record = isRecord(candidate) ? candidate : {};
 
   return {
-    workspace: normalizeThemeSourceColor(record.workspace, defaults.workspace),
     chrome: normalizeThemeSourceColor(record.chrome, defaults.chrome),
     text: normalizeThemeSourceColor(record.text, defaults.uiText),
     accent: normalizeThemeSourceColor(record.accent, defaults.accent),
@@ -351,7 +349,6 @@ function createMigratedCustomTheme(
     name: "Migrated Theme",
     kind: "custom",
     source: {
-      workspace: legacySettings.themeProfile.workspace,
       chrome: legacySettings.themeProfile.chrome,
       uiText: legacySettings.themeProfile.text,
       documentPaper: activeProfile.paperColor,
@@ -418,6 +415,10 @@ function migrateFromVersionFour(candidate: unknown): AppSettingsSchema {
 }
 
 function migrateFromVersionFive(candidate: unknown): AppSettingsSchema {
+  return normalizeAppSettings(candidate);
+}
+
+function migrateFromVersionSix(candidate: unknown): AppSettingsSchema {
   return normalizeAppSettings(candidate);
 }
 
@@ -532,6 +533,10 @@ export function migrateAppSettingsPayload(candidate: unknown): AppSettingsPayloa
         nextSettingsCandidate = migrateFromVersionFive(nextSettingsCandidate);
         version = 6;
         break;
+      case 6:
+        nextSettingsCandidate = migrateFromVersionSix(nextSettingsCandidate);
+        version = 7;
+        break;
       default:
         version = APP_SETTINGS_VERSION;
         break;
@@ -581,7 +586,7 @@ export function createThemePreview(themeDefinition: ThemeDefinition) {
     id: themeDefinition.id,
     name: themeDefinition.name,
     kind: themeDefinition.kind,
-    workspaceColor: themeDefinition.source.workspace,
+    chromeColor: themeDefinition.source.chrome,
     paperColor: themeDefinition.source.documentPaper,
     textColor: themeDefinition.source.uiText
   };

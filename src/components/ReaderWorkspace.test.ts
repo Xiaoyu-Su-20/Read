@@ -2,7 +2,9 @@ import { isValidElement, type ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import ReaderWorkspace from "./ReaderWorkspace";
+import { normalizeReaderFitMode } from "../lib/reader/zoom";
 import type { DocumentPayload, ViewerApi } from "../lib/types";
+import { createUnifiedSearchController } from "../search";
 
 vi.mock("./NotesViewport", () => ({
   default: () => null
@@ -75,6 +77,10 @@ function makeViewerApi(overrides?: Partial<ViewerApi>): ViewerApi {
     previousPage: vi.fn(),
     zoomIn: vi.fn(),
     zoomOut: vi.fn(),
+    getAutoMaximizeZoom: vi.fn(() => 1),
+    getAutoMaximizeMinDocumentWidth: vi.fn(() => 640),
+    getFitMode: vi.fn(() => normalizeReaderFitMode(documentPayload.state.preferences.fitMode)),
+    setFitMode: vi.fn(),
     goToPage: vi.fn(),
     navigateToTarget: vi.fn(),
     searchPort: {
@@ -126,9 +132,15 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
     viewerApi: makeViewerApi(),
     onHeaderMouseDown: vi.fn(),
     windowControls: null,
+    searchController: createUnifiedSearchController(),
+    searchFocusRequest: 0,
+    onSearchOpenDocument: vi.fn(async () => undefined),
+    onSearchGoToPage: vi.fn(),
+    onSearchRevealNoteBlock: vi.fn(),
     showHeaders: true,
     showFullscreenHint: false,
     fullscreen: false,
+    onToggleFullscreen: vi.fn(),
     readerPaneSplitRatio: 0.46,
     hidePaneResizeHandle: false,
     onChangeReaderPaneSplitRatio: vi.fn(),
@@ -178,6 +190,7 @@ describe("ReaderWorkspace document header", () => {
     expect(elements.some((element) => element.props["aria-label"] === "Next page")).toBe(true);
     expect(elements.some((element) => element.props["aria-label"] === "Zoom out")).toBe(true);
     expect(elements.some((element) => element.props["aria-label"] === "Zoom in")).toBe(true);
+    expect(elements.some((element) => element.props["aria-label"] === "Switch to free zoom")).toBe(true);
   });
 
   it("disables page and zoom controls when no document is open", () => {
@@ -196,11 +209,11 @@ describe("ReaderWorkspace document header", () => {
     );
 
     expect(pageValue).toBeDefined();
-    expect(controlButtons).toHaveLength(4);
-    expect(controlButtons.filter((element) => element.props.disabled === true)).toHaveLength(4);
+    expect(controlButtons).toHaveLength(5);
+    expect(controlButtons.filter((element) => element.props.disabled === true)).toHaveLength(5);
   });
 
-  it("routes page and zoom button clicks through the viewer api", () => {
+  it("routes page, zoom, and fit mode button clicks through the viewer api", () => {
     const viewerApi = makeViewerApi();
     const tree = renderWorkspace({ viewerApi });
     const elements = collectElements(tree);
@@ -209,20 +222,24 @@ describe("ReaderWorkspace document header", () => {
     const nextPageButton = elements.find((element) => element.props["aria-label"] === "Next page");
     const zoomOutButton = elements.find((element) => element.props["aria-label"] === "Zoom out");
     const zoomInButton = elements.find((element) => element.props["aria-label"] === "Zoom in");
+    const fitModeButton = elements.find((element) => element.props["aria-label"] === "Switch to free zoom");
 
     const previousPageClick = previousPageButton?.props.onClick as (() => void) | undefined;
     const nextPageClick = nextPageButton?.props.onClick as (() => void) | undefined;
     const zoomOutClick = zoomOutButton?.props.onClick as (() => void) | undefined;
     const zoomInClick = zoomInButton?.props.onClick as (() => void) | undefined;
+    const fitModeClick = fitModeButton?.props.onClick as (() => void) | undefined;
 
     previousPageClick?.();
     nextPageClick?.();
     zoomOutClick?.();
     zoomInClick?.();
+    fitModeClick?.();
 
     expect(viewerApi.previousPage).toHaveBeenCalledTimes(1);
     expect(viewerApi.nextPage).toHaveBeenCalledTimes(1);
     expect(viewerApi.zoomOut).toHaveBeenCalledTimes(1);
     expect(viewerApi.zoomIn).toHaveBeenCalledTimes(1);
+    expect(viewerApi.setFitMode).toHaveBeenCalledWith("free");
   });
 });

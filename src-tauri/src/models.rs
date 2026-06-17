@@ -58,7 +58,7 @@ pub struct ReaderPreferences {
 impl Default for ReaderPreferences {
     fn default() -> Self {
         Self {
-            fit_mode: "width".to_string(),
+            fit_mode: "auto-maximize".to_string(),
         }
     }
 }

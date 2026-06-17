@@ -58,10 +58,9 @@ export interface SearchSource {
 
 export type SearchGroupId =
   | "notes"
-  | "current-page"
-  | "nearby-pages"
+  | "nearby-page"
   | "across-document"
-  | "documents";
+  | "pdf-names";
 
 export type SearchResultGroup = {
   id: SearchGroupId;
@@ -70,4 +69,3 @@ export type SearchResultGroup = {
   total: number;
   truncated: boolean;
 };
-

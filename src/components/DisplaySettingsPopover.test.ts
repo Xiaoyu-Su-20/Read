@@ -11,7 +11,6 @@ describe("DisplaySettingsPopover", () => {
       name: "Night Ink",
       kind: "custom" as const,
       source: {
-        workspace: "#13191e",
         chrome: "#13191e",
         uiText: "#d8d8d8",
         documentPaper: "#20242a",
@@ -64,7 +63,7 @@ describe("DisplaySettingsPopover", () => {
     expect(markup).toContain("Application");
     expect(markup).toContain("Document");
     expect(markup).toContain("Interaction");
-    expect(markup).toContain("Workspace");
+    expect(markup).not.toContain("Workspace");
     expect(markup).toContain("Chrome");
     expect(markup).toContain("UI Text");
     expect(markup).toContain("Paper");
@@ -89,7 +88,6 @@ describe("DisplaySettingsPopover", () => {
       name: "Midnight Reading",
       kind: "builtin" as const,
       source: {
-        workspace: "#13191e",
         chrome: "#13191e",
         uiText: "#d8d8d8",
         documentPaper: "#20242a",

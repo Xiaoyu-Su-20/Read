@@ -41,6 +41,7 @@ export function useWorkspaceController() {
 
   const viewerApiRef = useRef<ViewerApi | null>(null);
   const [viewerApi, setViewerApi] = useState<ViewerApi | null>(null);
+  const initialBootstrapStartedRef = useRef(false);
 
   const collections = libraryTree?.folders ?? [];
   const selectedCollection = useMemo(
@@ -90,7 +91,17 @@ export function useWorkspaceController() {
   }, []);
 
   useEffect(() => {
-    void refreshLibraryState().catch((error) => {
+    if (initialBootstrapStartedRef.current) {
+      debugAction("app.initial-library-bootstrap:skip-duplicate");
+      return;
+    }
+
+    initialBootstrapStartedRef.current = true;
+    debugAction("app.initial-library-bootstrap:start");
+
+    void runDebugProcess("app.initial-library-bootstrap", {}, async () => {
+      await refreshLibraryState();
+    }).catch((error) => {
       setStatusMessage(error instanceof Error ? error.message : "Unable to load library.");
     });
   }, [refreshLibraryState]);

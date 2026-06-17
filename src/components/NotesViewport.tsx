@@ -15,6 +15,7 @@ type NotesViewportProps = {
   note: NoteDocument | null;
   loading: boolean;
   fullscreen: boolean;
+  onToggleFullscreen: () => void | Promise<void>;
   headerActionsContainerId: string | null;
   navigationItems: NoteNavigationItem[];
   onChangeTitle: (title: string) => void;
@@ -35,6 +36,7 @@ const NotesViewport = memo(function NotesViewport({
   note,
   loading,
   fullscreen,
+  onToggleFullscreen,
   headerActionsContainerId,
   navigationItems,
   onChangeTitle,
@@ -59,6 +61,7 @@ const NotesViewport = memo(function NotesViewport({
         note={note}
         loading={loading}
         fullscreen={fullscreen}
+        onToggleFullscreen={onToggleFullscreen}
         headerActionsContainerId={headerActionsContainerId}
         navigationItems={navigationItems}
         onChangeTitle={onChangeTitle}

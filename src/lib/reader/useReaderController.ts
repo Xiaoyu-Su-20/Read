@@ -14,6 +14,7 @@ import type {
   PageTextLayerData,
   PdfNavigationTarget,
   PdfOutlineItem,
+  ReaderFitMode,
   ViewerApi,
   ViewerSnapshot
 } from "../types";
@@ -30,8 +31,10 @@ import {
 } from "./rapidTurn";
 import {
   clampZoom,
+  normalizeReaderFitMode,
   normalizeZoom,
   scaleZoomByKeyboardDirection,
+  shouldAutoFitReaderPage,
   scaleZoomByWheelDelta
 } from "./zoom";
 
@@ -43,6 +46,14 @@ const BOOKMARK_SAVE_DEBOUNCE_MS = 200;
 const KEYBOARD_RAPID_TURN_WINDOW_MS = 220;
 const WHEEL_RAPID_TURN_WINDOW_MS = 180;
 const ZOOM_COMMIT_DEBOUNCE_MS = 120;
+const WHEEL_GESTURE_IDLE_MS = 160;
+const WHEEL_PAGE_TURN_THRESHOLD_PX = 56;
+const WHEEL_BOUNDARY_EPSILON_PX = 1;
+const DISCRETE_WHEEL_STEP_CAP_PX = 88;
+const SMOOTH_WHEEL_SETTLE_EPSILON_PX = 0.5;
+const SMOOTH_WHEEL_MIN_BLEND = 0.18;
+const SMOOTH_WHEEL_MAX_BLEND = 0.42;
+const SMOOTH_WHEEL_BASE_DURATION_MS = 110;
 
 type UseReaderControllerArgs = {
   document: DocumentPayload | null;
@@ -51,6 +62,7 @@ type UseReaderControllerArgs = {
   onStatusChange: (message: string) => void;
   onStateChange: (state: DocumentState | null) => void;
   registerApi: (api: ViewerApi | null) => void;
+  getAutoMaximizeMinDocumentWidth?: () => number | null;
 };
 
 type DisplayedPageTextDebugStatus = {
@@ -66,6 +78,32 @@ type RapidTurnSession = {
   targetPage: number;
 };
 
+type WheelGestureState = {
+  accumulatedBoundaryDistance: number;
+  direction: NavigationDirection | null;
+  lastAt: number;
+  pageTurned: boolean;
+};
+
+type ScrollResetPosition = "top" | "bottom";
+
+type ScrollResetRequest = {
+  pageNumber: number;
+  position: ScrollResetPosition;
+  token: number;
+};
+
+type SmoothWheelState = {
+  surface: HTMLDivElement | null;
+  targetScrollTop: number;
+  animationFrameId: number | null;
+  lastFrameAt: number;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 type NormalizationReadyEvent = {
   documentId: string;
   fingerprint: string;
@@ -80,10 +118,51 @@ function shouldIgnoreRenderResponse(requestSequence: number, activeSequence: num
   return requestSequence !== activeSequence;
 }
 
+function normalizeWheelDelta(
+  delta: number,
+  deltaMode: number,
+  viewportSize: number
+) {
+  if (deltaMode === 1) {
+    return delta * 16;
+  }
+  if (deltaMode === 2) {
+    return delta * Math.max(viewportSize, 1);
+  }
+  return delta;
+}
+
+function isLikelyDiscreteWheelInput(event: WheelEvent<HTMLDivElement>) {
+  if (event.deltaMode !== 0) {
+    return true;
+  }
+
+  const primaryDelta = Math.abs(event.deltaY) >= Math.abs(event.deltaX)
+    ? Math.abs(event.deltaY)
+    : Math.abs(event.deltaX);
+
+  if (primaryDelta === 0) {
+    return false;
+  }
+
+  return Number.isInteger(primaryDelta) && primaryDelta >= 8;
+}
+
+function clampDiscreteWheelDelta(delta: number) {
+  return Math.sign(delta) * Math.min(Math.abs(delta), DISCRETE_WHEEL_STEP_CAP_PX);
+}
+
 function normalizeDocumentState(state: DocumentState): DocumentState {
+  const rawPreferences: Record<string, unknown> = isRecord(state.preferences)
+    ? state.preferences
+    : {};
+
   return {
     ...state,
     bookmarks: dedupeBookmarks(state.bookmarks ?? []),
+    preferences: {
+      fitMode: normalizeReaderFitMode(rawPreferences.fitMode)
+    },
     userOutlineItems: dedupeOutlineItems(state.userOutlineItems ?? [])
   };
 }
@@ -108,7 +187,8 @@ export function useReaderController({
   onSnapshotChange,
   onStatusChange,
   onStateChange,
-  registerApi
+  registerApi,
+  getAutoMaximizeMinDocumentWidth
 }: UseReaderControllerArgs) {
   const [pageCount, setPageCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
@@ -131,6 +211,7 @@ export function useReaderController({
       state: "missing"
     });
   const [rapidTurnOverlay, setRapidTurnOverlay] = useState<RapidTurnOverlayModel | null>(null);
+  const [scrollResetRequest, setScrollResetRequest] = useState<ScrollResetRequest | null>(null);
 
   const runtimeSessionRef = useRef<PdfRuntimeSession | null>(null);
   const pageCache = useRef(createPageCache(RENDER_CACHE_SIZE));
@@ -154,12 +235,127 @@ export function useReaderController({
   const lastPageCommitAtRef = useRef(0);
   const rapidTurnWheelFinalizeTimerRef = useRef<number | null>(null);
   const rapidTurnLastInputRef = useRef<RapidTurnLastInput | null>(null);
+  const autoMaximizeZoomRef = useRef<number | null>(null);
   const rapidTurnSessionRef = useRef<RapidTurnSession>({
     active: false,
     direction: null,
     source: null,
     targetPage: 1
   });
+  const wheelGestureRef = useRef<WheelGestureState>({
+    accumulatedBoundaryDistance: 0,
+    direction: null,
+    lastAt: 0,
+    pageTurned: false
+  });
+  const scrollResetTokenRef = useRef(0);
+  const smoothWheelStateRef = useRef<SmoothWheelState>({
+    surface: null,
+    targetScrollTop: 0,
+    animationFrameId: null,
+    lastFrameAt: 0
+  });
+
+  function resetWheelGesture() {
+    wheelGestureRef.current = {
+      accumulatedBoundaryDistance: 0,
+      direction: null,
+      lastAt: 0,
+      pageTurned: false
+    };
+  }
+
+  function cancelSmoothWheelAnimation() {
+    const smoothWheelState = smoothWheelStateRef.current;
+    if (smoothWheelState.animationFrameId !== null) {
+      window.cancelAnimationFrame(smoothWheelState.animationFrameId);
+    }
+    smoothWheelState.animationFrameId = null;
+    smoothWheelState.lastFrameAt = 0;
+  }
+
+  function animateSmoothWheelScroll() {
+    const smoothWheelState = smoothWheelStateRef.current;
+    const scrollSurface = smoothWheelState.surface;
+    if (!scrollSurface) {
+      cancelSmoothWheelAnimation();
+      return;
+    }
+
+    const step = (timestamp: number) => {
+      const activeState = smoothWheelStateRef.current;
+      const activeSurface = activeState.surface;
+      if (!activeSurface) {
+        cancelSmoothWheelAnimation();
+        return;
+      }
+
+      const previousFrameAt = activeState.lastFrameAt || timestamp;
+      const elapsed = Math.max(timestamp - previousFrameAt, 1);
+      activeState.lastFrameAt = timestamp;
+
+      const delta = activeState.targetScrollTop - activeSurface.scrollTop;
+      if (Math.abs(delta) <= SMOOTH_WHEEL_SETTLE_EPSILON_PX) {
+        activeSurface.scrollTop = activeState.targetScrollTop;
+        activeState.animationFrameId = null;
+        activeState.lastFrameAt = 0;
+        return;
+      }
+
+      const blend = Math.min(
+        SMOOTH_WHEEL_MAX_BLEND,
+        Math.max(SMOOTH_WHEEL_MIN_BLEND, elapsed / SMOOTH_WHEEL_BASE_DURATION_MS)
+      );
+      activeSurface.scrollTop += delta * blend;
+      activeState.animationFrameId = window.requestAnimationFrame(step);
+    };
+
+    if (smoothWheelState.animationFrameId === null) {
+      smoothWheelState.lastFrameAt = 0;
+      smoothWheelState.animationFrameId = window.requestAnimationFrame(step);
+    }
+  }
+
+  function queueSmoothWheelScroll(scrollSurface: HTMLDivElement, nextScrollTop: number) {
+    const smoothWheelState = smoothWheelStateRef.current;
+    if (smoothWheelState.surface !== scrollSurface) {
+      cancelSmoothWheelAnimation();
+      smoothWheelState.surface = scrollSurface;
+      smoothWheelState.targetScrollTop = scrollSurface.scrollTop;
+    }
+
+    smoothWheelState.targetScrollTop = nextScrollTop;
+    animateSmoothWheelScroll();
+  }
+
+  function queueScrollReset(pageNumber: number, position: ScrollResetPosition) {
+    scrollResetTokenRef.current += 1;
+    setScrollResetRequest({
+      pageNumber,
+      position,
+      token: scrollResetTokenRef.current
+    });
+  }
+
+  function resolveScrollResetPosition(
+    nextPage: number,
+    currentTargetPage: number,
+    reason: string
+  ): ScrollResetPosition {
+    if (reason === "go-to-page" || reason === "target" || reason === "outline") {
+      return "top";
+    }
+
+    if (reason.includes("previous")) {
+      return "bottom";
+    }
+
+    if (reason.includes("next")) {
+      return "top";
+    }
+
+    return nextPage < currentTargetPage ? "bottom" : "top";
+  }
 
   function clearRapidTurnWheelFinalizeTimer() {
     if (rapidTurnWheelFinalizeTimerRef.current !== null) {
@@ -189,8 +385,55 @@ export function useReaderController({
     }
   }
 
-  function updateZoom(nextZoom: number, reason: string, options?: { commitImmediately?: boolean }) {
-    const normalizedZoom = normalizeZoom(nextZoom);
+  function setReaderFitMode(nextFitMode: ReaderFitMode, reason: string) {
+    const normalizedFitMode = normalizeReaderFitMode(nextFitMode);
+    setReaderState((current) => {
+      if (!current || current.preferences.fitMode === normalizedFitMode) {
+        return current;
+      }
+
+      const nextState = {
+        ...current,
+        preferences: {
+          ...current.preferences,
+          fitMode: normalizedFitMode
+        }
+      };
+
+      readerStateRef.current = nextState;
+      markReaderStateDirty(nextState, reason);
+      onStateChange(nextState);
+      return nextState;
+    });
+  }
+
+  function resolveZoomForFitMode(nextZoom: number, fitMode: ReaderFitMode) {
+    const normalizedFitMode = normalizeReaderFitMode(fitMode);
+    if (normalizedFitMode !== "auto-maximize") {
+      return normalizeZoom(nextZoom);
+    }
+
+    const autoMaximizeZoom = autoMaximizeZoomRef.current;
+    if (typeof autoMaximizeZoom !== "number" || !Number.isFinite(autoMaximizeZoom)) {
+      return normalizeZoom(nextZoom);
+    }
+
+    return normalizeZoom(Math.min(nextZoom, autoMaximizeZoom));
+  }
+
+  function updateZoom(
+    nextZoom: number,
+    reason: string,
+    options?: {
+      commitImmediately?: boolean;
+      fitMode?: ReaderFitMode;
+    }
+  ) {
+    const resolvedFitMode = options?.fitMode ?? readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
+    const normalizedZoom = resolveZoomForFitMode(nextZoom, resolvedFitMode);
+    if (options?.fitMode && options.fitMode !== readerStateRef.current?.preferences.fitMode) {
+      setReaderFitMode(options.fitMode, `${reason}:fit-mode`);
+    }
     setDisplayZoom(normalizedZoom);
 
     if (options?.commitImmediately) {
@@ -268,7 +511,10 @@ export function useReaderController({
 
     const nextPage = clampPage(target.pageIndex + 1, pageCount || target.pageIndex + 1);
     if (typeof target.zoom === "number" && Number.isFinite(target.zoom) && target.zoom > 0) {
-      updateZoom(target.zoom, reason, { commitImmediately: true });
+      updateZoom(target.zoom, reason, {
+        commitImmediately: true,
+        fitMode: "free"
+      });
     }
     requestPageTurnWithIntent(nextPage, reason);
   }
@@ -544,8 +790,15 @@ export function useReaderController({
         return currentTargetPage;
       }
 
+      queueScrollReset(
+        nextPage,
+        resolveScrollResetPosition(nextPage, currentTargetPage, reason)
+      );
+
       if (intent) {
         noteRapidTurnIntent(intent, nextPage);
+      } else {
+        resetWheelGesture();
       }
 
       debugAction("reader.page-request", {
@@ -606,6 +859,7 @@ export function useReaderController({
       source: null,
       targetPage: 1
     };
+    resetWheelGesture();
     outlineLoadedForDocumentIdRef.current = null;
     embeddedOutlineItemsRef.current = [];
     setDocumentError(null);
@@ -616,6 +870,11 @@ export function useReaderController({
       pageNumber: null,
       state: "missing"
     });
+    cancelSmoothWheelAnimation();
+    smoothWheelStateRef.current.surface = null;
+    smoothWheelStateRef.current.targetScrollTop = 0;
+    autoMaximizeZoomRef.current = null;
+    setScrollResetRequest(null);
     setIsRendering(false);
     setDisplayedPage(null);
     setIncomingPage(null);
@@ -653,11 +912,13 @@ export function useReaderController({
       ...document.state,
       lastPage: nextPage,
       zoom: nextZoom,
+      preferences: document.state.preferences ?? { fitMode: "auto-maximize" },
       userOutlineItems: document.state.userOutlineItems ?? []
     };
     const nextState = normalizeDocumentState(rawNextState);
-    const stateWasDeduped =
+    const stateWasNormalized =
       JSON.stringify(rawNextState.bookmarks ?? []) !== JSON.stringify(nextState.bookmarks) ||
+      JSON.stringify(rawNextState.preferences ?? null) !== JSON.stringify(nextState.preferences) ||
       JSON.stringify(rawNextState.userOutlineItems ?? []) !==
         JSON.stringify(nextState.userOutlineItems);
     clearScheduledSave();
@@ -665,7 +926,7 @@ export function useReaderController({
     lastPersistedSignatureRef.current = stateSignature(nextState);
     updateReaderState(nextState);
     onOutlineChange(nextState.userOutlineItems);
-    if (stateWasDeduped) {
+    if (stateWasNormalized) {
       markReaderStateDirty(nextState, "dedupe-reader-state", BOOKMARK_SAVE_DEBOUNCE_MS, {
         force: true
       });
@@ -677,6 +938,7 @@ export function useReaderController({
     return () => {
       const runtimeSession = runtimeSessionRef.current;
       runtimeSessionRef.current = null;
+      cancelSmoothWheelAnimation();
       clearZoomCommitTimer();
       if (runtimeSession) {
         void runtimeSession.dispose();
@@ -1138,10 +1400,29 @@ export function useReaderController({
             requestPageTurnWithIntent(nextPage, "previous-page");
           },
           zoomIn: () => {
-            updateZoom(scaleZoomByKeyboardDirection(displayZoom, "in"), "header");
+            const nextFitMode = readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
+            updateZoom(scaleZoomByKeyboardDirection(displayZoom, "in"), "header", {
+              fitMode: nextFitMode
+            });
           },
           zoomOut: () => {
-            updateZoom(scaleZoomByKeyboardDirection(displayZoom, "out"), "header");
+            const nextFitMode = readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
+            updateZoom(scaleZoomByKeyboardDirection(displayZoom, "out"), "header", {
+              fitMode: nextFitMode
+            });
+          },
+          getAutoMaximizeZoom: () => autoMaximizeZoomRef.current,
+          getAutoMaximizeMinDocumentWidth: () => getAutoMaximizeMinDocumentWidth?.() ?? null,
+          getFitMode: () => readerStateRef.current?.preferences.fitMode ?? "auto-maximize",
+          setFitMode: (fitMode) => {
+            const normalizedFitMode = normalizeReaderFitMode(fitMode);
+            setReaderFitMode(normalizedFitMode, "header-fit-mode");
+            if (normalizedFitMode === "auto-maximize" && autoMaximizeZoomRef.current !== null) {
+              updateZoom(autoMaximizeZoomRef.current, "header-fit-mode-sync", {
+                commitImmediately: true,
+                fitMode: normalizedFitMode
+              });
+            }
           },
           goToPage: (page) => {
             requestPageTurnWithIntent(clampPage(page, pageCount), "go-to-page");
@@ -1206,16 +1487,18 @@ export function useReaderController({
 
     registerApi(api);
     return () => registerApi(null);
-  }, [document, onStateChange, onStatusChange, pageCount, readerState, registerApi, targetPage]);
+  }, [displayZoom, document, onStateChange, onStatusChange, pageCount, readerState, registerApi, targetPage]);
 
   return {
     currentPage,
     pageCount,
+    fitMode: readerState ? normalizeReaderFitMode(readerState.preferences.fitMode) : "auto-maximize",
     displayZoom,
     committedZoom,
     displayedPage,
     incomingPage,
     rapidTurnOverlay,
+    scrollResetRequest,
     displayedPageTextLayer,
     displayedPageTextDebugStatus,
     isRendering,
@@ -1242,7 +1525,8 @@ export function useReaderController({
             key: event.key,
             nextZoom
           });
-          updateZoom(nextZoom, "keyboard");
+          const nextFitMode = readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
+          updateZoom(nextZoom, "keyboard", { fitMode: nextFitMode });
         }
         return;
       }
@@ -1302,6 +1586,7 @@ export function useReaderController({
       event.preventDefault();
 
       if (event.ctrlKey || event.metaKey) {
+        cancelSmoothWheelAnimation();
         const delta = event.deltaY === 0 ? event.deltaX : event.deltaY;
         const nextZoom = scaleZoomByWheelDelta(displayZoom, delta);
         debugAction("reader.zoom-wheel", {
@@ -1309,34 +1594,147 @@ export function useReaderController({
           displayZoom,
           nextZoom
         });
-        updateZoom(nextZoom, "wheel");
+        const nextFitMode = readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
+        updateZoom(nextZoom, "wheel", { fitMode: nextFitMode });
         return;
       }
 
-      const primaryDelta =
-        Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      const scrollSurface = event.currentTarget;
+      const deltaX = normalizeWheelDelta(
+        event.deltaX,
+        event.deltaMode,
+        scrollSurface.clientWidth
+      );
+      const deltaY = normalizeWheelDelta(
+        event.deltaY,
+        event.deltaMode,
+        scrollSurface.clientHeight
+      );
+      const isDiscreteWheelInput = isLikelyDiscreteWheelInput(event);
 
-      if (primaryDelta < 0) {
-        debugAction("reader.navigate-wheel", {
-          direction: "previous",
-          currentPage: targetPage
-        });
-        requestPageTurnWithIntent(clampPage(targetPage - 1, pageCount), "wheel-previous", {
-          source: "wheel",
-          direction: "previous",
-          activationWindowMs: WHEEL_RAPID_TURN_WINDOW_MS
-        });
-      } else if (primaryDelta > 0) {
-        debugAction("reader.navigate-wheel", {
-          direction: "next",
-          currentPage: targetPage
-        });
-        requestPageTurnWithIntent(clampPage(targetPage + 1, pageCount || targetPage), "wheel-next", {
-          source: "wheel",
-          direction: "next",
-          activationWindowMs: WHEEL_RAPID_TURN_WINDOW_MS
-        });
+      if (deltaX !== 0) {
+        scrollSurface.scrollLeft += deltaX;
       }
+
+      if (deltaY === 0) {
+        return;
+      }
+
+      const now = Date.now();
+      const nextDirection: NavigationDirection = deltaY > 0 ? "next" : "previous";
+      const wheelGesture = wheelGestureRef.current;
+      if (now - wheelGesture.lastAt > WHEEL_GESTURE_IDLE_MS) {
+        resetWheelGesture();
+      }
+
+      if (wheelGestureRef.current.direction !== nextDirection) {
+        wheelGestureRef.current.accumulatedBoundaryDistance = 0;
+        wheelGestureRef.current.direction = nextDirection;
+        wheelGestureRef.current.pageTurned = false;
+      }
+      wheelGestureRef.current.lastAt = now;
+
+      if (wheelGestureRef.current.pageTurned) {
+        return;
+      }
+
+      const selectionActive =
+        scrollSurface.querySelector(".reader-page__text-layer.selecting") !== null;
+      const maxScrollTop = Math.max(
+        scrollSurface.scrollHeight - scrollSurface.clientHeight,
+        0
+      );
+      const previousScrollTop = scrollSurface.scrollTop;
+      const previousTargetScrollTop =
+        smoothWheelStateRef.current.surface === scrollSurface
+          ? smoothWheelStateRef.current.targetScrollTop
+          : previousScrollTop;
+      const rawDeltaY = isDiscreteWheelInput
+        ? clampDiscreteWheelDelta(deltaY)
+        : deltaY;
+      const unclampedNextTargetScrollTop = previousTargetScrollTop + rawDeltaY;
+      const nextTargetScrollTop = Math.min(
+        Math.max(unclampedNextTargetScrollTop, 0),
+        maxScrollTop
+      );
+
+      if (isDiscreteWheelInput) {
+        queueSmoothWheelScroll(scrollSurface, nextTargetScrollTop);
+      } else {
+        cancelSmoothWheelAnimation();
+        smoothWheelStateRef.current.surface = scrollSurface;
+        smoothWheelStateRef.current.targetScrollTop = nextTargetScrollTop;
+        const nextScrollTop = Math.min(
+          Math.max(previousScrollTop + deltaY, 0),
+          maxScrollTop
+        );
+        if (Math.abs(nextScrollTop - previousScrollTop) > 0.01) {
+          scrollSurface.scrollTop = nextScrollTop;
+        }
+      }
+
+      if (selectionActive || pageCount <= 1) {
+        wheelGestureRef.current.accumulatedBoundaryDistance = 0;
+        return;
+      }
+
+      const atTop = scrollSurface.scrollTop <= WHEEL_BOUNDARY_EPSILON_PX;
+      const atBottom =
+        scrollSurface.scrollTop >= maxScrollTop - WHEEL_BOUNDARY_EPSILON_PX;
+
+      let boundaryOverflow = 0;
+      if (nextDirection === "previous" && atTop) {
+        boundaryOverflow = Math.max(0, -unclampedNextTargetScrollTop);
+        if (boundaryOverflow === 0 && previousTargetScrollTop <= WHEEL_BOUNDARY_EPSILON_PX) {
+          boundaryOverflow = Math.abs(rawDeltaY);
+        }
+      } else if (nextDirection === "next" && atBottom) {
+        boundaryOverflow = Math.max(0, unclampedNextTargetScrollTop - maxScrollTop);
+        if (
+          boundaryOverflow === 0 &&
+          previousTargetScrollTop >= maxScrollTop - WHEEL_BOUNDARY_EPSILON_PX
+        ) {
+          boundaryOverflow = Math.abs(rawDeltaY);
+        }
+      }
+
+      if (boundaryOverflow <= 0) {
+        wheelGestureRef.current.accumulatedBoundaryDistance = 0;
+        return;
+      }
+
+      wheelGestureRef.current.accumulatedBoundaryDistance += boundaryOverflow;
+      if (
+        wheelGestureRef.current.accumulatedBoundaryDistance <
+        WHEEL_PAGE_TURN_THRESHOLD_PX
+      ) {
+        return;
+      }
+
+      const requestedPage =
+        nextDirection === "previous"
+          ? clampPage(targetPage - 1, pageCount)
+          : clampPage(targetPage + 1, pageCount || targetPage);
+      if (requestedPage === targetPage) {
+        wheelGestureRef.current.accumulatedBoundaryDistance = 0;
+        return;
+      }
+
+      wheelGestureRef.current.pageTurned = true;
+      wheelGestureRef.current.accumulatedBoundaryDistance = 0;
+      cancelSmoothWheelAnimation();
+      smoothWheelStateRef.current.surface = scrollSurface;
+      smoothWheelStateRef.current.targetScrollTop = scrollSurface.scrollTop;
+      debugAction("reader.navigate-wheel-boundary", {
+        currentPage: targetPage,
+        direction: nextDirection,
+        maxScrollTop,
+        scrollTop: scrollSurface.scrollTop
+      });
+      requestPageTurnWithIntent(
+        requestedPage,
+        nextDirection === "previous" ? "wheel-boundary-previous" : "wheel-boundary-next"
+      );
     },
     markIncomingReady(requestKey: string, imageElement?: HTMLImageElement | null) {
       if (requestKey !== incomingPageKeyRef.current) {
@@ -1360,6 +1758,28 @@ export function useReaderController({
       }
 
       finalizeReady();
+    },
+    previewAutoMaximizeZoom(nextZoom: number) {
+      autoMaximizeZoomRef.current = normalizeZoom(nextZoom);
+      if (!shouldAutoFitReaderPage(readerStateRef.current?.preferences.fitMode)) {
+        return;
+      }
+
+      setDisplayZoom(resolveZoomForFitMode(nextZoom, "auto-maximize"));
+    },
+    commitAutoMaximizeZoom(nextZoom: number) {
+      autoMaximizeZoomRef.current = normalizeZoom(nextZoom);
+      if (!shouldAutoFitReaderPage(readerStateRef.current?.preferences.fitMode)) {
+        return;
+      }
+
+      updateZoom(nextZoom, "auto-maximize", {
+        fitMode: "auto-maximize",
+        commitImmediately: true
+      });
+    },
+    reportAutoMaximizeZoom(nextZoom: number) {
+      autoMaximizeZoomRef.current = normalizeZoom(nextZoom);
     }
   };
 }

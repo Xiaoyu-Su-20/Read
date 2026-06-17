@@ -17,8 +17,21 @@ describe("search result ranking", () => {
     const ranked = rankSearchResults(results, { currentPage: 5, nearbyPages: new Set([4, 5, 6]) });
     expect(ranked.map((result) => result.id)).toEqual(["note", "current", "near", "document", "far"]);
     expect(groupSearchResults(ranked).map((group) => group.id)).toEqual([
-      "notes", "current-page", "nearby-pages", "across-document", "documents"
+      "notes", "nearby-page", "across-document", "pdf-names"
     ]);
   });
-});
 
+  it("merges current-page and nearby-page pdf hits into Nearby Page", () => {
+    const results: SearchResult[] = [
+      { ...common, id: "near", kind: "pdf", sourceId: "pdf-text", title: "Page 6", pageNumber: 6, matchIndex: 0, location: "nearby" },
+      { ...common, id: "current", kind: "pdf", sourceId: "pdf-text", title: "Page 5", pageNumber: 5, matchIndex: 0, location: "current" }
+    ];
+    const groups = groupSearchResults(
+      rankSearchResults(results, { currentPage: 5, nearbyPages: new Set([4, 5, 6]) })
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.id).toBe("nearby-page");
+    expect(groups[0]?.label).toBe("Document · Nearby Page");
+    expect(groups[0]?.results.map((result) => result.id)).toEqual(["current", "near"]);
+  });
+});

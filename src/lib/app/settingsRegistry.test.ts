@@ -60,7 +60,6 @@ describe("settingsRegistry", () => {
           twoPageView: true,
           verticalScrolling: false,
           themeProfile: {
-            workspace: "#0f1419",
             chrome: "#151a1f",
             text: "#d7dbdf",
             accent: "#c59354",
@@ -86,7 +85,6 @@ describe("settingsRegistry", () => {
             name: "Migrated Theme",
             kind: "custom",
             source: {
-              workspace: "#0f1419",
               chrome: "#151a1f",
               uiText: "#d7dbdf",
               documentPaper: "#1f2328",
@@ -123,7 +121,6 @@ describe("settingsRegistry", () => {
               name: "Night Ink",
               kind: "custom",
               colors: {
-                workspace: "#000",
                 chrome: "#111",
                 paper: "#222",
                 text: "#ddd",
@@ -158,7 +155,75 @@ describe("settingsRegistry", () => {
             name: "Night Ink",
             kind: "custom",
             source: {
-              workspace: "#000000",
+              chrome: "#111111",
+              uiText: "#dddddd",
+              documentPaper: "#222222",
+              documentInk: "#dddddd",
+              accent: "#cc9900",
+              interactive: "#5577ff",
+              danger: "#cc4444"
+            },
+            document: {
+              surfaceTone: "dark"
+            }
+          }
+        ]
+      }
+    });
+  });
+
+  it("drops persisted workspace colors from version-6 custom themes", () => {
+    expect(
+      migrateAppSettingsPayload({
+        version: 6,
+        settings: {
+          readerPaneSplitRatio: 0.48,
+          readerPreferences: {
+            fullscreenMode: false,
+            showPageNumbers: true,
+            twoPageView: false,
+            verticalScrolling: true
+          },
+          activeThemeId: "custom-1",
+          customThemes: [
+            {
+              id: "custom-1",
+              name: "Night Ink",
+              kind: "custom",
+              source: {
+                workspace: "#000000",
+                chrome: "#111111",
+                uiText: "#dddddd",
+                documentPaper: "#222222",
+                documentInk: "#dddddd",
+                accent: "#cc9900",
+                interactive: "#5577ff",
+                danger: "#cc4444"
+              },
+              document: {
+                surfaceTone: "dark"
+              }
+            }
+          ]
+        }
+      })
+    ).toEqual({
+      version: APP_SETTINGS_VERSION,
+      settings: {
+        readerPaneSplitRatio: 0.48,
+        readerPreferences: {
+          fullscreenMode: false,
+          showPageNumbers: true,
+          twoPageView: false,
+          verticalScrolling: true
+        },
+        activeThemeId: "custom-1",
+        customThemes: [
+          {
+            id: "custom-1",
+            name: "Night Ink",
+            kind: "custom",
+            source: {
               chrome: "#111111",
               uiText: "#dddddd",
               documentPaper: "#222222",
@@ -197,7 +262,6 @@ describe("settingsRegistry", () => {
             name: "",
             kind: "custom",
             source: {
-              workspace: "#12345z",
               chrome: "#1a2",
               uiText: "#ABCDEF",
               documentPaper: "#ffeedd",
@@ -227,7 +291,6 @@ describe("settingsRegistry", () => {
           name: "Custom Theme",
           kind: "custom",
           source: {
-            workspace: "#13191e",
             chrome: "#11aa22",
             uiText: "#abcdef",
             documentPaper: "#ffeedd",
@@ -274,7 +337,6 @@ describe("settingsRegistry", () => {
           name: "Night Ink",
           kind: "custom" as const,
           source: {
-            workspace: "#000000",
             chrome: "#111111",
             uiText: "#dddddd",
             documentPaper: "#1f2328",
@@ -312,7 +374,6 @@ describe("settingsRegistry", () => {
           name: "Warm Paper",
           kind: "custom",
           source: {
-            workspace: "#101010",
             chrome: "#202020",
             uiText: "#efefef",
             documentPaper: "#efe1c3",
@@ -329,7 +390,7 @@ describe("settingsRegistry", () => {
       activeThemeId: "custom-1"
     });
 
-    expect(variables["--theme-workspace"]).toBe("#101010");
+    expect(variables["--theme-workspace"]).toBe("#202020");
     expect(variables["--theme-document-paper"]).toBe("#efe1c3");
     expect(variables["--theme-interactive"]).toBe("#4466cc");
     expect(variables["--context-menu-surface"]).toContain("rgba(");
