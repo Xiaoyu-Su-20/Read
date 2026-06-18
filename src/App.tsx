@@ -7,6 +7,7 @@ import CollectionView from "./components/CollectionView";
 import DisplaySettingsPopover from "./components/DisplaySettingsPopover";
 import OutlineOverlay from "./components/OutlineOverlay";
 import ReaderWorkspace from "./components/ReaderWorkspace";
+import CollectionLibraryGlyph from "./components/icons/CollectionLibraryGlyph";
 import { createUnifiedSearchController } from "./search";
 import { openLibraryFolder } from "./lib/api";
 import { isPassiveStatusMessage } from "./lib/app/helpers";
@@ -58,18 +59,6 @@ function toViewEventName(view: ViewMode) {
   return view === "reader" ? "document" : "collection";
 }
 
-function isEditableTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-
-  if (target.isContentEditable) {
-    return true;
-  }
-
-  return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
-}
-
 function shouldStartWindowDrag(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -114,6 +103,7 @@ export default function App() {
   const [noteRevealRequest, setNoteRevealRequest] = useState<import("./lib/types").NoteRevealRequest | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [paletteAnchorElement, setPaletteAnchorElement] = useState<HTMLButtonElement | null>(null);
   const [fullscreenState, setFullscreenState] = useState<FullscreenState>("windowed");
   const [showFullscreenHint, setShowFullscreenHint] = useState(false);
   const fullscreenTransitionRef = useRef(false);
@@ -426,6 +416,7 @@ export default function App() {
     libraryRoot: workspace.libraryRoot,
     recentDocuments: workspace.recentDocuments,
     activeDocument: workspace.activeDocument,
+    noteTitle: notes.note?.title ?? null,
     readerState: workspace.readerState,
     viewerSnapshot: workspace.viewerSnapshot,
     outlineItems: workspace.outlineItems,
@@ -444,7 +435,12 @@ export default function App() {
       setOutlineOpen(false);
       await workspace.handleOpenDocument(documentId);
     },
-    openSearch: openUnifiedSearch
+    openSearch: openUnifiedSearch,
+    renameNote: async (title) => {
+      notes.updateTitle(title);
+      await notes.flushNow("rename-note");
+    },
+    copyAllNoteText: notes.copyAllText
   });
 
   useEffect(() => {
@@ -526,7 +522,6 @@ export default function App() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      const originatedFromEditable = isEditableTarget(event.target);
       const normalizedKey = event.key.toLowerCase();
 
       if (event.key === "F11" || normalizedKey === "f11" || event.code === "F11") {
@@ -551,13 +546,7 @@ export default function App() {
         return;
       }
 
-      if (
-        event.key === "Tab" &&
-        !event.shiftKey &&
-        !palette.paletteOpen &&
-        !outlineOpen &&
-        !originatedFromEditable
-      ) {
+      if ((event.ctrlKey || event.metaKey) && normalizedKey === "p") {
         event.preventDefault();
         palette.openCommands(commandRegistry);
         return;
@@ -582,10 +571,8 @@ export default function App() {
     commandRegistry,
     exitFullscreen,
     fullscreenState,
-    outlineOpen,
     palette.closePalette,
     palette.openCommands,
-    palette.paletteOpen,
     searchController,
     settingsOpen,
     toggleFullscreen,
@@ -772,10 +759,7 @@ export default function App() {
             }}
           >
             <ChromeIcon label="Collections">
-              <rect x="5" y="5" width="5.5" height="5.5" rx="1" fill="currentColor" stroke="none" />
-              <rect x="13.5" y="5" width="5.5" height="5.5" rx="1" />
-              <rect x="5" y="13.5" width="5.5" height="5.5" rx="1" />
-              <rect x="13.5" y="13.5" width="5.5" height="5.5" rx="1" fill="currentColor" stroke="none" />
+              <CollectionLibraryGlyph />
             </ChromeIcon>
           </button>
           <button
@@ -891,19 +875,11 @@ export default function App() {
             }}
           >
             <ChromeIcon label="Settings">
-              <circle cx="12" cy="12" r="2.6" />
-              <path d="M12 4.2v2.1" />
-              <path d="M12 17.7v2.1" />
-              <path d="m6.35 6.35 1.48 1.48" />
-              <path d="m16.17 16.17 1.48 1.48" />
-              <path d="M4.2 12h2.1" />
-              <path d="M17.7 12h2.1" />
-              <path d="m6.35 17.65 1.48-1.48" />
-              <path d="m16.17 7.83 1.48-1.48" />
-              <path d="M9.3 5.35 8.6 3.9" />
-              <path d="m15.4 20.1-.7-1.45" />
-              <path d="m5.35 14.7-1.45.7" />
-              <path d="m20.1 9.3-1.45.7" />
+              <path
+                fill="currentColor"
+                stroke="none"
+                d="M14.08 1.5a.75.75 0 0 1 .714.52l.825 2.564c.346.17.678.36.994.575l2.634-.568a.75.75 0 0 1 .807.36l2.079 3.6a.75.75 0 0 1-.094.879l-1.808 1.996a8.37 8.37 0 0 1 0 1.149l1.808 1.998a.75.75 0 0 1 .094.878l-2.079 3.6a.75.75 0 0 1-.807.36l-2.633-.568a8.238 8.238 0 0 1-.993.575l-.827 2.564a.75.75 0 0 1-.713.52H9.92a.75.75 0 0 1-.714-.52l-.824-2.562a8.553 8.553 0 0 1-.998-.578l-2.633.57a.75.75 0 0 1-.807-.36l-2.079-3.6a.75.75 0 0 1 .095-.879l1.807-1.997a8.37 8.37 0 0 1 0-1.146L1.959 9.43a.75.75 0 0 1-.094-.879l2.079-3.6a.75.75 0 0 1 .807-.359l2.633.569c.318-.214.65-.406.996-.575l.824-2.563A.75.75 0 0 1 9.92 1.5h4.159Zm-.549 1.5H10.47l-.852 2.651-.575.28a6.893 6.893 0 0 0-.815.47l-.53.359-2.724-.588-1.53 2.651 1.869 2.069-.045.636a6.87 6.87 0 0 0 0 .942l.045.636-1.87 2.068 1.532 2.652 2.722-.586.531.358c.258.175.53.332.815.47l.575.281.853 2.651h3.06l.855-2.652.573-.278c.288-.14.56-.297.814-.47l.53-.358 2.724.586 1.53-2.651-1.868-2.069.045-.636a6.87 6.87 0 0 0 0-.944l-.045-.635 1.87-2.067-1.532-2.652-2.724.585-.529-.357a6.734 6.734 0 0 0-.814-.47l-.573-.278L13.53 3Zm-1.53 4.5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Zm0 1.5a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z"
+              />
             </ChromeIcon>
           </button>
         </div>
@@ -1005,6 +981,15 @@ export default function App() {
               windowControls={renderWindowControls()}
               searchController={searchController}
               searchFocusRequest={searchFocusRequest}
+              commandPaletteOpen={palette.paletteOpen}
+              onToggleCommandPalette={() => {
+                if (palette.paletteOpen) {
+                  palette.closePalette();
+                  return;
+                }
+                palette.openCommands(commandRegistry);
+              }}
+              registerCommandPaletteAnchor={setPaletteAnchorElement}
               onSearchOpenDocument={(documentId) =>
                 workspace.handleOpenDocument(documentId, { source: "search-result" })
               }
@@ -1031,6 +1016,7 @@ export default function App() {
         session={palette.paletteSession}
         onClose={palette.closePalette}
         onChangeQuery={palette.changeQuery}
+        anchorElement={paletteAnchorElement}
       />
 
       <OutlineOverlay

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { logNoteDebugEvent } from "../../lib/api";
@@ -52,6 +52,9 @@ type NotesPaneProps = {
   onSetUserOutlineItems: (items: PdfOutlineItem[]) => void;
   currentPage: number | null;
   revealRequest: NoteRevealRequest | null;
+  commandPaletteOpen: boolean;
+  onToggleCommandPalette: () => void;
+  registerCommandPaletteAnchor: (node: HTMLButtonElement | null) => void;
 };
 
 function NavigationButton({
@@ -79,16 +82,20 @@ function NavigationButton({
 
 function NotesMoreMenuButton({
   open,
-  onToggle
+  onToggle,
+  buttonRef
 }: {
   open: boolean;
   onToggle: () => void;
+  buttonRef: (node: HTMLButtonElement | null) => void;
 }) {
   return (
     <button
+      ref={buttonRef}
       className={`notes-header-action${open ? " notes-header-action--active" : ""}`}
       type="button"
-      aria-label="Open more note actions"
+      aria-label="Open command palette"
+      aria-expanded={open}
       onClick={onToggle}
     >
       <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -128,12 +135,12 @@ function FullscreenButton({
 }
 
 function isContextMenuTarget(target: EventTarget | null) {
-  return target instanceof HTMLElement && Boolean(target.closest(".note-editor"));
+  return target instanceof Element && Boolean(target.closest(".note-editor"));
 }
 
 function isMenuInteractiveTarget(target: EventTarget | null) {
   return (
-    target instanceof HTMLElement &&
+    target instanceof Element &&
     Boolean(
       target.closest(
         ".editor-context-menu, .block-type-submenu, .notes-find-panel, .notes-inline-dialog, .notes-popover, .notes-header-tools, .notes-pane__scrollbar"
@@ -147,6 +154,11 @@ const TOAST_DURATION_MS = 2400;
 type NoteFindMatch = {
   blockId: string;
   occurrenceIndex: number;
+};
+
+type NoteNavigationTreeNode = {
+  item: NoteNavigationItem;
+  children: NoteNavigationTreeNode[];
 };
 
 function collectNoteFindMatches(note: NoteDocument | null, query: string): NoteFindMatch[] {
@@ -176,6 +188,50 @@ function collectNoteFindMatches(note: NoteDocument | null, query: string): NoteF
   return matches;
 }
 
+function buildNoteNavigationTree(items: NoteNavigationItem[]): NoteNavigationTreeNode[] {
+  const roots: NoteNavigationTreeNode[] = [];
+  let currentLevel1: NoteNavigationTreeNode | null = null;
+  let currentLevel2: NoteNavigationTreeNode | null = null;
+
+  for (const item of items) {
+    const node: NoteNavigationTreeNode = {
+      item,
+      children: []
+    };
+
+    if (item.level === 1) {
+      roots.push(node);
+      currentLevel1 = node;
+      currentLevel2 = null;
+      continue;
+    }
+
+    if (item.level === 2) {
+      if (currentLevel1) {
+        currentLevel1.children.push(node);
+      } else {
+        roots.push(node);
+      }
+      currentLevel2 = node;
+      continue;
+    }
+
+    if (currentLevel2) {
+      currentLevel2.children.push(node);
+      continue;
+    }
+
+    if (currentLevel1) {
+      currentLevel1.children.push(node);
+      continue;
+    }
+
+    roots.push(node);
+  }
+
+  return roots;
+}
+
 const NotesPane = memo(function NotesPane({
   note,
   loading,
@@ -194,11 +250,13 @@ const NotesPane = memo(function NotesPane({
   onNavigateToTarget,
   onSetUserOutlineItems,
   currentPage,
-  revealRequest
+  revealRequest,
+  commandPaletteOpen,
+  onToggleCommandPalette,
+  registerCommandPaletteAnchor
 }: NotesPaneProps) {
   const editorRef = useRef<NoteEditorHandle | null>(null);
   const findInputRef = useRef<HTMLInputElement | null>(null);
-  const renameInputRef = useRef<HTMLInputElement | null>(null);
   const pageLinkInputRef = useRef<HTMLInputElement | null>(null);
   const paneRef = useRef<HTMLElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -223,13 +281,11 @@ const NotesPane = memo(function NotesPane({
   } | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const [navigationOpen, setNavigationOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [renamingTitle, setRenamingTitle] = useState(false);
-  const [renameDraft, setRenameDraft] = useState("");
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [activeFindIndex, setActiveFindIndex] = useState(0);
+  const [expandedNavigationIds, setExpandedNavigationIds] = useState<Set<string>>(() => new Set());
   const [pageLinkDialog, setPageLinkDialog] = useState<{
     mode: "insert" | "edit";
     pageLinkId: string | null;
@@ -248,10 +304,115 @@ const NotesPane = memo(function NotesPane({
     () => collectNoteFindMatches(note, findQuery),
     [findQuery, note]
   );
+  const navigationTree = useMemo(
+    () => buildNoteNavigationTree(navigationItems),
+    [navigationItems]
+  );
+
+  function toggleNavigationNode(nodeId: string) {
+    setExpandedNavigationIds((current) => {
+      const next = new Set(current);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  }
+
+  function renderNavigationBranch(
+    nodes: NoteNavigationTreeNode[],
+    depth: number
+  ): ReactNode {
+    if (nodes.length === 0) {
+      return null;
+    }
+
+    return (
+      <div className="notes-navigation__tree" role="group">
+        {nodes.map((node) => {
+          const isExpanded = expandedNavigationIds.has(node.item.id);
+          const hasChildren = node.children.length > 0;
+
+          return (
+            <div
+              key={node.item.id}
+              className={`notes-navigation__tree-node notes-navigation__tree-node--depth-${depth}`}
+              style={{ ["--notes-nav-depth" as string]: String(depth) }}
+            >
+              <div className="notes-navigation__tree-header">
+                <button
+                  className={`notes-navigation__tree-row${hasChildren ? " notes-navigation__tree-row--branch" : ""}`}
+                  type="button"
+                  onClick={() => {
+                    editorRef.current?.scrollToBlock(node.item.blockId);
+                    setNavigationOpen(false);
+                  }}
+                >
+                  <span className="notes-navigation__tree-marker" aria-hidden="true">
+                    <span className="notes-navigation__tree-dot" />
+                  </span>
+                  <span className="notes-navigation__tree-title">{node.item.title}</span>
+                </button>
+                {hasChildren ? (
+                  <button
+                    className={`notes-navigation__tree-toggle${isExpanded ? " notes-navigation__tree-toggle--expanded" : ""}`}
+                    type="button"
+                    aria-label={isExpanded ? "Collapse subsection" : "Expand subsection"}
+                    aria-expanded={isExpanded}
+                    onPointerDown={(event) => {
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      toggleNavigationNode(node.item.id);
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                      <path d={isExpanded ? "m8 10 4 4 4-4" : "m10 8 4 4-4 4"} />
+                    </svg>
+                  </button>
+                ) : null}
+              </div>
+              {hasChildren && isExpanded ? renderNavigationBranch(node.children, depth + 1) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
 
   useEffect(() => {
     if (revealRequest) editorRef.current?.scrollToBlock(revealRequest.blockId);
   }, [revealRequest]);
+
+  useEffect(() => {
+    if (!navigationOpen) {
+      return;
+    }
+
+    const expandableIds = navigationTree
+      .filter((node) => node.children.length > 0)
+      .map((node) => node.item.id);
+
+    setExpandedNavigationIds((current) => {
+      const next = new Set(
+        [...current].filter((id) => expandableIds.includes(id))
+      );
+
+      if (next.size === 0 && expandableIds.length > 0) {
+        next.add(expandableIds[0]!);
+      }
+
+      if (next.size === current.size && [...next].every((id) => current.has(id))) {
+        return current;
+      }
+
+      return next;
+    });
+  }, [navigationOpen, navigationTree]);
   const {
     state: contextMenuState,
     position: contextMenuPosition,
@@ -268,9 +429,6 @@ const NotesPane = memo(function NotesPane({
   function openFindPanel() {
     closeMenu();
     setNavigationOpen(false);
-    setMoreOpen(false);
-    setRenamingTitle(false);
-    setRenameDraft("");
     setPageLinkDialog(null);
     setFindOpen(true);
     window.requestAnimationFrame(() => {
@@ -362,9 +520,6 @@ const NotesPane = memo(function NotesPane({
 
   function closeInlineOverlays() {
     setNavigationOpen(false);
-    setMoreOpen(false);
-    setRenamingTitle(false);
-    setRenameDraft("");
     setPageLinkDialog(null);
     setSectionPicker(null);
     setFindOpen(false);
@@ -383,19 +538,6 @@ const NotesPane = memo(function NotesPane({
       ok: true as const,
       pageNumber: parsed.pageNumber
     };
-  }
-
-  function submitRenameDialog() {
-    if (!note) {
-      setRenamingTitle(false);
-      setRenameDraft("");
-      return;
-    }
-
-    onChangeTitle(renameDraft);
-    setRenamingTitle(false);
-    setRenameDraft("");
-    void onFlush();
   }
 
   function submitPageLinkDialog() {
@@ -652,22 +794,6 @@ const NotesPane = memo(function NotesPane({
   }, []);
 
   useEffect(() => {
-    if (!renamingTitle) {
-      return;
-    }
-
-    window.requestAnimationFrame(() => {
-      const input = renameInputRef.current;
-      if (!input) {
-        return;
-      }
-      input.focus();
-      const caret = input.value.length;
-      input.setSelectionRange(caret, caret);
-    });
-  }, [renamingTitle]);
-
-  useEffect(() => {
     if (!pageLinkDialog) {
       return;
     }
@@ -713,12 +839,6 @@ const NotesPane = memo(function NotesPane({
           setPageLinkDialog(null);
           return;
         }
-        if (renamingTitle) {
-          setRenamingTitle(false);
-          setRenameDraft("");
-          setMoreOpen(false);
-          return;
-        }
         closeMenu();
       }
     }
@@ -727,7 +847,7 @@ const NotesPane = memo(function NotesPane({
     return () => {
       window.removeEventListener("keydown", closeOnEscape, true);
     };
-  }, [closeMenu, findOpen, pageLinkDialog, renamingTitle]);
+  }, [closeMenu, findOpen, pageLinkDialog]);
 
   useEffect(() => {
     function closeOnWindowPointerDown(event: PointerEvent) {
@@ -744,12 +864,7 @@ const NotesPane = memo(function NotesPane({
         setPageLinkDialog(null);
       }
 
-      if (renamingTitle && !isMenuInteractiveTarget(event.target)) {
-        setRenamingTitle(false);
-        setRenameDraft("");
-      }
-
-      if ((navigationOpen || moreOpen) && !isMenuInteractiveTarget(event.target)) {
+      if (navigationOpen && !isMenuInteractiveTarget(event.target)) {
         closeInlineOverlays();
       }
     }
@@ -758,7 +873,7 @@ const NotesPane = memo(function NotesPane({
     return () => {
       window.removeEventListener("pointerdown", closeOnWindowPointerDown, true);
     };
-  }, [closeMenu, contextMenuState, moreOpen, navigationOpen, pageLinkDialog, renamingTitle]);
+  }, [closeMenu, contextMenuState, navigationOpen, pageLinkDialog]);
 
   useEffect(() => {
     const paneElement = paneRef.current;
@@ -903,9 +1018,6 @@ const NotesPane = memo(function NotesPane({
           open={navigationOpen}
           onToggle={() => {
             closeMenu();
-            setMoreOpen(false);
-            setRenamingTitle(false);
-            setRenameDraft("");
             setPageLinkDialog(null);
             setNavigationOpen((current) => !current);
           }}
@@ -917,19 +1029,61 @@ const NotesPane = memo(function NotesPane({
               <p className="notes-popover__empty">Add a heading to build note navigation.</p>
             ) : (
               <div className="notes-navigation">
-                {navigationItems.map((item) => (
-                  <button
-                    key={item.id}
-                    className={`notes-navigation__item notes-navigation__item--level-${item.level}`}
-                    type="button"
-                    onClick={() => {
-                      editorRef.current?.scrollToBlock(item.blockId);
-                      setNavigationOpen(false);
-                    }}
-                  >
-                    {item.title}
-                  </button>
-                ))}
+                {navigationTree.map((node) => {
+                  const isExpanded = expandedNavigationIds.has(node.item.id);
+                  const hasChildren = node.children.length > 0;
+
+                  return (
+                    <div
+                      key={node.item.id}
+                      className={`notes-navigation__chapter${isExpanded ? " notes-navigation__chapter--expanded" : ""}`}
+                    >
+                      <div className="notes-navigation__chapter-header">
+                        <button
+                          className={`notes-navigation__chapter-row${isExpanded ? " notes-navigation__chapter-row--active" : ""}`}
+                          type="button"
+                          onClick={() => {
+                            editorRef.current?.scrollToBlock(node.item.blockId);
+                            setNavigationOpen(false);
+                          }}
+                        >
+                          <span className="notes-navigation__chapter-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                              <path d="M7.2 4.75h6.6L18.25 9v10.05A1.2 1.2 0 0 1 17.05 20H7.2A1.2 1.2 0 0 1 6 18.8V5.95A1.2 1.2 0 0 1 7.2 4.75Z" />
+                              <path d="M13.8 4.95V9h4.05" />
+                              <path d="M9 12.2h6" />
+                              <path d="M9 15.2h4.1" />
+                            </svg>
+                          </span>
+                          <span className="notes-navigation__chapter-title">{node.item.title}</span>
+                        </button>
+                        {hasChildren ? (
+                          <button
+                            className={`notes-navigation__chapter-toggle${isExpanded ? " notes-navigation__chapter-toggle--expanded" : ""}`}
+                            type="button"
+                            aria-label={isExpanded ? "Collapse section" : "Expand section"}
+                            aria-expanded={isExpanded}
+                            onPointerDown={(event) => {
+                              event.stopPropagation();
+                            }}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              toggleNavigationNode(node.item.id);
+                            }}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                              <path d={isExpanded ? "m8 10 4 4 4-4" : "m10 8 4 4-4 4"} />
+                            </svg>
+                          </button>
+                        ) : (
+                          <span className="notes-navigation__chapter-spacer" aria-hidden="true" />
+                        )}
+                      </div>
+                      {hasChildren && isExpanded ? renderNavigationBranch(node.children, 1) : null}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -938,43 +1092,15 @@ const NotesPane = memo(function NotesPane({
 
       <div className="notes-header-tools__item">
         <NotesMoreMenuButton
-          open={moreOpen}
+          open={commandPaletteOpen}
+          buttonRef={registerCommandPaletteAnchor}
           onToggle={() => {
             closeMenu();
             setNavigationOpen(false);
-            setRenamingTitle(false);
-            setRenameDraft("");
             setPageLinkDialog(null);
-            setMoreOpen((current) => !current);
+            onToggleCommandPalette();
           }}
         />
-        {moreOpen ? (
-          <div className="notes-popover notes-popover--menu">
-            <button
-              className="notes-popover__action"
-              type="button"
-              onClick={() => {
-                setNavigationOpen(false);
-                setMoreOpen(false);
-                setPageLinkDialog(null);
-                setRenameDraft(note?.title ?? "");
-                setRenamingTitle(true);
-              }}
-            >
-              Rename note
-            </button>
-            <button
-              className="notes-popover__action"
-              type="button"
-              onClick={() => {
-                void onCopyAllText();
-                setMoreOpen(false);
-              }}
-            >
-              Copy all text
-            </button>
-          </div>
-        ) : null}
       </div>
 
       <div className="notes-header-tools__item notes-header-tools__item--fullscreen">
@@ -1002,7 +1128,7 @@ const NotesPane = memo(function NotesPane({
           return;
         }
 
-        if ((isUndo || isRedo) && !renamingTitle && !pageLinkDialog) {
+        if ((isUndo || isRedo) && !pageLinkDialog) {
           const handled = isUndo ? editorRef.current?.undo() : editorRef.current?.redo();
           if (handled) {
             event.preventDefault();
@@ -1154,77 +1280,15 @@ const NotesPane = memo(function NotesPane({
       </div>
       {headerActionsContainer ? createPortal(notesHeaderTools, headerActionsContainer) : null}
 
-      {renamingTitle ? (
-        <div className="notes-inline-dialog notes-inline-dialog--rename" role="dialog" aria-label="Rename note">
-          <div className="notes-inline-dialog__header">
-            <strong className="notes-inline-dialog__title">Rename Note</strong>
-            <button
-              className="notes-inline-dialog__close"
-              type="button"
-              aria-label="Close rename dialog"
-              onClick={() => {
-                setRenamingTitle(false);
-                setRenameDraft("");
-              }}
-            >
-              x
-            </button>
-          </div>
-          <p className="notes-inline-dialog__help">Enter a new note title.</p>
-          <input
-            ref={renameInputRef}
-            className="notes-inline-dialog__input"
-            type="text"
-            value={renameDraft}
-            spellCheck={false}
-            placeholder="Untitled note"
-            onChange={(event) => {
-              setRenameDraft(event.target.value);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                setRenamingTitle(false);
-                setRenameDraft("");
-                return;
-              }
-
-              if (event.key !== "Enter") {
-                return;
-              }
-
-              event.preventDefault();
-              submitRenameDialog();
-            }}
-          />
-          <div className="notes-inline-dialog__actions">
-            <button
-              className="notes-inline-dialog__button"
-              type="button"
-              onClick={() => {
-                submitRenameDialog();
-              }}
-            >
-              Save
-            </button>
-            <button
-              className="notes-inline-dialog__button notes-inline-dialog__button--ghost"
-              type="button"
-              onClick={() => {
-                setRenamingTitle(false);
-                setRenameDraft("");
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : null}
-
       {pageLinkDialog ? (
-        <div
+        <form
           className="notes-inline-dialog"
           role="dialog"
           aria-label={pageLinkDialog.mode === "insert" ? "Insert PageLink" : "Edit PageLink"}
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitPageLinkDialog();
+          }}
         >
           <div className="notes-inline-dialog__header">
             <strong className="notes-inline-dialog__title">
@@ -1264,16 +1328,9 @@ const NotesPane = memo(function NotesPane({
             }}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
+                event.preventDefault();
                 setPageLinkDialog(null);
-                return;
               }
-
-              if (event.key !== "Enter") {
-                return;
-              }
-
-              event.preventDefault();
-              submitPageLinkDialog();
             }}
           />
           {pageLinkDialog.error ? (
@@ -1282,10 +1339,7 @@ const NotesPane = memo(function NotesPane({
           <div className="notes-inline-dialog__actions">
             <button
               className="notes-inline-dialog__button"
-              type="button"
-              onClick={() => {
-                submitPageLinkDialog();
-              }}
+              type="submit"
             >
               {pageLinkDialog.mode === "insert" ? "Insert" : "Save"}
             </button>
@@ -1299,7 +1353,7 @@ const NotesPane = memo(function NotesPane({
               Cancel
             </button>
           </div>
-        </div>
+        </form>
       ) : null}
 
       {sectionPicker ? (

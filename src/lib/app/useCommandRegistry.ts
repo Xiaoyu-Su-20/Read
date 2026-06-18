@@ -19,6 +19,7 @@ type UseCommandRegistryArgs = {
   libraryRoot: string;
   recentDocuments: DocumentRecord[];
   activeDocument: DocumentPayload | null;
+  noteTitle: string | null;
   readerState: DocumentState | null;
   viewerSnapshot: ViewerSnapshot;
   outlineItems: OutlineItem[];
@@ -41,12 +42,15 @@ type UseCommandRegistryArgs = {
   openLibraryFolder: () => Promise<void>;
   openDocumentById: (documentId: string) => Promise<void>;
   openSearch: () => void;
+  renameNote: (title: string) => void | Promise<void>;
+  copyAllNoteText: () => Promise<void>;
 };
 
 export function useCommandRegistry({
   libraryRoot,
   recentDocuments,
   activeDocument,
+  noteTitle,
   readerState,
   viewerSnapshot,
   outlineItems,
@@ -62,7 +66,9 @@ export function useCommandRegistry({
   rescanLibraryFlow,
   openLibraryFolder,
   openDocumentById,
-  openSearch
+  openSearch,
+  renameNote,
+  copyAllNoteText
 }: UseCommandRegistryArgs) {
   return useMemo(() => {
     const latestAvailableRecentDocument = recentDocuments.find(
@@ -269,6 +275,37 @@ export function useCommandRegistry({
         }
       },
       {
+        id: "rename-note",
+        title: "Rename note",
+        subtitle: noteTitle?.trim().length ? noteTitle : "Rename the current note",
+        glyph: "page",
+        group: "view",
+        keywords: ["note rename title"],
+        onSelect: () => {
+          openPrompt(
+            "Rename note",
+            "Note title",
+            "Rename",
+            async (value) => {
+              await renameNote(value);
+            },
+            noteTitle ?? ""
+          );
+        }
+      },
+      {
+        id: "copy-note-text",
+        title: "Copy all text",
+        subtitle: "Copy the entire current note",
+        glyph: "book",
+        group: "view",
+        keywords: ["copy note text clipboard"],
+        onSelect: async () => {
+          closePalette();
+          await copyAllNoteText();
+        }
+      },
+      {
         id: "import-pdf",
         title: "Import PDF",
         subtitle: "Copy a local PDF into a collection",
@@ -307,7 +344,9 @@ export function useCommandRegistry({
     ] satisfies PaletteItem[];
   }, [
     closePalette,
+    copyAllNoteText,
     libraryRoot,
+    noteTitle,
     openDocumentById,
     openLibraryFolder,
     openPrompt,
@@ -317,6 +356,7 @@ export function useCommandRegistry({
     promptImportFlow,
     readerState,
     recentDocuments,
+    renameNote,
     rescanLibraryFlow,
     setOutlineOpen,
     setStatusMessage,

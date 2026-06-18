@@ -901,6 +901,13 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           }
 
           if (!(event.metaKey || event.ctrlKey)) {
+            if (event.key === "Tab") {
+              event.preventDefault();
+              insertTextAtSelection("\t");
+              syncBlocksFromDom("typing");
+              return;
+            }
+
             if (selectedPageLinkIdRef.current) {
               if (event.key === "ArrowLeft") {
                 event.preventDefault();

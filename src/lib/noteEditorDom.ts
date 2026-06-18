@@ -5,7 +5,8 @@ import {
   formatPageLinkText,
   normalizeDocumentSourceReference,
   normalizeNoteBlocks,
-  normalizeNoteInlineNodes
+  normalizeNoteInlineNodes,
+  parsePageLinkText
 } from "./notes";
 import type {
   DocumentSourceReference,
@@ -153,15 +154,17 @@ function renderTextNodeHtml(node: NoteTextNode) {
 }
 
 function renderPageLinkNodeHtml(node: NotePageLinkNode) {
+  const parsedText = parsePageLinkText(node.text);
+  const visibleLabel = parsedText?.bookPageLabel ?? node.bookPageLabel ?? node.text;
   return `<span class="page-link" data-inline-type="page-link" data-page-link-id="${escapeHtml(
     node.id
   )}" data-document-id="${escapeHtml(node.documentId ?? "")}" data-pdf-page-index="${escapeHtml(
     node.pdfPageIndex == null ? "" : String(node.pdfPageIndex)
   )}" data-book-page-label="${escapeHtml(node.bookPageLabel)}" data-created-at="${escapeHtml(
     node.createdAt
-  )}" contenteditable="false" tabindex="0">${escapeHtml(
-    node.text
-  )}</span>`;
+  )}" contenteditable="false" tabindex="-1"><span class="page-link__paren" aria-hidden="true">(</span><span class="page-link__label">${escapeHtml(
+    visibleLabel
+  )}</span><span class="page-link__paren" aria-hidden="true">)</span></span>`;
 }
 
 function createHeadingReferenceIndicator(ownerDocument: Document, reference: DocumentSourceReference) {
@@ -170,7 +173,7 @@ function createHeadingReferenceIndicator(ownerDocument: Document, reference: Doc
   indicator.type = "button";
   indicator.dataset.headingReferenceIndicator = "true";
   indicator.contentEditable = "false";
-  indicator.tabIndex = 0;
+  indicator.tabIndex = -1;
   indicator.title = reference.title;
   indicator.setAttribute("aria-label", reference.title);
   indicator.innerHTML = bookmarkIconHtml();
@@ -191,7 +194,7 @@ export function renderNoteBlocksHtml(blocks: NoteBlock[]) {
         ? ` data-source-reference="${escapeHtml(encodeDataJson(block.sourceReference))}"`
         : "";
       const indicator = block.sourceReference
-        ? `<button class="heading-source-link" type="button" data-heading-reference-indicator="true" contenteditable="false" tabindex="0" title="${escapeHtml(
+        ? `<button class="heading-source-link" type="button" data-heading-reference-indicator="true" contenteditable="false" tabindex="-1" title="${escapeHtml(
             block.sourceReference.title
           )}" aria-label="${escapeHtml(block.sourceReference.title)}">${bookmarkIconHtml()}</button>`
         : "";
@@ -305,7 +308,7 @@ function configurePageLinkElement(element: HTMLElement) {
   element.classList.add("page-link");
   element.dataset.inlineType = "page-link";
   element.contentEditable = "false";
-  element.tabIndex = 0;
+  element.tabIndex = -1;
 }
 
 function isPageLinkElementNode(node: Node | null): node is HTMLElement {
@@ -891,13 +894,26 @@ export function updateBlockSourceReference(
 
 function createPageLinkElement(node: NotePageLinkNode) {
   const element = document.createElement("span");
-  element.textContent = node.text;
   element.dataset.pageLinkId = node.id;
   element.dataset.documentId = node.documentId ?? "";
   element.dataset.pdfPageIndex = node.pdfPageIndex == null ? "" : String(node.pdfPageIndex);
   element.dataset.bookPageLabel = node.bookPageLabel;
   element.dataset.createdAt = node.createdAt;
   configurePageLinkElement(element);
+  const parsedText = parsePageLinkText(node.text);
+  const visibleLabel = parsedText?.bookPageLabel ?? node.bookPageLabel ?? node.text;
+  const leadingParen = document.createElement("span");
+  leadingParen.className = "page-link__paren";
+  leadingParen.setAttribute("aria-hidden", "true");
+  leadingParen.textContent = "(";
+  const label = document.createElement("span");
+  label.className = "page-link__label";
+  label.textContent = visibleLabel;
+  const trailingParen = document.createElement("span");
+  trailingParen.className = "page-link__paren";
+  trailingParen.setAttribute("aria-hidden", "true");
+  trailingParen.textContent = ")";
+  element.append(leadingParen, label, trailingParen);
   return element;
 }
 

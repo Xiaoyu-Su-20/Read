@@ -48,7 +48,7 @@ describe("CommandPalette", () => {
       })
     );
 
-    expect(markup).toContain('class="overlay-shell overlay-shell--palette"');
+    expect(markup).toContain('class="palette palette--workspace"');
     expect(markup).toContain('class="palette__search"');
     expect(markup).toContain('class="palette__search-icon"');
     expect(markup).toContain('class="palette__search-meta"');
@@ -61,7 +61,8 @@ describe("CommandPalette", () => {
     expect(markup).toContain("Add mark");
     expect(markup).toContain("Import PDF");
     expect(markup).toContain(">G<");
-    expect(markup).toContain(">Tab<");
+    expect(markup).toContain(">Ctrl<");
+    expect(markup).toContain(">P<");
     expect(markup).not.toContain("Copy a local PDF into a collection");
     expect(markup).not.toContain("<small");
   });

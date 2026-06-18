@@ -52,7 +52,12 @@ describe("themeProfile resolver", () => {
     expect(resolvedTheme.selectionBackground).toContain("rgba(");
     expect(resolvedTheme.pageLinkBackground).toContain("rgba(");
     expect(resolvedTheme.pageLinkBorder).toContain("rgba(");
-    expect(resolvedTheme.pageLinkText).toMatch(/^#/);
+    expect(resolvedTheme.pageLinkText).toContain("rgba(");
+    expect(resolvedTheme.cssVariables["--reader-status-surface"]).toContain("rgba(");
+    expect(resolvedTheme.cssVariables["--rapid-turn-progress-start"]).toMatch(/^#/);
+    expect(resolvedTheme.cssVariables["--search-placeholder-text"]).toContain("rgba(");
+    expect(resolvedTheme.cssVariables["--collection-row-active"]).toContain("rgba(");
+    expect(resolvedTheme.cssVariables["--collection-add-surface-start"]).toContain("rgba(");
     expect(resolvedTheme.viewerDisplayConfig.imageFilter).toContain("invert(1)");
     expect(resolvedTheme.viewerDisplayConfig.blendMode).toBe("screen");
   });

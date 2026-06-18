@@ -44,9 +44,9 @@ type DisplaySettingsPopoverProps = {
   onToggleReaderPreference: (key: keyof ReaderPreferences) => void;
 };
 
-const sectionDefinitions: Array<{ key: DisplaySettingsSection; label: string; iconLabel: string }> = [
-  { key: "general", label: "General", iconLabel: "G" },
-  { key: "themes", label: "Themes", iconLabel: "T" }
+const sectionDefinitions: Array<{ key: DisplaySettingsSection; label: string }> = [
+  { key: "general", label: "General" },
+  { key: "themes", label: "Themes" }
 ];
 
 const readerPreferenceDefinitions: Array<{
@@ -136,6 +136,23 @@ export default function DisplaySettingsPopover({
     activeTheme.kind === "custom" ? createThemeDraft(activeTheme) : null
   );
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const scrollbarRef = useRef<HTMLDivElement | null>(null);
+  const scrollbarMetricsRef = useRef({
+    thumbHeight: 0,
+    maxScroll: 0,
+    maxThumbTop: 0
+  });
+  const scrollbarDragRef = useRef<{
+    pointerId: number;
+    startClientY: number;
+    startScrollTop: number;
+  } | null>(null);
+  const [scrollbarState, setScrollbarState] = useState({
+    thumbHeight: 0,
+    thumbTop: 0,
+    visible: false
+  });
 
   useEffect(() => {
     if (activeTheme.kind === "custom") {
@@ -179,6 +196,128 @@ export default function DisplaySettingsPopover({
     nameInputRef.current?.select();
   }
 
+  function updatePanelScrollbar() {
+    const panelElement = panelRef.current;
+    const scrollbarElement = scrollbarRef.current;
+    if (!panelElement || !scrollbarElement) {
+      return;
+    }
+
+    const trackHeight = Math.max(scrollbarElement.clientHeight, 0);
+    const maxScroll = Math.max(panelElement.scrollHeight - panelElement.clientHeight, 0);
+
+    if (trackHeight <= 0 || maxScroll <= 0) {
+      scrollbarMetricsRef.current = {
+        thumbHeight: 0,
+        maxScroll: 0,
+        maxThumbTop: 0
+      };
+      setScrollbarState({
+        thumbHeight: 0,
+        thumbTop: 0,
+        visible: false
+      });
+      return;
+    }
+
+    const thumbHeight = Math.max(36, trackHeight * (panelElement.clientHeight / panelElement.scrollHeight));
+    const maxThumbTop = Math.max(trackHeight - thumbHeight, 0);
+    const thumbTop = maxScroll === 0 ? 0 : (panelElement.scrollTop / maxScroll) * maxThumbTop;
+
+    scrollbarMetricsRef.current = {
+      thumbHeight,
+      maxScroll,
+      maxThumbTop
+    };
+    setScrollbarState({
+      thumbHeight,
+      thumbTop,
+      visible: true
+    });
+  }
+
+  function scrollPanelToThumbTop(nextThumbTop: number) {
+    const panelElement = panelRef.current;
+    const { maxScroll, maxThumbTop } = scrollbarMetricsRef.current;
+    if (!panelElement || maxScroll <= 0 || maxThumbTop <= 0) {
+      return;
+    }
+
+    const clampedThumbTop = Math.max(0, Math.min(nextThumbTop, maxThumbTop));
+    panelElement.scrollTop = (clampedThumbTop / maxThumbTop) * maxScroll;
+  }
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      updatePanelScrollbar();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [selectedSection, activeThemeId, themeDraft, readerPreferences, readerPreferenceStates, themeList]);
+
+  useEffect(() => {
+    const panelElement = panelRef.current;
+    if (!panelElement) {
+      return;
+    }
+
+    const handleResize = () => {
+      updatePanelScrollbar();
+    };
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => {
+            updatePanelScrollbar();
+          });
+
+    resizeObserver?.observe(panelElement);
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    function handlePointerMove(event: PointerEvent) {
+      const activeDrag = scrollbarDragRef.current;
+      const panelElement = panelRef.current;
+      const { maxScroll, maxThumbTop } = scrollbarMetricsRef.current;
+      if (!activeDrag || !panelElement || maxScroll <= 0 || maxThumbTop <= 0) {
+        return;
+      }
+
+      event.preventDefault();
+      const deltaY = event.clientY - activeDrag.startClientY;
+      const scrollDelta = (deltaY / maxThumbTop) * maxScroll;
+      panelElement.scrollTop = activeDrag.startScrollTop + scrollDelta;
+      updatePanelScrollbar();
+    }
+
+    function handlePointerUp(event: PointerEvent) {
+      if (scrollbarDragRef.current?.pointerId !== event.pointerId) {
+        return;
+      }
+
+      scrollbarDragRef.current = null;
+    }
+
+    window.addEventListener("pointermove", handlePointerMove, { passive: false });
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+  }, []);
+
   return (
     <div
       id={id}
@@ -206,7 +345,6 @@ export default function DisplaySettingsPopover({
               aria-selected={selectedSection === sectionDefinition.key}
               onClick={() => setSelectedSection(sectionDefinition.key)}
             >
-              <span aria-hidden="true">{sectionDefinition.iconLabel}</span>
               <span>{sectionDefinition.label}</span>
             </button>
           ))}
@@ -214,94 +352,152 @@ export default function DisplaySettingsPopover({
 
         <div className="display-settings-popover__content">
           {selectedSection === "general" ? (
-            <div className="display-settings-popover__panel">
-              <div className="display-settings-popover__section">
-                <p className="display-settings-popover__label">Reader Preferences</p>
-                <div className="display-settings-popover__toggles">
-                  {readerPreferenceDefinitions.map((definition) => {
-                    const checked =
-                      readerPreferenceStates?.[definition.key]?.checked ??
-                      readerPreferences[definition.key];
-                    const disabled =
-                      readerPreferenceStates?.[definition.key]?.disabled ?? false;
+            <div className="display-settings-popover__panel-shell">
+              <div
+                ref={panelRef}
+                className="display-settings-popover__panel"
+                onScroll={() => {
+                  updatePanelScrollbar();
+                }}
+              >
+                <div className="display-settings-popover__section">
+                  <p className="display-settings-popover__label">Reader Preferences</p>
+                  <div className="display-settings-popover__toggles">
+                    {readerPreferenceDefinitions.map((definition) => {
+                      const checked =
+                        readerPreferenceStates?.[definition.key]?.checked ??
+                        readerPreferences[definition.key];
+                      const disabled =
+                        readerPreferenceStates?.[definition.key]?.disabled ?? false;
 
-                    return (
-                      <div key={definition.key} className="display-settings-popover__toggle-row">
-                        <span className="display-settings-popover__toggle-label">
-                          {definition.label}
-                        </span>
-                        <button
-                          className={`display-settings-popover__switch${
-                            checked ? " display-settings-popover__switch--checked" : ""
-                          }`}
-                          type="button"
-                          role="switch"
-                          aria-checked={checked}
-                          aria-label={definition.label}
-                          disabled={disabled}
-                          onClick={() => onToggleReaderPreference(definition.key)}
-                        >
-                          <span className="display-settings-popover__switch-handle" />
-                        </button>
-                      </div>
-                    );
-                  })}
+                      return (
+                        <div key={definition.key} className="display-settings-popover__toggle-row">
+                          <span className="display-settings-popover__toggle-label">
+                            {definition.label}
+                          </span>
+                          <button
+                            className={`display-settings-popover__switch${
+                              checked ? " display-settings-popover__switch--checked" : ""
+                            }`}
+                            type="button"
+                            role="switch"
+                            aria-checked={checked}
+                            aria-label={definition.label}
+                            disabled={disabled}
+                            onClick={() => onToggleReaderPreference(definition.key)}
+                          >
+                            <span className="display-settings-popover__switch-handle" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
+              </div>
+              <div
+                ref={scrollbarRef}
+                className={
+                  scrollbarState.visible
+                    ? "display-settings-popover__scrollbar display-settings-popover__scrollbar--visible"
+                    : "display-settings-popover__scrollbar"
+                }
+                aria-hidden="true"
+                onPointerDown={(event) => {
+                  const scrollbarElement = scrollbarRef.current;
+                  if (!scrollbarElement || event.target !== event.currentTarget) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  const trackRect = scrollbarElement.getBoundingClientRect();
+                  scrollPanelToThumbTop(event.clientY - trackRect.top - scrollbarState.thumbHeight / 2);
+                  updatePanelScrollbar();
+                }}
+              >
+                <div
+                  className="display-settings-popover__scrollbar-thumb"
+                  style={{
+                    height: `${scrollbarState.thumbHeight}px`,
+                    transform: `translateY(${scrollbarState.thumbTop}px)`
+                  }}
+                  onPointerDown={(event) => {
+                    const panelElement = panelRef.current;
+                    if (!panelElement) {
+                      return;
+                    }
+
+                    event.preventDefault();
+                    event.stopPropagation();
+                    scrollbarDragRef.current = {
+                      pointerId: event.pointerId,
+                      startClientY: event.clientY,
+                      startScrollTop: panelElement.scrollTop
+                    };
+                    updatePanelScrollbar();
+                  }}
+                />
               </div>
             </div>
           ) : (
-            <div className="display-settings-popover__panel">
-              <div className="display-settings-popover__section">
-                <p className="display-settings-popover__label">Active Theme</p>
-                <select
-                  className="display-settings-popover__select"
-                  aria-label="Active theme"
-                  value={activeThemeId}
-                  onChange={(event) => {
-                    onPreviewTheme(null);
-                    onSelectTheme(event.target.value);
-                  }}
-                >
-                  {themeList.map((themeDefinition) => (
-                    <option key={themeDefinition.id} value={themeDefinition.id}>
-                      {themeDefinition.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <div className="display-settings-popover__panel-shell">
+              <div
+                ref={panelRef}
+                className="display-settings-popover__panel"
+                onScroll={() => {
+                  updatePanelScrollbar();
+                }}
+              >
+                <div className="display-settings-popover__section display-settings-popover__section--theme-header">
+                  <p className="display-settings-popover__label">Active Theme</p>
+                  <select
+                    className="display-settings-popover__select"
+                    aria-label="Active theme"
+                    value={activeThemeId}
+                    onChange={(event) => {
+                      onPreviewTheme(null);
+                      onSelectTheme(event.target.value);
+                    }}
+                  >
+                    {themeList.map((themeDefinition) => (
+                      <option key={themeDefinition.id} value={themeDefinition.id}>
+                        {themeDefinition.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              <div className="display-settings-popover__actions-row">
-                <button className="display-settings-popover__button" type="button" onClick={onCreateTheme}>
-                  + New
-                </button>
-                <button
-                  className="display-settings-popover__button"
-                  type="button"
-                  onClick={() => onDuplicateTheme(activeTheme.id)}
-                >
-                  Duplicate
-                </button>
-                <button
-                  className="display-settings-popover__button"
-                  type="button"
-                  disabled={activeTheme.kind !== "custom"}
-                  onClick={handleRenameFocus}
-                >
-                  Rename
-                </button>
-                <button
-                  className="display-settings-popover__button display-settings-popover__button--icon"
-                  type="button"
-                  aria-label="Delete theme"
-                  disabled={activeTheme.kind !== "custom"}
-                  onClick={() => {
-                    onPreviewTheme(null);
-                    onDeleteTheme(activeTheme.id);
-                  }}
-                >
-                  Del
-                </button>
-              </div>
+                <div className="display-settings-popover__actions-row display-settings-popover__actions-row--compact">
+                  <button className="display-settings-popover__button" type="button" onClick={onCreateTheme}>
+                    + New
+                  </button>
+                  <button
+                    className="display-settings-popover__button"
+                    type="button"
+                    onClick={() => onDuplicateTheme(activeTheme.id)}
+                  >
+                    Duplicate
+                  </button>
+                  <button
+                    className="display-settings-popover__button"
+                    type="button"
+                    disabled={activeTheme.kind !== "custom"}
+                    onClick={handleRenameFocus}
+                  >
+                    Rename
+                  </button>
+                  <button
+                    className="display-settings-popover__button display-settings-popover__button--icon"
+                    type="button"
+                    aria-label="Delete theme"
+                    disabled={activeTheme.kind !== "custom"}
+                    onClick={() => {
+                      onPreviewTheme(null);
+                      onDeleteTheme(activeTheme.id);
+                    }}
+                  >
+                    Del
+                  </button>
+                </div>
 
               <div className="display-settings-popover__section">
                 <p className="display-settings-popover__label">Theme Presets</p>
@@ -338,86 +534,95 @@ export default function DisplaySettingsPopover({
                     }}
                   />
                 </div>
-              ) : null}
+                ) : null}
 
-              <div className="display-settings-popover__section">
-                <p className="display-settings-popover__label">Theme Colors</p>
-                {themeSourceEditorSections.map((section) => (
-                  <div key={section.key} className="display-settings-popover__color-section">
-                    <p className="display-settings-popover__subsection-title">{section.label}</p>
-                    <div className="display-settings-popover__color-grid">
-                      {section.definitions.map((definition) => {
-                        const colorValue =
-                          activeTheme.kind === "custom" && themeDraft
-                            ? themeDraft.source[definition.key]
-                            : activeTheme.source[definition.key];
+                <div className="display-settings-popover__section">
+                  <p className="display-settings-popover__label">Theme Colors</p>
+                  {themeSourceEditorSections.map((section) => (
+                    <div key={section.key} className="display-settings-popover__theme-table">
+                      <div className="display-settings-popover__theme-table-header">
+                        <span className="display-settings-popover__theme-table-title">
+                          {section.label}
+                        </span>
+                        <span className="display-settings-popover__theme-table-value">Color</span>
+                      </div>
+                      <div className="display-settings-popover__theme-table-body">
+                        {section.definitions.map((definition) => {
+                          const colorValue =
+                            activeTheme.kind === "custom" && themeDraft
+                              ? themeDraft.source[definition.key]
+                              : activeTheme.source[definition.key];
 
-                        return (
-                          <label key={definition.key} className="display-settings-popover__color-row">
-                            <span className="display-settings-popover__color-label">
-                              {definition.label}
+                          return (
+                            <label
+                              key={definition.key}
+                              className="display-settings-popover__theme-table-row"
+                            >
+                              <span className="display-settings-popover__theme-table-label">
+                                {definition.label}
+                              </span>
+                              <input
+                                className="display-settings-popover__color-input"
+                                type="color"
+                                aria-label={`${definition.label} color`}
+                                disabled={activeTheme.kind !== "custom"}
+                                value={colorValue}
+                                onChange={(event) => {
+                                  setThemeDraft((currentDraft: ThemeDraft | null) =>
+                                    currentDraft
+                                      ? updateThemeDraftColor(
+                                          currentDraft,
+                                          definition.key,
+                                          event.target.value
+                                        )
+                                      : currentDraft
+                                  );
+                                }}
+                              />
+                            </label>
+                          );
+                        })}
+                        {section.key === "document" ? (
+                          <div className="display-settings-popover__theme-table-row">
+                            <span className="display-settings-popover__theme-table-label">
+                              Dark document rendering
                             </span>
-                            <input
-                              className="display-settings-popover__color-input"
-                              type="color"
-                              aria-label={`${definition.label} color`}
+                            <button
+                              className={`display-settings-popover__switch${
+                                (themeDraft?.document.surfaceTone ??
+                                  activeTheme.document.surfaceTone) === "dark"
+                                  ? " display-settings-popover__switch--checked"
+                                  : ""
+                              }`}
+                              type="button"
+                              role="switch"
+                              aria-checked={
+                                (themeDraft?.document.surfaceTone ??
+                                  activeTheme.document.surfaceTone) === "dark"
+                              }
+                              aria-label="Dark document rendering"
                               disabled={activeTheme.kind !== "custom"}
-                              value={colorValue}
-                              onChange={(event) => {
+                              onClick={() => {
                                 setThemeDraft((currentDraft: ThemeDraft | null) =>
                                   currentDraft
-                                    ? updateThemeDraftColor(
-                                        currentDraft,
-                                        definition.key,
-                                        event.target.value
-                                      )
+                                    ? updateThemeDraftDocument(currentDraft, {
+                                        surfaceTone:
+                                          currentDraft.document.surfaceTone === "dark"
+                                            ? "light"
+                                            : "dark"
+                                      })
                                     : currentDraft
                                 );
                               }}
-                            />
-                          </label>
-                        );
-                      })}
+                            >
+                              <span className="display-settings-popover__switch-handle" />
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
-                  </div>
-                ))}
-
-                <div className="display-settings-popover__toggle-row display-settings-popover__toggle-row--compact">
-                  <span className="display-settings-popover__toggle-label">
-                    Dark document rendering
-                  </span>
-                  <button
-                    className={`display-settings-popover__switch${
-                      (themeDraft?.document.surfaceTone ?? activeTheme.document.surfaceTone) ===
-                      "dark"
-                        ? " display-settings-popover__switch--checked"
-                        : ""
-                    }`}
-                    type="button"
-                    role="switch"
-                    aria-checked={
-                      (themeDraft?.document.surfaceTone ?? activeTheme.document.surfaceTone) ===
-                      "dark"
-                    }
-                    aria-label="Dark document rendering"
-                    disabled={activeTheme.kind !== "custom"}
-                    onClick={() => {
-                      setThemeDraft((currentDraft: ThemeDraft | null) =>
-                        currentDraft
-                          ? updateThemeDraftDocument(currentDraft, {
-                              surfaceTone:
-                                currentDraft.document.surfaceTone === "dark"
-                                  ? "light"
-                                  : "dark"
-                            })
-                          : currentDraft
-                      );
-                    }}
-                  >
-                    <span className="display-settings-popover__switch-handle" />
-                  </button>
+                  ))}
                 </div>
-              </div>
 
               <div className="display-settings-popover__section">
                 <p className="display-settings-popover__label">Derived Preview</p>
@@ -458,11 +663,55 @@ export default function DisplaySettingsPopover({
                     Save
                   </button>
                 </div>
-              ) : (
-                <p className="display-settings-popover__scope-note">
-                  Built-in themes are read-only. Duplicate one to customize it.
-                </p>
-              )}
+                ) : (
+                  <p className="display-settings-popover__scope-note">
+                    Built-in themes are read-only. Duplicate one to customize it.
+                  </p>
+                )}
+              </div>
+              <div
+                ref={scrollbarRef}
+                className={
+                  scrollbarState.visible
+                    ? "display-settings-popover__scrollbar display-settings-popover__scrollbar--visible"
+                    : "display-settings-popover__scrollbar"
+                }
+                aria-hidden="true"
+                onPointerDown={(event) => {
+                  const scrollbarElement = scrollbarRef.current;
+                  if (!scrollbarElement || event.target !== event.currentTarget) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  const trackRect = scrollbarElement.getBoundingClientRect();
+                  scrollPanelToThumbTop(event.clientY - trackRect.top - scrollbarState.thumbHeight / 2);
+                  updatePanelScrollbar();
+                }}
+              >
+                <div
+                  className="display-settings-popover__scrollbar-thumb"
+                  style={{
+                    height: `${scrollbarState.thumbHeight}px`,
+                    transform: `translateY(${scrollbarState.thumbTop}px)`
+                  }}
+                  onPointerDown={(event) => {
+                    const panelElement = panelRef.current;
+                    if (!panelElement) {
+                      return;
+                    }
+
+                    event.preventDefault();
+                    event.stopPropagation();
+                    scrollbarDragRef.current = {
+                      pointerId: event.pointerId,
+                      startClientY: event.clientY,
+                      startScrollTop: panelElement.scrollTop
+                    };
+                    updatePanelScrollbar();
+                  }}
+                />
+              </div>
             </div>
           )}
         </div>

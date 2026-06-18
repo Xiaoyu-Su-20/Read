@@ -38,8 +38,8 @@ describe("zoom helpers", () => {
   });
 
   it("resolves auto maximize zoom from viewport height and width margins", () => {
-    expect(resolveAutoMaximizeZoom(900, 1200, 800, 1200)).toBe(0.98);
-    expect(resolveAutoMaximizeZoom(680, 1200, 800, 1200)).toBe(0.78);
+    expect(resolveAutoMaximizeZoom(900, 1200, 800, 1200)).toBe(1);
+    expect(resolveAutoMaximizeZoom(680, 1200, 800, 1200)).toBe(0.82);
   });
 
   it("resolves surface scale from display and render zoom", () => {

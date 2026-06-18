@@ -10,7 +10,7 @@ const PALETTE_GROUP_ORDER: PaletteGroup[] = [
   "library",
   "view"
 ];
-const PALETTE_OPEN_SHORTCUT = "Tab";
+const PALETTE_OPEN_SHORTCUT = "Ctrl P";
 
 function SearchGlyph() {
   return (
@@ -179,15 +179,18 @@ type CommandPaletteProps = {
   open: boolean;
   onClose: () => void;
   onChangeQuery: (query: string) => void;
+  anchorElement?: HTMLElement | null;
 };
 
 export default function CommandPalette({
   session,
   open,
   onClose,
-  onChangeQuery
+  onChangeQuery,
+  anchorElement
 }: CommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const paletteRef = useRef<HTMLDivElement | null>(null);
   const resultsRef = useRef<HTMLUListElement | null>(null);
   const scrollbarRef = useRef<HTMLDivElement | null>(null);
   const scrollTimerRef = useRef<number | null>(null);
@@ -203,11 +206,95 @@ export default function CommandPalette({
   } | null>(null);
   const deferredQuery = useDeferredValue(session?.query ?? "");
   const [activeIndex, setActiveIndex] = useState(0);
+  const [popoverStyle, setPopoverStyle] = useState<{
+    left: number;
+    top: number;
+  }>({
+    left: 0,
+    top: 0
+  });
   const [scrollbarState, setScrollbarState] = useState({
     thumbHeight: 0,
     thumbTop: 0,
     visible: false
   });
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    function updatePopoverPosition() {
+      const fallbackRight = 18;
+      const fallbackTop = 14;
+      const maxViewportWidth = window.innerWidth;
+      const minLeft = 8;
+      const nextWidth = Math.min(356, maxViewportWidth - 16);
+      if (!anchorElement) {
+        setPopoverStyle({
+          left: Math.max(minLeft, maxViewportWidth - nextWidth - fallbackRight),
+          top: fallbackTop
+        });
+        return;
+      }
+
+      const rect = anchorElement.getBoundingClientRect();
+      const nextLeft = Math.max(
+        minLeft,
+        Math.min(rect.right - nextWidth, maxViewportWidth - nextWidth - 8)
+      );
+      const nextTop = Math.max(8, rect.bottom + 8);
+      setPopoverStyle({
+        left: nextLeft,
+        top: nextTop
+      });
+    }
+
+    updatePopoverPosition();
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" || !anchorElement
+        ? null
+        : new ResizeObserver(() => {
+            updatePopoverPosition();
+          });
+
+    if (resizeObserver && anchorElement) {
+      resizeObserver.observe(anchorElement);
+    }
+    window.addEventListener("resize", updatePopoverPosition);
+    window.addEventListener("scroll", updatePopoverPosition, true);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updatePopoverPosition);
+      window.removeEventListener("scroll", updatePopoverPosition, true);
+    };
+  }, [anchorElement, open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (paletteRef.current?.contains(target) || anchorElement?.contains(target)) {
+        return;
+      }
+
+      onClose();
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+    };
+  }, [anchorElement, onClose, open]);
 
   useEffect(() => {
     if (!open) {
@@ -411,13 +498,12 @@ export default function CommandPalette({
   };
 
   return (
-    <div className="overlay-shell overlay-shell--palette" role="presentation" onClick={onClose}>
       <div
-        className="palette"
+        ref={paletteRef}
+        className="palette palette--workspace"
         role="dialog"
-        aria-modal="true"
         aria-label={session.title}
-        onClick={(event) => event.stopPropagation()}
+        style={popoverStyle}
       >
         <div className="palette__search">
           <span className="palette__search-icon" aria-hidden="true">
@@ -584,6 +670,5 @@ export default function CommandPalette({
           </div>
         )}
       </div>
-    </div>
   );
 }

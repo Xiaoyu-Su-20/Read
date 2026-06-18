@@ -4,8 +4,8 @@ const MIN_ZOOM = 0.7;
 const MAX_ZOOM = 2.5;
 const WHEEL_ZOOM_FACTOR = 1.02;
 const KEYBOARD_ZOOM_FACTOR = 1.03;
-const AUTO_MAXIMIZE_VERTICAL_MARGIN_PX = 12;
-export const AUTO_MAXIMIZE_HORIZONTAL_MARGIN_PX = 28;
+const AUTO_MAXIMIZE_VERTICAL_MARGIN_PX = 0;
+export const AUTO_MAXIMIZE_HORIZONTAL_MARGIN_PX = 12;
 const AUTO_MAXIMIZE_ZOOM_EPSILON = 0.01;
 
 export type ResolvedReaderFitMode = Exclude<ReaderFitMode, "width">;

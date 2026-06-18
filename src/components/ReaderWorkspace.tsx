@@ -62,6 +62,9 @@ type ReaderWorkspaceProps = {
   windowControls: ReactNode;
   searchController: UnifiedSearchController;
   searchFocusRequest: number;
+  commandPaletteOpen: boolean;
+  onToggleCommandPalette: () => void;
+  registerCommandPaletteAnchor: (node: HTMLButtonElement | null) => void;
   onSearchOpenDocument: (documentId: string) => Promise<void>;
   onSearchGoToPage: (pageNumber: number) => void;
   onSearchRevealNoteBlock: (blockId: string) => void;
@@ -109,6 +112,9 @@ export default function ReaderWorkspace({
   windowControls,
   searchController,
   searchFocusRequest,
+  commandPaletteOpen,
+  onToggleCommandPalette,
+  registerCommandPaletteAnchor,
   onSearchOpenDocument,
   onSearchGoToPage,
   onSearchRevealNoteBlock,
@@ -375,6 +381,9 @@ export default function ReaderWorkspace({
             currentPage={currentReaderPage}
             revealRequest={noteRevealRequest}
             headerActionsContainerId="reader-workspace-notes-header-tools"
+            commandPaletteOpen={commandPaletteOpen}
+            onToggleCommandPalette={onToggleCommandPalette}
+            registerCommandPaletteAnchor={registerCommandPaletteAnchor}
           />
         </div>
       </div>

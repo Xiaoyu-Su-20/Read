@@ -396,6 +396,11 @@ describe("settingsRegistry", () => {
     expect(variables["--theme-interactive"]).toBe("#4466cc");
     expect(variables["--context-menu-surface"]).toMatch(/^#/);
     expect(variables["--page-link-background"]).toContain("rgba(");
+    expect(variables["--reader-status-surface"]).toContain("rgba(");
+    expect(variables["--rapid-turn-surface"]).toContain("rgba(");
+    expect(variables["--search-action-text"]).toContain("rgba(");
+    expect(variables["--collection-row-hover"]).toContain("rgba(");
+    expect(variables["--collection-tooltip-surface"]).toMatch(/^#/);
   });
 
   it("creates, duplicates, saves, and deletes custom themes while protecting built-ins", () => {

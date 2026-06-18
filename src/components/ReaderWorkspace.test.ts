@@ -147,6 +147,9 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
     windowControls: null,
     searchController: createUnifiedSearchController(),
     searchFocusRequest: 0,
+    commandPaletteOpen: false,
+    onToggleCommandPalette: vi.fn(),
+    registerCommandPaletteAnchor: vi.fn(),
     onSearchOpenDocument: vi.fn(async () => undefined),
     onSearchGoToPage: vi.fn(),
     onSearchRevealNoteBlock: vi.fn(),
@@ -214,7 +217,16 @@ describe("ReaderWorkspace document header", () => {
       viewerApi: null
     });
     const elements = collectElements(tree);
-    const controlButtons = elements.filter((element) => typeof element.props["aria-label"] === "string");
+    const controlButtons = elements.filter((element) =>
+      [
+        "Previous page",
+        "Next page",
+        "Zoom out",
+        "Zoom in",
+        "Switch to auto maximize",
+        "Switch to free zoom"
+      ].includes(String(element.props["aria-label"]))
+    );
     const pageValue = elements.find(
       (element) =>
         element.props.className === "reader-workspace__header-value" &&

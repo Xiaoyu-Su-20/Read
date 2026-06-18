@@ -17,6 +17,9 @@ type NotesViewportProps = {
   fullscreen: boolean;
   onToggleFullscreen: () => void | Promise<void>;
   headerActionsContainerId: string | null;
+  commandPaletteOpen: boolean;
+  onToggleCommandPalette: () => void;
+  registerCommandPaletteAnchor: (node: HTMLButtonElement | null) => void;
   navigationItems: NoteNavigationItem[];
   onChangeTitle: (title: string) => void;
   onChangeBlocks: (blocks: NoteDocument["blocks"]) => void;
@@ -38,6 +41,9 @@ const NotesViewport = memo(function NotesViewport({
   fullscreen,
   onToggleFullscreen,
   headerActionsContainerId,
+  commandPaletteOpen,
+  onToggleCommandPalette,
+  registerCommandPaletteAnchor,
   navigationItems,
   onChangeTitle,
   onChangeBlocks,
@@ -63,6 +69,9 @@ const NotesViewport = memo(function NotesViewport({
         fullscreen={fullscreen}
         onToggleFullscreen={onToggleFullscreen}
         headerActionsContainerId={headerActionsContainerId}
+        commandPaletteOpen={commandPaletteOpen}
+        onToggleCommandPalette={onToggleCommandPalette}
+        registerCommandPaletteAnchor={registerCommandPaletteAnchor}
         navigationItems={navigationItems}
         onChangeTitle={onChangeTitle}
         onChangeBlocks={onChangeBlocks}

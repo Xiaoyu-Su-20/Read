@@ -751,20 +751,69 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
   const selectionText = ensureReadableTextColor(source.uiText, source.interactive, 4);
   const pageLinkBackground = withAlpha(source.interactive, 0.13);
   const pageLinkBorder = withAlpha(source.interactive, 0.2);
-  const pageLinkText = ensureReadableTextColor(
-    mixColors(source.uiText, source.interactive, 0.18),
-    source.interactive,
-    3.2
-  );
+  const pageLinkText = withAlpha(source.uiText, 0.86);
   const pageLinkHoverBackground = withAlpha(source.interactive, 0.2);
   const pageLinkHoverBorder = withAlpha(source.interactive, 0.24);
   const pageLinkSelectedBackground = withAlpha(source.interactive, 0.28);
   const pageLinkSelectedBorder = withAlpha(source.interactive, 0.38);
-  const pageLinkSelectedText = ensureReadableTextColor(
-    mixColors(source.uiText, source.interactive, 0.3),
-    source.interactive,
-    3.2
-  );
+  const pageLinkSelectedText = withAlpha(source.uiText, 0.94);
+  const readerStatusSurface = withAlpha(mixColors(source.chrome, darken(source.chrome, 0.18), 0.42), 0.88);
+  const readerStatusBorder = withAlpha(lighten(source.uiText, 0.08), 0.12);
+  const readerStatusText = withAlpha(source.uiText, 0.74);
+  const readerStatusErrorBase = mixColors(source.danger, source.chrome, 0.42);
+  const readerStatusErrorSurface = withAlpha(readerStatusErrorBase, 0.9);
+  const readerStatusErrorBorder = withAlpha(lighten(source.danger, 0.2), 0.22);
+  const readerStatusErrorText = ensureReadableTextColor(lighten(source.danger, 0.36), readerStatusErrorBase, 4);
+  const readerStatusDebugBase = mixColors(source.interactive, source.chrome, 0.34);
+  const readerStatusDebugSurface = withAlpha(readerStatusDebugBase, 0.92);
+  const readerStatusDebugBorder = withAlpha(lighten(source.interactive, 0.16), 0.2);
+  const readerStatusDebugText = ensureReadableTextColor(lighten(source.uiText, 0.08), readerStatusDebugBase, 4.2);
+  const rapidTurnSurfaceBase = darken(source.chrome, themeDefinition.document.surfaceTone === "light" ? 0.18 : 0.1);
+  const rapidTurnSurface = withAlpha(rapidTurnSurfaceBase, 0.9);
+  const rapidTurnBorder = withAlpha(lighten(source.uiText, 0.1), 0.14);
+  const rapidTurnText = ensureReadableTextColor(lighten(source.uiText, 0.18), rapidTurnSurfaceBase, 4.5);
+  const rapidTurnTrack = withAlpha(rapidTurnText, 0.14);
+  const rapidTurnProgressStart = lighten(source.accent, 0.04);
+  const rapidTurnProgressEnd = mixColors(lighten(source.accent, 0.08), lighten(source.interactive, 0.12), 0.44);
+  const rapidTurnMetaText = withAlpha(rapidTurnText, 0.78);
+  const rapidTurnShadow = `0 18px 44px ${withAlpha(darken(source.chrome, 0.32), 0.26)}`;
+  const searchPlaceholderText = withAlpha(lighten(source.uiText, 0.02), 0.58);
+  const searchActionText = withAlpha(lighten(source.interactive, 0.1), 0.96);
+  const searchActionMuted = withAlpha(lighten(source.uiText, 0.06), 0.72);
+  const searchEmptyText = withAlpha(lighten(source.uiText, 0.04), 0.6);
+  const collectionPanelSurface = withAlpha(lighten(source.chrome, 0.02), 0.34);
+  const collectionCardSurface = withAlpha(lighten(source.chrome, 0.03), 0.24);
+  const collectionCardBorder = withAlpha(lighten(source.uiText, 0.08), 0.08);
+  const collectionAddBorder = withAlpha(lighten(source.interactive, 0.12), 0.18);
+  const collectionAddBorderHover = withAlpha(lighten(source.interactive, 0.16), 0.26);
+  const collectionAddSurfaceStart = withAlpha(mixColors(source.interactive, source.chrome, 0.26), 0.34);
+  const collectionAddSurfaceEnd = withAlpha(mixColors(darken(source.chrome, 0.04), source.interactive, 0.12), 0.22);
+  const collectionAddSurfaceHoverStart = withAlpha(mixColors(source.interactive, source.chrome, 0.32), 0.42);
+  const collectionAddSurfaceHoverEnd = withAlpha(mixColors(darken(source.chrome, 0.06), source.interactive, 0.16), 0.28);
+  const collectionAddInset = withAlpha(lighten(source.uiText, 0.14), 0.04);
+  const collectionAddShadow = `0 10px 24px ${withAlpha(darken(source.chrome, 0.3), 0.16)}`;
+  const collectionRowSeparator = withAlpha(lighten(source.uiText, 0.04), 0.05);
+  const collectionRowHover = withAlpha(lighten(source.uiText, 0.04), 0.03);
+  const collectionRowActive = withAlpha(source.interactive, 0.22);
+  const collectionRowIcon = withAlpha(mixColors(lighten(source.interactive, 0.1), source.uiText, 0.4), 0.9);
+  const collectionRowCount = withAlpha(lighten(source.uiText, 0.08), 0.72);
+  const collectionActionHover = withAlpha(lighten(source.uiText, 0.08), 0.06);
+  const collectionActionDisabled = withAlpha(lighten(source.uiText, 0.14), 0.42);
+  const collectionDangerText = ensureReadableTextColor(lighten(source.danger, 0.36), source.danger, 3.8);
+  const collectionDangerHover = withAlpha(source.danger, 0.14);
+  const collectionTooltipSurface = overlaySurfaceStrong;
+  const collectionTooltipBorder = overlayBorder;
+  const collectionTooltipText = withAlpha(lighten(source.uiText, 0.08), 0.84);
+  const collectionTooltipTitle = withAlpha(lighten(source.uiText, 0.14), 0.96);
+  const collectionTooltipHelp = withAlpha(lighten(source.uiText, 0.08), 0.68);
+  const collectionTooltipShadow = `0 18px 36px ${withAlpha(darken(source.chrome, 0.34), 0.34)}`;
+  const collectionMenuButtonSurface = withAlpha(lighten(source.uiText, 0.08), 0.08);
+  const collectionMenuButtonHover = withAlpha(lighten(source.uiText, 0.12), 0.13);
+  const collectionMenuButtonGhost = withAlpha(lighten(source.uiText, 0.06), 0.05);
+  const collectionMenuButtonDanger = withAlpha(source.danger, 0.18);
+  const collectionMenuButtonDangerHover = withAlpha(source.danger, 0.28);
+  const collectionBookRowSeparator = withAlpha(lighten(source.uiText, 0.02), 0.035);
+  const collectionBookRowHover = withAlpha(lighten(source.uiText, 0.04), 0.03);
   const settingsNavText = withAlpha(lighten(source.uiText, 0.08), 0.72);
   const settingsNavTextActive = lighten(source.uiText, 0.16);
   const settingsLabelText = withAlpha(lighten(source.uiText, 0.06), 0.88);
@@ -786,12 +835,13 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
   const splitterGripBorderActive = withAlpha(lighten(source.uiText, 0.16), 0.3);
   const splitterGripSurfaceStart = withAlpha(lighten(source.chrome, 0.12), 0.98);
   const splitterGripSurfaceEnd = withAlpha(darken(source.chrome, 0.02), 0.98);
-  const splitterGripShadow = `0 4px 12px ${withAlpha("#000000", 0.22)}`;
-  const splitterGripShadowActive = `0 6px 14px ${withAlpha("#000000", 0.28)}`;
-  const splitterGripInset = `inset 0 1px 0 ${withAlpha("#ffffff", 0.04)}`;
-  const splitterGripInsetActive = `inset 0 1px 0 ${withAlpha("#ffffff", 0.06)}`;
+  const splitterGripShadow = `0 4px 12px ${withAlpha(darken(source.chrome, 0.28), 0.22)}`;
+  const splitterGripShadowActive = `0 6px 14px ${withAlpha(darken(source.chrome, 0.34), 0.28)}`;
+  const splitterGripInset = `inset 0 1px 0 ${withAlpha(lighten(source.uiText, 0.14), 0.04)}`;
+  const splitterGripInsetActive = `inset 0 1px 0 ${withAlpha(lighten(source.uiText, 0.18), 0.06)}`;
   const splitterDot = withAlpha(lighten(source.uiText, 0.04), 0.55);
   const splitterDotActive = withAlpha(lighten(source.uiText, 0.14), 0.82);
+  const readerHeaderDivider = withAlpha(lighten(source.uiText, 0.08), 0.2);
   const notesSurface = withAlpha(source.chrome, 0.9);
   const notesText = lighten(source.uiText, 0.1);
   const notesMuted = withAlpha(lighten(source.uiText, 0.12), 0.76);
@@ -870,6 +920,60 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
       "--page-link-selected-background": pageLinkSelectedBackground,
       "--page-link-selected-border": pageLinkSelectedBorder,
       "--page-link-selected-text": pageLinkSelectedText,
+      "--reader-status-surface": readerStatusSurface,
+      "--reader-status-border": readerStatusBorder,
+      "--reader-status-text": readerStatusText,
+      "--reader-status-error-surface": readerStatusErrorSurface,
+      "--reader-status-error-border": readerStatusErrorBorder,
+      "--reader-status-error-text": readerStatusErrorText,
+      "--reader-status-debug-surface": readerStatusDebugSurface,
+      "--reader-status-debug-border": readerStatusDebugBorder,
+      "--reader-status-debug-text": readerStatusDebugText,
+      "--rapid-turn-surface": rapidTurnSurface,
+      "--rapid-turn-border": rapidTurnBorder,
+      "--rapid-turn-text": rapidTurnText,
+      "--rapid-turn-track": rapidTurnTrack,
+      "--rapid-turn-progress-start": rapidTurnProgressStart,
+      "--rapid-turn-progress-end": rapidTurnProgressEnd,
+      "--rapid-turn-meta-text": rapidTurnMetaText,
+      "--rapid-turn-shadow": rapidTurnShadow,
+      "--search-placeholder-text": searchPlaceholderText,
+      "--search-action-text": searchActionText,
+      "--search-action-muted": searchActionMuted,
+      "--search-empty-text": searchEmptyText,
+      "--collection-panel-surface": collectionPanelSurface,
+      "--collection-card-surface": collectionCardSurface,
+      "--collection-card-border": collectionCardBorder,
+      "--collection-add-border": collectionAddBorder,
+      "--collection-add-border-hover": collectionAddBorderHover,
+      "--collection-add-surface-start": collectionAddSurfaceStart,
+      "--collection-add-surface-end": collectionAddSurfaceEnd,
+      "--collection-add-surface-hover-start": collectionAddSurfaceHoverStart,
+      "--collection-add-surface-hover-end": collectionAddSurfaceHoverEnd,
+      "--collection-add-inset": collectionAddInset,
+      "--collection-add-shadow": collectionAddShadow,
+      "--collection-row-separator": collectionRowSeparator,
+      "--collection-row-hover": collectionRowHover,
+      "--collection-row-active": collectionRowActive,
+      "--collection-row-icon": collectionRowIcon,
+      "--collection-row-count": collectionRowCount,
+      "--collection-action-hover": collectionActionHover,
+      "--collection-action-disabled": collectionActionDisabled,
+      "--collection-danger-text": collectionDangerText,
+      "--collection-danger-hover": collectionDangerHover,
+      "--collection-tooltip-surface": collectionTooltipSurface,
+      "--collection-tooltip-border": collectionTooltipBorder,
+      "--collection-tooltip-text": collectionTooltipText,
+      "--collection-tooltip-title": collectionTooltipTitle,
+      "--collection-tooltip-help": collectionTooltipHelp,
+      "--collection-tooltip-shadow": collectionTooltipShadow,
+      "--collection-menu-button-surface": collectionMenuButtonSurface,
+      "--collection-menu-button-hover": collectionMenuButtonHover,
+      "--collection-menu-button-ghost": collectionMenuButtonGhost,
+      "--collection-menu-button-danger": collectionMenuButtonDanger,
+      "--collection-menu-button-danger-hover": collectionMenuButtonDangerHover,
+      "--collection-book-row-separator": collectionBookRowSeparator,
+      "--collection-book-row-hover": collectionBookRowHover,
       "--settings-nav-text": settingsNavText,
       "--settings-nav-text-active": settingsNavTextActive,
       "--settings-label-text": settingsLabelText,
@@ -885,6 +989,7 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
       "--settings-accent-focus-ring": settingsAccentFocusRing,
       "--settings-switch-off": settingsSwitchOff,
       "--settings-switch-handle": settingsSwitchHandle,
+      "--reader-header-divider": readerHeaderDivider,
       "--splitter-line": splitterLine,
       "--splitter-line-active": splitterLineActive,
       "--splitter-grip-border": splitterGripBorder,
@@ -902,7 +1007,10 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
       "--notes-text-muted": notesMuted,
       "--paper-surface": source.documentPaper,
       "--paper-surface-dark": source.documentPaper,
-      "--paper-shadow": withAlpha("#000000", themeDefinition.document.surfaceTone === "dark" ? 0.42 : 0.35),
+      "--paper-shadow": withAlpha(
+        darken(source.documentPaper, themeDefinition.document.surfaceTone === "dark" ? 0.24 : 0.38),
+        themeDefinition.document.surfaceTone === "dark" ? 0.42 : 0.35
+      ),
       "--feedback-danger-surface": dangerSurface,
       "--feedback-danger-surface-strong": dangerSurfaceStrong,
       "--feedback-danger-text": dangerText,
