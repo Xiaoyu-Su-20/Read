@@ -87,7 +87,7 @@ fn component_mask(mask: &[bool], width: usize, height: usize, min_size: usize) -
 fn projection_bounds(
     mask: &[bool],
     width: usize,
-    height: usize,
+    _height: usize,
     bounds: (usize, usize, usize, usize),
 ) -> Option<(usize, usize, usize, usize)> {
     let (x0, y0, x1, y1) = bounds;

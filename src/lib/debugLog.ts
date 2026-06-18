@@ -1,7 +1,85 @@
+import { invoke } from "@tauri-apps/api/core";
+
 type DebugFields = Record<string, unknown>;
+type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
 
 export const isDebugModeEnabled =
   import.meta.env.VITE_DEBUG_UI === "true";
+const shouldMirrorDebugEvents = import.meta.env.DEV || isDebugModeEnabled;
+const LOG_LEVEL_RANK: Record<LogLevel, number> = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  debug: 3,
+  trace: 4
+};
+const currentLogLevel = resolveLogLevel();
+
+function resolveLogLevel(): LogLevel {
+  const rawLevel = String(import.meta.env.VITE_READER_LOG_LEVEL ?? "").trim().toLowerCase();
+  switch (rawLevel) {
+    case "error":
+    case "warn":
+    case "info":
+    case "debug":
+    case "trace":
+      return rawLevel;
+    default:
+      return "info";
+  }
+}
+
+function eventLevel(event: string, explicitLevel: "info" | "error"): LogLevel {
+  if (explicitLevel === "error" || event.endsWith(":error")) {
+    return "error";
+  }
+
+  if (event === "reader.render-stale-ignored") {
+    return "warn";
+  }
+
+  if (
+    event === "reader.open:click" ||
+    event === "reader.open:document-ready" ||
+    event === "reader.initial-page:resolved" ||
+    event === "reader.open:active-document-committed" ||
+    event === "view.collection:click" ||
+    event === "view.collection:state-committed" ||
+    event === "view.collection:first-painted" ||
+    event === "view.document:click" ||
+    event === "view.document:state-committed" ||
+    event === "view.document:component-mounted" ||
+    event === "view.document:first-painted" ||
+    event === "reader:mounted" ||
+    event === "reader:unmounted" ||
+    event === "pdf-runtime:dispose-start" ||
+    event === "pdf-runtime:dispose-finished" ||
+    event === "reader.render:first-request" ||
+    event === "reader.render:response-received" ||
+    event === "reader.navigation-intent" ||
+    event === "reader.navigate-header" ||
+    event === "reader.page-request-ignored" ||
+    event === "reader.render-result-accepted" ||
+    event === "reader.render-result-discarded" ||
+    event === "viewer.image:src-assigned" ||
+    event === "viewer.image:load" ||
+    event === "viewer.image:decode-finished" ||
+    event === "viewer.slot-promotion-accepted" ||
+    event === "viewer.slot-promotion-discarded" ||
+    event === "reader.first-visible" ||
+    event === "reader.open:summary" ||
+    event === "pdf-runtime.ensure-document-error" ||
+    event === "pdf-runtime.page-text-error"
+  ) {
+    return "info";
+  }
+
+  return "trace";
+}
+
+function shouldEmitEvent(event: string, explicitLevel: "info" | "error") {
+  return LOG_LEVEL_RANK[eventLevel(event, explicitLevel)] <= LOG_LEVEL_RANK[currentLogLevel];
+}
 
 function normalizeError(error: unknown) {
   if (error instanceof Error) {
@@ -17,7 +95,11 @@ function normalizeError(error: unknown) {
 }
 
 function emit(level: "info" | "error", event: string, fields: DebugFields = {}) {
-  if (!isDebugModeEnabled) {
+  if (!isDebugModeEnabled && !shouldMirrorDebugEvents) {
+    return;
+  }
+
+  if (!shouldEmitEvent(event, level)) {
     return;
   }
 
@@ -25,15 +107,32 @@ function emit(level: "info" | "error", event: string, fields: DebugFields = {}) 
     scope: "frontend",
     event,
     at: new Date().toISOString(),
+    atMs: Date.now(),
     ...fields
   };
 
-  if (level === "error") {
-    console.error(payload);
-    return;
+  if (isDebugModeEnabled) {
+    const resolvedLevel = eventLevel(event, level);
+    if (resolvedLevel === "error") {
+      console.error(payload);
+    } else if (resolvedLevel === "warn") {
+      console.warn(payload);
+    } else {
+      console.info(payload);
+    }
   }
 
-  console.info(payload);
+  if (shouldMirrorDebugEvents) {
+    void invoke("log_note_debug_event", {
+      event,
+      fields: {
+        ...payload,
+        mirroredScope: "frontend"
+      }
+    }).catch(() => {
+      // Keep debug mirroring non-blocking and invisible to the reader path.
+    });
+  }
 }
 
 export function debugAction(event: string, fields?: DebugFields) {

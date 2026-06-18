@@ -34,6 +34,10 @@ pub struct DocumentRecord {
     pub folder_id: String,
     pub relative_path: String,
     pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_modified_ms: Option<u64>,
     pub imported_at: String,
     pub last_opened_at: Option<String>,
     #[serde(default)]
@@ -178,7 +182,7 @@ pub struct DocumentPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderedPagePayload {
-    pub image_path: String,
+    pub image_bytes: Vec<u8>,
     pub page_number: u32,
     pub width: u32,
     pub height: u32,

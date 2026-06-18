@@ -198,6 +198,10 @@ function createDisposedError() {
   return new Error("PDF runtime session has been disposed.");
 }
 
+function isAbortLikeError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 function getViewportRawDims(viewport: RuntimeViewport) {
   return {
     pageWidth: viewport.rawDims?.pageWidth ?? viewport.width,
@@ -234,6 +238,18 @@ export function createPdfRuntimeSession(
     if (disposed) {
       throw createDisposedError();
     }
+  }
+
+  function normalizeLifecycleError(error: unknown) {
+    return disposed ? createDisposedError() : error;
+  }
+
+  function shouldSuppressLifecycleError(error: unknown) {
+    if (disposed || isAbortLikeError(error)) {
+      return true;
+    }
+
+    return error instanceof Error && error.message === createDisposedError().message;
   }
 
   async function ensureDocument(): Promise<RuntimePdfDocument> {
@@ -282,10 +298,13 @@ export function createPdfRuntimeSession(
         return textDocument;
       })().catch((error) => {
         documentPromise = null;
-        debugError("pdf-runtime.ensure-document-error", error, {
-          documentId
-        });
-        throw error;
+        const nextError = normalizeLifecycleError(error);
+        if (!shouldSuppressLifecycleError(nextError)) {
+          debugError("pdf-runtime.ensure-document-error", nextError, {
+            documentId
+          });
+        }
+        throw nextError;
       });
     }
 
@@ -390,11 +409,14 @@ export function createPdfRuntimeSession(
       return payload;
     })().catch((error) => {
       pageTextPromises.delete(pageNumber);
-      debugError("pdf-runtime.page-text-error", error, {
-        documentId,
-        pageNumber
-      });
-      throw error;
+      const nextError = normalizeLifecycleError(error);
+      if (!shouldSuppressLifecycleError(nextError)) {
+        debugError("pdf-runtime.page-text-error", nextError, {
+          documentId,
+          pageNumber
+        });
+      }
+      throw nextError;
     });
 
     pageTextPromises.set(pageNumber, nextTextPromise);
@@ -504,7 +526,7 @@ export function createPdfRuntimeSession(
       return;
     }
 
-    debugAction("pdf-runtime.dispose", {
+    debugAction("pdf-runtime:dispose-start", {
       documentId,
       cachedPageCount: pageTextCache.size,
       cachedPlainTextCount: plainTextCache.size
@@ -536,6 +558,10 @@ export function createPdfRuntimeSession(
     if (destroyOperations.length > 0) {
       await Promise.allSettled(destroyOperations);
     }
+
+    debugAction("pdf-runtime:dispose-finished", {
+      documentId
+    });
   }
 
   return {

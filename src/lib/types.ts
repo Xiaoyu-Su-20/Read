@@ -92,8 +92,18 @@ export type DocumentPayload = {
   pageCount: number;
 };
 
+export type ReaderSession = {
+  document: DocumentPayload;
+  documentId: string;
+  page: number;
+  zoom: number;
+  openSessionId: string;
+  clickStartedAtMs: number;
+  source: "collection" | "search-result" | "command" | "library-flow" | "sync" | "unknown";
+};
+
 export type RenderedPagePayload = {
-  imagePath: string;
+  imageBytes: number[];
   pageNumber: number;
   width: number;
   height: number;

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import ReaderWorkspace from "./ReaderWorkspace";
 import { normalizeReaderFitMode } from "../lib/reader/zoom";
-import type { DocumentPayload, ViewerApi } from "../lib/types";
+import type { DocumentPayload, ReaderSession, ViewerApi } from "../lib/types";
 import { createUnifiedSearchController } from "../search";
 
 vi.mock("./NotesViewport", () => ({
@@ -71,6 +71,16 @@ const documentPayload: DocumentPayload = {
   pageCount: 191
 };
 
+const readerSession: ReaderSession = {
+  document: documentPayload,
+  documentId: documentPayload.document.id,
+  page: documentPayload.state.lastPage,
+  zoom: documentPayload.state.zoom,
+  openSessionId: "open-test",
+  clickStartedAtMs: 0,
+  source: "collection"
+};
+
 function makeViewerApi(overrides?: Partial<ViewerApi>): ViewerApi {
   return {
     nextPage: vi.fn(),
@@ -99,7 +109,9 @@ function makeViewerApi(overrides?: Partial<ViewerApi>): ViewerApi {
 
 function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[0]>) {
   return ReaderWorkspace({
-    document: documentPayload,
+    activeViewTransition: null,
+    readerSession,
+    pendingReaderOpenSessionId: null,
     note: null,
     notesLoading: false,
     noteNavigationItems: [],
@@ -123,6 +135,7 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
       mode: "dark",
       paperColor: "#20242a",
       inkColor: "#d8d8d8",
+      blendMode: "screen",
       imageFilter: "invert(1)"
     },
     documentHeaderTitle: documentPayload.document.title,
@@ -195,7 +208,7 @@ describe("ReaderWorkspace document header", () => {
 
   it("disables page and zoom controls when no document is open", () => {
     const tree = renderWorkspace({
-      document: null,
+      readerSession: null,
       documentHeaderCurrentPage: 1,
       documentHeaderPageCount: 0,
       viewerApi: null

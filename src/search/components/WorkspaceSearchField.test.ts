@@ -22,7 +22,7 @@ function makeState(overrides: Partial<UnifiedSearchState> = {}): UnifiedSearchSt
       groups: [
         {
           id: "nearby-page",
-          label: "Document · Nearby Page",
+          label: "Document Â· Nearby Page",
           total: 1,
           countIsFinal: false,
           state: "searching",
@@ -42,7 +42,7 @@ function makeState(overrides: Partial<UnifiedSearchState> = {}): UnifiedSearchSt
         },
         {
           id: "across-document",
-          label: "Document · Across document",
+          label: "Document Â· Across document",
           total: 0,
           countIsFinal: true,
           state: "idle",
@@ -90,7 +90,9 @@ describe("WorkspaceSearchField", () => {
     expect(markup).toContain("Document");
     expect(markup).toContain("Nearby Page");
     expect(markup).toContain("Search entire document");
-    expect(markup).toContain("3/8 pages");
+    expect(markup).not.toContain("3/8 pages");
+    expect(markup).toContain("search-group__decorator");
+    expect(markup).not.toContain("search-result__icon");
   });
 
   it("renders the ready state when focused without a query", () => {
@@ -103,6 +105,17 @@ describe("WorkspaceSearchField", () => {
     }));
     expect(markup).not.toContain("workspace-search__dropdown");
     expect(markup).not.toContain("Type to search the current note, current document, and library titles.");
+  });
+
+  it("does not render an empty dropdown when a query has no visible result groups", () => {
+    const markup = renderState(makeState({
+      committedView: {
+        ...makeState().committedView,
+        groups: [],
+        warnings: []
+      }
+    }));
+    expect(markup).not.toContain("workspace-search__dropdown");
   });
 
   it("renders with no placeholder text", () => {

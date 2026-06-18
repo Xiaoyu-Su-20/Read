@@ -26,6 +26,7 @@ import { useLibraryFlows } from "./lib/app/useLibraryFlows";
 import { useNotesController } from "./lib/app/useNotesController";
 import { usePaletteController } from "./lib/app/usePaletteController";
 import { useWorkspaceController } from "./lib/app/useWorkspaceController";
+import { debugAction } from "./lib/debugLog";
 import { collectDocuments } from "./lib/tree";
 
 const appWindow = getCurrentWindow();
@@ -35,6 +36,27 @@ type FullscreenState =
   | "entering"
   | "fullscreen"
   | "exiting";
+
+type ViewMode = "reader" | "collection";
+
+type PendingViewNavigationTrace = {
+  clickStartedAtMs: number;
+  documentId: string | null;
+  fromView: ViewMode;
+  openSessionId: string | null;
+  source: string;
+  toView: ViewMode;
+  viewTransitionId: string;
+};
+
+type ActiveViewTransition = Pick<
+  PendingViewNavigationTrace,
+  "clickStartedAtMs" | "fromView" | "source" | "toView" | "viewTransitionId"
+>;
+
+function toViewEventName(view: ViewMode) {
+  return view === "reader" ? "document" : "collection";
+}
 
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
@@ -95,6 +117,9 @@ export default function App() {
   const [fullscreenState, setFullscreenState] = useState<FullscreenState>("windowed");
   const [showFullscreenHint, setShowFullscreenHint] = useState(false);
   const fullscreenTransitionRef = useRef(false);
+  const pendingViewNavigationRef = useRef<PendingViewNavigationTrace | null>(null);
+  const committedViewNavigationRef = useRef<PendingViewNavigationTrace | null>(null);
+  const activeViewTransitionRef = useRef<ActiveViewTransition | null>(null);
   const settingsContainerRef = useRef<HTMLDivElement | null>(null);
   const searchableDocuments = useMemo(
     () => workspace.libraryTree ? collectDocuments(workspace.libraryTree) : [],
@@ -111,6 +136,11 @@ export default function App() {
   const readerOverlayOpen = palette.paletteOpen || searchUiOpen || outlineOpen;
   const readerFullscreenActive =
     workspace.workspaceMode === "reader" && fullscreenState === "fullscreen";
+  const shouldRenderReaderWorkspace =
+    workspace.workspaceMode === "reader" || workspace.activeReaderSession !== null;
+  const shouldRenderCollectionWorkspace = workspace.workspaceMode === "collection";
+  const shouldStackWorkspacePanels =
+    shouldRenderReaderWorkspace && shouldRenderCollectionWorkspace;
   const fullscreenTransitionActive =
     fullscreenState === "entering" || fullscreenState === "exiting";
   const readerPreferenceStates = useMemo(
@@ -119,9 +149,104 @@ export default function App() {
         checked: fullscreenState === "fullscreen" || fullscreenState === "entering",
         disabled: fullscreenTransitionActive
       }
-    }),
+      }),
     [fullscreenState, fullscreenTransitionActive]
   );
+
+  const startViewNavigationTrace = useCallback(
+    (toView: ViewMode, source: string) => {
+      const fromView = workspace.workspaceMode;
+      const trace: PendingViewNavigationTrace = {
+        clickStartedAtMs: performance.now(),
+        documentId: workspace.activeDocument?.document.id ?? null,
+        fromView,
+        openSessionId: workspace.activeReaderSession?.openSessionId ?? null,
+        source,
+        toView,
+        viewTransitionId: `view-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      };
+      pendingViewNavigationRef.current = trace;
+      activeViewTransitionRef.current = {
+        clickStartedAtMs: trace.clickStartedAtMs,
+        fromView: trace.fromView,
+        source: trace.source,
+        toView: trace.toView,
+        viewTransitionId: trace.viewTransitionId
+      };
+      debugAction(`view.${toViewEventName(toView)}:click`, {
+        documentId: trace.documentId,
+        elapsedFromClickMs: 0,
+        fromView: toViewEventName(trace.fromView),
+        openSessionId: trace.openSessionId,
+        source: trace.source,
+        toView: toViewEventName(trace.toView),
+        viewTransitionId: trace.viewTransitionId
+      });
+    },
+    [workspace.activeDocument, workspace.activeReaderSession?.openSessionId, workspace.workspaceMode]
+  );
+
+  useEffect(() => {
+    const pendingTrace = pendingViewNavigationRef.current;
+    if (!pendingTrace || workspace.workspaceMode !== pendingTrace.toView) {
+      return;
+    }
+
+    committedViewNavigationRef.current = pendingTrace;
+    pendingViewNavigationRef.current = null;
+    debugAction(`view.${toViewEventName(pendingTrace.toView)}:state-committed`, {
+      documentId: pendingTrace.documentId,
+      elapsedFromClickMs: Math.round(performance.now() - pendingTrace.clickStartedAtMs),
+      fromView: toViewEventName(pendingTrace.fromView),
+      openSessionId: pendingTrace.openSessionId,
+      source: pendingTrace.source,
+      toView: toViewEventName(pendingTrace.toView),
+      viewTransitionId: pendingTrace.viewTransitionId
+    });
+  }, [workspace.workspaceMode]);
+
+  useEffect(() => {
+    const committedTrace = committedViewNavigationRef.current;
+    if (!committedTrace || workspace.workspaceMode !== committedTrace.toView) {
+      return;
+    }
+
+    let cancelled = false;
+    let secondFrameId = 0;
+    const firstFrameId = window.requestAnimationFrame(() => {
+      secondFrameId = window.requestAnimationFrame(() => {
+        if (cancelled) {
+          return;
+        }
+
+        debugAction(`view.${toViewEventName(committedTrace.toView)}:first-painted`, {
+          documentId: committedTrace.documentId,
+          elapsedFromClickMs: Math.round(performance.now() - committedTrace.clickStartedAtMs),
+          fromView: toViewEventName(committedTrace.fromView),
+          openSessionId: committedTrace.openSessionId,
+          source: committedTrace.source,
+          toView: toViewEventName(committedTrace.toView),
+          viewTransitionId: committedTrace.viewTransitionId
+        });
+        if (committedViewNavigationRef.current === committedTrace) {
+          committedViewNavigationRef.current = null;
+          if (
+            activeViewTransitionRef.current?.viewTransitionId === committedTrace.viewTransitionId
+          ) {
+            activeViewTransitionRef.current = null;
+          }
+        }
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(firstFrameId);
+      if (secondFrameId) {
+        window.cancelAnimationFrame(secondFrameId);
+      }
+    };
+  }, [workspace.workspaceMode]);
 
   const syncFullscreenState = useCallback(async () => {
     if (fullscreenTransitionRef.current) {
@@ -640,6 +765,9 @@ export default function App() {
             type="button"
             aria-label="Collections"
             onClick={() => {
+              if (workspace.workspaceMode !== "collection") {
+                startViewNavigationTrace("collection", "sidebar");
+              }
               workspace.setWorkspaceMode("collection");
             }}
           >
@@ -657,6 +785,9 @@ export default function App() {
             type="button"
             aria-label="Reader"
             onClick={() => {
+              if (workspace.workspaceMode !== "reader") {
+                startViewNavigationTrace("reader", "sidebar");
+              }
               workspace.setWorkspaceMode("reader");
             }}
           >
@@ -797,80 +928,102 @@ export default function App() {
       ) : null}
 
       <section
-        className={`workspace${workspace.workspaceMode === "reader" ? " workspace--reader" : ""}`}
+        className={`workspace${workspace.workspaceMode === "reader" ? " workspace--reader" : ""}${
+          shouldStackWorkspacePanels ? " workspace--stacked" : ""
+        }`}
       >
-        {workspace.workspaceMode === "collection" ? (
-          <CollectionView
-            tree={workspace.libraryTree}
-            selectedCollectionId={workspace.selectedCollection?.folder.id ?? null}
-            onSelectCollection={workspace.setSelectedCollectionId}
-            onCreateCollection={flows.createCollectionFlow}
-            onRenameCollection={async (collectionId, nextName) => {
-              await workspace.renameCollection(collectionId, nextName);
-            }}
-            onDeleteCollection={async (collectionId) => {
-              await workspace.deleteCollection(collectionId);
-            }}
-            onOpenDocument={async (documentId) => {
-              setOutlineOpen(false);
-              await workspace.handleOpenDocument(documentId);
-            }}
-            onRenameDocument={async (documentId, nextName) => {
-              await workspace.renameDocumentInLibrary(documentId, nextName);
-            }}
-          />
-        ) : (
-          <ReaderWorkspace
-            document={workspace.activeDocument}
-            note={notes.note}
-            notesLoading={notes.loading}
-            noteNavigationItems={notes.navigationItems}
-            onChangeNoteTitle={notes.updateTitle}
-            onChangeNoteBlocks={notes.updateBlocks}
-            onFlushNote={() => notes.flushNow("editor-blur")}
-            onCopyAllNoteText={notes.copyAllText}
-            onGoToNotePage={workspace.goToReaderPage}
-            currentReaderPage={workspace.viewerSnapshot.currentPage}
-            noteRevealRequest={noteRevealRequest}
-            outlineItems={workspace.outlineItems}
-            readerState={workspace.readerState}
-            onNavigateToTarget={(target) => {
-              workspace.viewerApiRef.current?.navigateToTarget(target);
-            }}
-            onSetUserOutlineItems={(items) => {
-              workspace.viewerApiRef.current?.setUserOutlineItems(items);
-            }}
-            onSnapshotChange={workspace.handleViewerSnapshotChange}
-            onOutlineChange={workspace.handleViewerOutlineChange}
-            onStateChange={workspace.handleViewerStateChange}
-            onStatusChange={workspace.handleViewerStatusChange}
-            registerApi={workspace.registerViewerApi}
-            viewerDisplayConfig={viewerDisplayConfig}
-            documentHeaderTitle={workspace.activeDocument?.document.title ?? "Reader"}
-            documentHeaderCurrentPage={workspace.viewerSnapshot.currentPage}
-            documentHeaderPageCount={workspace.viewerSnapshot.pageCount}
-            documentHeaderZoom={workspace.viewerSnapshot.zoom}
-            viewerApi={workspace.viewerApi}
-            onHeaderMouseDown={handleTopbarMouseDown}
-            windowControls={renderWindowControls()}
-            searchController={searchController}
-            searchFocusRequest={searchFocusRequest}
-            onSearchOpenDocument={workspace.handleOpenDocument}
-            onSearchGoToPage={workspace.goToReaderPage}
-            onSearchRevealNoteBlock={(blockId) => {
-              setNoteRevealRequest((current) => ({ blockId, sequence: (current?.sequence ?? 0) + 1 }));
-            }}
-            showHeaders={!readerFullscreenActive}
-            showFullscreenHint={showFullscreenHint}
-            fullscreen={readerFullscreenActive}
-            onToggleFullscreen={toggleFullscreen}
-            readerPaneSplitRatio={readerPaneSplitRatio}
-            hidePaneResizeHandle={readerOverlayOpen}
-            onChangeReaderPaneSplitRatio={(nextRatio) => {
-              setSetting("readerPaneSplitRatio", nextRatio);
-            }}
-          />
-        )}
+        {shouldRenderCollectionWorkspace ? (
+          <div
+            className={`workspace__panel workspace__panel--collection${
+              workspace.workspaceMode === "collection" ? " workspace__panel--active" : " workspace__panel--hidden"
+            }`}
+            aria-hidden={workspace.workspaceMode !== "collection"}
+          >
+            <CollectionView
+              tree={workspace.libraryTree}
+              selectedCollectionId={workspace.selectedCollection?.folder.id ?? null}
+              onSelectCollection={workspace.setSelectedCollectionId}
+              onCreateCollection={flows.createCollectionFlow}
+              onRenameCollection={async (collectionId, nextName) => {
+                await workspace.renameCollection(collectionId, nextName);
+              }}
+              onDeleteCollection={async (collectionId) => {
+                await workspace.deleteCollection(collectionId);
+              }}
+              onOpenDocument={async (documentId) => {
+                setOutlineOpen(false);
+                startViewNavigationTrace("reader", "collection-document-open");
+                await workspace.handleOpenDocument(documentId, { source: "collection" });
+              }}
+              onRenameDocument={async (documentId, nextName) => {
+                await workspace.renameDocumentInLibrary(documentId, nextName);
+              }}
+            />
+          </div>
+        ) : null}
+        {shouldRenderReaderWorkspace ? (
+          <div
+            className={`workspace__panel workspace__panel--reader${
+              workspace.workspaceMode === "reader" ? " workspace__panel--active" : " workspace__panel--hidden"
+            }`}
+            aria-hidden={workspace.workspaceMode !== "reader"}
+          >
+            <ReaderWorkspace
+              activeViewTransition={activeViewTransitionRef.current}
+              readerSession={workspace.activeReaderSession}
+              pendingReaderOpenSessionId={workspace.pendingReaderOpenSessionId}
+              note={notes.note}
+              notesLoading={notes.loading}
+              noteNavigationItems={notes.navigationItems}
+              onChangeNoteTitle={notes.updateTitle}
+              onChangeNoteBlocks={notes.updateBlocks}
+              onFlushNote={() => notes.flushNow("editor-blur")}
+              onCopyAllNoteText={notes.copyAllText}
+              onGoToNotePage={workspace.goToReaderPage}
+              currentReaderPage={workspace.viewerSnapshot.currentPage}
+              noteRevealRequest={noteRevealRequest}
+              outlineItems={workspace.outlineItems}
+              readerState={workspace.readerState}
+              onNavigateToTarget={(target) => {
+                workspace.viewerApiRef.current?.navigateToTarget(target);
+              }}
+              onSetUserOutlineItems={(items) => {
+                workspace.viewerApiRef.current?.setUserOutlineItems(items);
+              }}
+              onSnapshotChange={workspace.handleViewerSnapshotChange}
+              onOutlineChange={workspace.handleViewerOutlineChange}
+              onStateChange={workspace.handleViewerStateChange}
+              onStatusChange={workspace.handleViewerStatusChange}
+              registerApi={workspace.registerViewerApi}
+              viewerDisplayConfig={viewerDisplayConfig}
+              documentHeaderTitle={workspace.activeDocument?.document.title ?? "Reader"}
+              documentHeaderCurrentPage={workspace.viewerSnapshot.currentPage}
+              documentHeaderPageCount={workspace.viewerSnapshot.pageCount}
+              documentHeaderZoom={workspace.viewerSnapshot.zoom}
+              viewerApi={workspace.viewerApi}
+              onHeaderMouseDown={handleTopbarMouseDown}
+              windowControls={renderWindowControls()}
+              searchController={searchController}
+              searchFocusRequest={searchFocusRequest}
+              onSearchOpenDocument={(documentId) =>
+                workspace.handleOpenDocument(documentId, { source: "search-result" })
+              }
+              onSearchGoToPage={workspace.goToReaderPage}
+              onSearchRevealNoteBlock={(blockId) => {
+                setNoteRevealRequest((current) => ({ blockId, sequence: (current?.sequence ?? 0) + 1 }));
+              }}
+              showHeaders={!readerFullscreenActive}
+              showFullscreenHint={showFullscreenHint}
+              fullscreen={readerFullscreenActive}
+              onToggleFullscreen={toggleFullscreen}
+              readerPaneSplitRatio={readerPaneSplitRatio}
+              hidePaneResizeHandle={readerOverlayOpen}
+              onChangeReaderPaneSplitRatio={(nextRatio) => {
+                setSetting("readerPaneSplitRatio", nextRatio);
+              }}
+            />
+          </div>
+        ) : null}
       </section>
 
       <CommandPalette

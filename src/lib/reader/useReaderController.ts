@@ -1,4 +1,4 @@
-import type { KeyboardEvent, WheelEvent } from "react";
+import type { KeyboardEvent, UIEvent, WheelEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
@@ -14,15 +14,24 @@ import type {
   PageTextLayerData,
   PdfNavigationTarget,
   PdfOutlineItem,
+  ReaderSession,
   ReaderFitMode,
   ViewerApi,
   ViewerSnapshot
 } from "../types";
 import { createPageCache, makePageCacheKey, type CachedRenderedPage } from "./PageCache";
-import { invalidatePdfPageRenders, renderVisiblePdfPage } from "./PdfPageRenderer";
+import {
+  getCompletedRenderedPage,
+  getInFlightRenderedPage,
+  invalidatePdfPageRenders,
+  renderVisiblePdfPage,
+  startFreshPdfPageRender
+} from "./PdfPageRenderer";
+import { resolveAdjacentPreloadPages } from "./preloadStrategy";
 import { createPdfRuntimeSession, type PdfRuntimeSession } from "./PdfRuntimeSession";
 import {
   makeRapidTurnOverlayModel,
+  shouldResetRapidTurnSession,
   shouldActivateRapidTurn,
   type NavigationDirection,
   type RapidTurnIntent,
@@ -39,8 +48,7 @@ import {
 } from "./zoom";
 
 const RENDER_CACHE_SIZE = 20;
-const PAGE_TURN_COMMIT_THROTTLE_MS = 150;
-const PRELOAD_DELAY_MS = 150;
+const PRELOAD_DELAY_MS = 0;
 const NAVIGATION_SAVE_DEBOUNCE_MS = 700;
 const BOOKMARK_SAVE_DEBOUNCE_MS = 200;
 const KEYBOARD_RAPID_TURN_WINDOW_MS = 220;
@@ -54,9 +62,11 @@ const SMOOTH_WHEEL_SETTLE_EPSILON_PX = 0.5;
 const SMOOTH_WHEEL_MIN_BLEND = 0.18;
 const SMOOTH_WHEEL_MAX_BLEND = 0.42;
 const SMOOTH_WHEEL_BASE_DURATION_MS = 110;
+const MANUAL_SCROLL_BOUNDARY_SUPPRESSION_MS = 220;
 
 type UseReaderControllerArgs = {
-  document: DocumentPayload | null;
+  readerSession: ReaderSession | null;
+  pendingReaderOpenSessionId: string | null;
   onOutlineChange: (items: OutlineItem[]) => void;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
   onStatusChange: (message: string) => void;
@@ -94,10 +104,77 @@ type ScrollResetRequest = {
 };
 
 type SmoothWheelState = {
+  ignoreScrollEvents: number;
   surface: HTMLDivElement | null;
   targetScrollTop: number;
   animationFrameId: number | null;
   lastFrameAt: number;
+};
+
+type ActiveForegroundRender = {
+  logicalKey: string;
+  requestId: number;
+};
+
+type ForegroundPageSource =
+  | "local-cache"
+  | "completed-registry"
+  | "inflight-join"
+  | "fresh-render";
+
+type ForegroundPhase = "acquire" | "assign" | "promote";
+
+type PagePresentation = {
+  navigationGeneration: number;
+  requestId: number;
+  source: ForegroundPageSource;
+  targetPage: number;
+};
+
+export type PresentedPage = CachedRenderedPage & {
+  presentation: PagePresentation;
+};
+
+type ForegroundPageCandidate = {
+  navigationGeneration: number;
+  openSessionId: string | null;
+  page: CachedRenderedPage;
+  requestId: number;
+  source: ForegroundPageSource;
+  targetPage: number;
+};
+
+type ManualScrollState = {
+  active: boolean;
+  suppressBoundaryUntil: number;
+};
+
+type IdleCallbackHandle = number;
+
+type IdleDeadlineLike = {
+  didTimeout: boolean;
+  timeRemaining: () => number;
+};
+
+type ReaderOpenMetrics = {
+  cacheHit: boolean;
+  clickStartedAtMs: number | null;
+  documentId: string | null;
+  firstRenderRequestAtMs: number | null;
+  openSessionId: string | null;
+  page: number | null;
+  pdfRuntimeStartedBeforeVisible: boolean;
+  renderResponseReceivedAtMs: number | null;
+  source: ReaderSession["source"];
+  staleRequestCount: number;
+  summaryLogged: boolean;
+  zoom: number | null;
+};
+
+type PreloadReadyTarget = {
+  documentId: string;
+  pageNumber: number;
+  requestKey: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -114,8 +191,12 @@ function clampPage(page: number, pageCount: number) {
   return Math.min(Math.max(Math.round(page), 1), Math.max(pageCount, 1));
 }
 
-function shouldIgnoreRenderResponse(requestSequence: number, activeSequence: number) {
-  return requestSequence !== activeSequence;
+function makeReaderSessionKey(readerSession: ReaderSession | null) {
+  if (!readerSession) {
+    return null;
+  }
+
+  return `${readerSession.documentId}:${readerSession.openSessionId}`;
 }
 
 function normalizeWheelDelta(
@@ -182,7 +263,8 @@ function stateSignature(state: DocumentState) {
 }
 
 export function useReaderController({
-  document,
+  readerSession,
+  pendingReaderOpenSessionId,
   onOutlineChange,
   onSnapshotChange,
   onStatusChange,
@@ -190,6 +272,9 @@ export function useReaderController({
   registerApi,
   getAutoMaximizeMinDocumentWidth
 }: UseReaderControllerArgs) {
+  const document = readerSession?.document ?? null;
+  const openSessionId = readerSession?.openSessionId ?? null;
+  const readerSessionKey = makeReaderSessionKey(readerSession);
   const [pageCount, setPageCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [targetPage, setTargetPage] = useState(1);
@@ -199,10 +284,12 @@ export function useReaderController({
   const [renderError, setRenderError] = useState<string | null>(null);
   const [loadingDocument, setLoadingDocument] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
-  const [displayedPage, setDisplayedPage] = useState<CachedRenderedPage | null>(null);
-  const [incomingPage, setIncomingPage] = useState<CachedRenderedPage | null>(null);
-  const [incomingReady, setIncomingReady] = useState(false);
+  const [displayedPage, setDisplayedPage] = useState<PresentedPage | null>(null);
+  const [incomingPage, setIncomingPage] = useState<PresentedPage | null>(null);
   const [readerState, setReaderState] = useState<DocumentState | null>(null);
+  const [initialStateResolved, setInitialStateResolved] = useState(false);
+  const [preloadReadyTarget, setPreloadReadyTarget] = useState<PreloadReadyTarget | null>(null);
+  const [postVisibleWorkReadyKey, setPostVisibleWorkReadyKey] = useState<string | null>(null);
   const [displayedPageTextLayer, setDisplayedPageTextLayer] = useState<PageTextLayerData | null>(null);
   const [displayedPageTextDebugStatus, setDisplayedPageTextDebugStatus] =
     useState<DisplayedPageTextDebugStatus>({
@@ -216,25 +303,32 @@ export function useReaderController({
   const runtimeSessionRef = useRef<PdfRuntimeSession | null>(null);
   const pageCache = useRef(createPageCache(RENDER_CACHE_SIZE));
   const preloadInFlight = useRef(new Set<string>());
+  const navigationGenerationRef = useRef(0);
+  const navigationTargetPageRef = useRef(1);
+  const pageCountRef = useRef(0);
+  const displayZoomRef = useRef(1);
   const renderSequenceRef = useRef(0);
+  const latestForegroundRequestIdRef = useRef(0);
+  const activeForegroundRenderRef = useRef<ActiveForegroundRender | null>(null);
   const normalizationGenerationRef = useRef(0);
+  const documentGenerationRef = useRef(0);
   const incomingPageKeyRef = useRef<string | null>(null);
   const initializedDocumentIdRef = useRef<string | null>(null);
   const outlineLoadedForDocumentIdRef = useRef<string | null>(null);
   const embeddedOutlineItemsRef = useRef<OutlineItem[]>([]);
   const currentDocumentRef = useRef<DocumentPayload | null>(null);
+  const displayedPageRef = useRef<PresentedPage | null>(null);
+  const incomingPageRef = useRef<PresentedPage | null>(null);
   const readerStateRef = useRef<DocumentState | null>(null);
   const lastPersistedSignatureRef = useRef<string | null>(null);
   const dirtyStateRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
   const saveInFlightRef = useRef(false);
   const preloadTimerRef = useRef<number | null>(null);
-  const pageCommitTimerRef = useRef<number | null>(null);
   const zoomCommitTimerRef = useRef<number | null>(null);
-  const pendingCommittedPageRef = useRef<number | null>(null);
-  const lastPageCommitAtRef = useRef(0);
   const rapidTurnWheelFinalizeTimerRef = useRef<number | null>(null);
   const rapidTurnLastInputRef = useRef<RapidTurnLastInput | null>(null);
+  const lastNavigationDirectionRef = useRef<NavigationDirection | null>(null);
   const autoMaximizeZoomRef = useRef<number | null>(null);
   const rapidTurnSessionRef = useRef<RapidTurnSession>({
     active: false,
@@ -250,20 +344,363 @@ export function useReaderController({
   });
   const scrollResetTokenRef = useRef(0);
   const smoothWheelStateRef = useRef<SmoothWheelState>({
+    ignoreScrollEvents: 0,
     surface: null,
     targetScrollTop: 0,
     animationFrameId: null,
     lastFrameAt: 0
   });
+  const manualScrollStateRef = useRef<ManualScrollState>({
+    active: false,
+    suppressBoundaryUntil: 0
+  });
+  const firstRenderRequestedSessionRef = useRef<string | null>(null);
+  const postVisibleIdleHandleRef = useRef<IdleCallbackHandle | null>(null);
+  const initializedReaderSessionKeyRef = useRef<string | null>(null);
+  const finalizeRapidTurnListenerRef = useRef<(reason: string) => void>(() => undefined);
+  const flushReaderStateListenerRef = useRef<(reason: string) => void>(() => undefined);
+  const openMetricsRef = useRef<ReaderOpenMetrics>({
+    cacheHit: false,
+    clickStartedAtMs: null,
+    documentId: null,
+    firstRenderRequestAtMs: null,
+    openSessionId: null,
+    page: null,
+    pdfRuntimeStartedBeforeVisible: false,
+    renderResponseReceivedAtMs: null,
+    source: "unknown",
+    staleRequestCount: 0,
+    summaryLogged: false,
+    zoom: null
+  });
 
-  function resetWheelGesture() {
+  function resetOpenMetrics() {
+    openMetricsRef.current = {
+      cacheHit: false,
+      clickStartedAtMs: readerSession?.clickStartedAtMs ?? null,
+      documentId: readerSession?.documentId ?? null,
+      firstRenderRequestAtMs: null,
+      openSessionId: readerSession?.openSessionId ?? null,
+      page: readerSession?.page ?? null,
+      pdfRuntimeStartedBeforeVisible: false,
+      renderResponseReceivedAtMs: null,
+      source: readerSession?.source ?? "unknown",
+      staleRequestCount: 0,
+      summaryLogged: false,
+      zoom: readerSession?.zoom ?? null
+    };
+  }
+
+  const backgroundWorkSuspended =
+    pendingReaderOpenSessionId !== null && pendingReaderOpenSessionId !== openSessionId;
+
+  navigationTargetPageRef.current = targetPage;
+  pageCountRef.current = pageCount;
+  displayZoomRef.current = displayZoom;
+  displayedPageRef.current = displayedPage;
+  incomingPageRef.current = incomingPage;
+
+  function cancelPostVisibleIdleWork() {
+    const activeHandle = postVisibleIdleHandleRef.current;
+    if (activeHandle === null) {
+      return;
+    }
+
+    window.cancelAnimationFrame(activeHandle);
+    window.clearTimeout(activeHandle);
+
+    postVisibleIdleHandleRef.current = null;
+  }
+
+  function schedulePostVisibleIdleWork(requestKey: string) {
+    cancelPostVisibleIdleWork();
+
+    const commitReady = () => {
+      postVisibleIdleHandleRef.current = null;
+      setPostVisibleWorkReadyKey((currentKey) => (currentKey === requestKey ? currentKey : requestKey));
+      debugAction("reader.post-visible-work-ready", {
+        documentId: currentDocumentRef.current?.document.id ?? null,
+        openSessionId,
+        requestKey
+      });
+    };
+
+    // Text selection should become available as soon as the visible page settles,
+    // so gate post-visible work by the next frame instead of waiting for idle time.
+    postVisibleIdleHandleRef.current =
+      typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame(() => {
+            commitReady();
+          })
+        : window.setTimeout(commitReady, 16);
+  }
+
+  function markPageReadyForPreload(target: PreloadReadyTarget) {
+    debugAction("reader.preload-ready-received", {
+      displayedPage: displayedPage?.pageNumber ?? null,
+      documentId: target.documentId,
+      incomingPage: incomingPage?.pageNumber ?? null,
+      page: target.pageNumber,
+      requestKey: target.requestKey
+    });
+    setPreloadReadyTarget((currentTarget) =>
+      currentTarget &&
+      currentTarget.documentId === target.documentId &&
+      currentTarget.pageNumber === target.pageNumber &&
+      currentTarget.requestKey === target.requestKey
+        ? currentTarget
+        : target
+    );
+  }
+
+  function recordNavigationIntent(
+    nextPage: number,
+    reason: string,
+    previousTargetPage: number | null
+  ) {
+    const previousGeneration = navigationGenerationRef.current;
+    const nextGeneration = previousGeneration + 1;
+    navigationGenerationRef.current = nextGeneration;
+    navigationTargetPageRef.current = nextPage;
+    debugAction("reader.navigation-intent", {
+      currentGeneration: previousGeneration,
+      navigationGeneration: nextGeneration,
+      previousTargetPage,
+      reason,
+      targetPage: nextPage
+    });
+  }
+
+  function isLatestNavigationIntent(navigationGeneration: number, resultPage: number) {
+    return (
+      navigationGeneration === navigationGenerationRef.current &&
+      resultPage === navigationTargetPageRef.current
+    );
+  }
+
+  function buildPresentedPage(candidate: ForegroundPageCandidate): PresentedPage {
+    return {
+      ...candidate.page,
+      presentation: {
+        navigationGeneration: candidate.navigationGeneration,
+        requestId: candidate.requestId,
+        source: candidate.source,
+        targetPage: candidate.targetPage
+      }
+    };
+  }
+
+  function toForegroundCandidate(page: PresentedPage): ForegroundPageCandidate {
+    return {
+      navigationGeneration: page.presentation.navigationGeneration,
+      openSessionId,
+      page,
+      requestId: page.presentation.requestId,
+      source: page.presentation.source,
+      targetPage: page.presentation.targetPage
+    };
+  }
+
+  function logForegroundResult(
+    event: "reader.render-result-accepted" | "reader.render-result-discarded",
+    candidate: ForegroundPageCandidate,
+    phase: ForegroundPhase
+  ) {
+    debugAction(event, {
+      currentGeneration: navigationGenerationRef.current,
+      currentTargetPage: navigationTargetPageRef.current,
+      navigationGeneration: candidate.navigationGeneration,
+      openSessionId: candidate.openSessionId,
+      page: candidate.page.pageNumber,
+      phase,
+      requestId: candidate.requestId,
+      resultPage: candidate.page.pageNumber,
+      source: candidate.source,
+      targetPage: candidate.targetPage
+    });
+  }
+
+  function shouldAcceptForegroundCandidate(
+    candidate: ForegroundPageCandidate,
+    phase: ForegroundPhase
+  ) {
+    const activeDocumentId = currentDocumentRef.current?.document.id ?? null;
+    const candidateDocumentId = candidate.page.documentId;
+    if (
+      activeDocumentId !== candidateDocumentId ||
+      candidate.navigationGeneration !== navigationGenerationRef.current ||
+      candidate.requestId !== latestForegroundRequestIdRef.current ||
+      candidate.targetPage !== navigationTargetPageRef.current ||
+      candidate.page.pageNumber !== navigationTargetPageRef.current
+    ) {
+      logForegroundResult("reader.render-result-discarded", candidate, phase);
+      return false;
+    }
+
+    logForegroundResult("reader.render-result-accepted", candidate, phase);
+    return true;
+  }
+
+  function assignForegroundPage(candidate: ForegroundPageCandidate) {
+    if (!shouldAcceptForegroundCandidate(candidate, "assign")) {
+      if (activeForegroundRenderRef.current?.requestId === candidate.requestId) {
+        activeForegroundRenderRef.current = null;
+      }
+      return false;
+    }
+
+    pageCache.current.set(candidate.page.cacheKey, candidate.page);
+    const presentedPage = buildPresentedPage(candidate);
+    const currentDisplayedPage = displayedPageRef.current;
+    const currentIncomingPage = incomingPageRef.current;
+
+    if (currentDisplayedPage?.requestKey === presentedPage.requestKey) {
+      setDisplayedPage(presentedPage);
+      setCurrentPage(presentedPage.pageNumber);
+      setLoadingDocument(false);
+      setRenderError(null);
+      if (!currentIncomingPage || currentIncomingPage.requestKey === presentedPage.requestKey) {
+        setIsRendering(false);
+      }
+      if (activeForegroundRenderRef.current?.requestId === candidate.requestId) {
+        activeForegroundRenderRef.current = null;
+      }
+      return true;
+    }
+
+    if (currentIncomingPage?.requestKey === presentedPage.requestKey) {
+      setIncomingPage(presentedPage);
+      setRenderError(null);
+      if (activeForegroundRenderRef.current?.requestId === candidate.requestId) {
+        activeForegroundRenderRef.current = null;
+      }
+      return true;
+    }
+
+    if (!currentDisplayedPage) {
+      setDisplayedPage(presentedPage);
+      setCurrentPage(presentedPage.pageNumber);
+      setIncomingPage(null);
+      incomingPageKeyRef.current = null;
+      setLoadingDocument(false);
+      setRenderError(null);
+      setIsRendering(false);
+      if (activeForegroundRenderRef.current?.requestId === candidate.requestId) {
+        activeForegroundRenderRef.current = null;
+      }
+      return true;
+    }
+
+    incomingPageKeyRef.current = presentedPage.requestKey;
+    setIncomingPage(presentedPage);
+    setRenderError(null);
+    if (activeForegroundRenderRef.current?.requestId === candidate.requestId) {
+      activeForegroundRenderRef.current = null;
+    }
+    return true;
+  }
+
+  function acquireForegroundPage(
+    nextPage: number,
+    nextZoom: number,
+    navigationGeneration: number,
+    requestId: number
+  ) {
+    const logicalKey = makePageCacheKey(document?.document.id ?? "", nextPage, nextZoom);
+    const localCachedPage = pageCache.current.getByLogicalKey(logicalKey);
+    if (localCachedPage) {
+      return {
+        logicalKey,
+        mode: "immediate" as const,
+        candidate: {
+          navigationGeneration,
+          openSessionId,
+          page: localCachedPage,
+          requestId,
+          source: "local-cache" as const,
+          targetPage: nextPage
+        }
+      };
+    }
+
+    if (!document) {
+      return null;
+    }
+
+    const completedPage = getCompletedRenderedPage(
+      document.document.id,
+      nextPage,
+      nextZoom,
+      "foreground"
+    );
+    if (completedPage) {
+      return {
+        logicalKey,
+        mode: "immediate" as const,
+        candidate: {
+          navigationGeneration,
+          openSessionId,
+          page: completedPage,
+          requestId,
+          source: "completed-registry" as const,
+          targetPage: nextPage
+        }
+      };
+    }
+
+    const joinedRender = getInFlightRenderedPage(
+      document.document.id,
+      nextPage,
+      nextZoom,
+      "foreground"
+    );
+    if (joinedRender) {
+      return {
+        logicalKey,
+        mode: "async" as const,
+        source: "inflight-join" as const,
+        promise: joinedRender
+      };
+    }
+
+    return {
+      logicalKey,
+      mode: "async" as const,
+      source: "fresh-render" as const,
+      promise: startFreshPdfPageRender(document.document.id, nextPage, nextZoom, {
+        caller: "foreground",
+        openSessionId,
+        requestSequence: requestId
+      })
+    };
+  }
+
+  function resetWheelGesture(options?: { clearRapidTurnInput?: boolean }) {
     wheelGestureRef.current = {
       accumulatedBoundaryDistance: 0,
       direction: null,
       lastAt: 0,
       pageTurned: false
     };
+
+    if (options?.clearRapidTurnInput && rapidTurnLastInputRef.current?.source === "wheel") {
+      rapidTurnLastInputRef.current = null;
+    }
   }
+
+  useEffect(() => {
+    if (!backgroundWorkSuspended) {
+      return;
+    }
+
+    cancelPostVisibleIdleWork();
+    if (preloadTimerRef.current !== null) {
+      window.clearTimeout(preloadTimerRef.current);
+      preloadTimerRef.current = null;
+    }
+    setPreloadReadyTarget(null);
+    setPostVisibleWorkReadyKey(null);
+  }, [backgroundWorkSuspended]);
 
   function cancelSmoothWheelAnimation() {
     const smoothWheelState = smoothWheelStateRef.current;
@@ -272,6 +709,58 @@ export function useReaderController({
     }
     smoothWheelState.animationFrameId = null;
     smoothWheelState.lastFrameAt = 0;
+  }
+
+  function syncSmoothWheelStateToSurface(
+    scrollSurface: HTMLDivElement,
+    options?: { cancelAnimation?: boolean }
+  ) {
+    if (options?.cancelAnimation) {
+      cancelSmoothWheelAnimation();
+    }
+
+    const smoothWheelState = smoothWheelStateRef.current;
+    smoothWheelState.surface = scrollSurface;
+    smoothWheelState.targetScrollTop = scrollSurface.scrollTop;
+    wheelGestureRef.current.accumulatedBoundaryDistance = 0;
+    wheelGestureRef.current.pageTurned = false;
+  }
+
+  function suppressBoundaryNavigationWindow(durationMs = MANUAL_SCROLL_BOUNDARY_SUPPRESSION_MS) {
+    manualScrollStateRef.current.suppressBoundaryUntil = Date.now() + durationMs;
+  }
+
+  function cancelQueuedScrollReset(pageNumber?: number) {
+    setScrollResetRequest((currentRequest) => {
+      if (!currentRequest) {
+        return currentRequest;
+      }
+
+      if (typeof pageNumber === "number" && currentRequest.pageNumber !== pageNumber) {
+        return currentRequest;
+      }
+
+      return null;
+    });
+  }
+
+  function beginManualScroll(scrollSurface: HTMLDivElement) {
+    manualScrollStateRef.current.active = true;
+    suppressBoundaryNavigationWindow();
+    cancelQueuedScrollReset(displayedPage?.pageNumber ?? currentPage);
+    syncSmoothWheelStateToSurface(scrollSurface, { cancelAnimation: true });
+  }
+
+  function endManualScroll() {
+    manualScrollStateRef.current.active = false;
+    suppressBoundaryNavigationWindow();
+  }
+
+  function shouldSuppressBoundaryNavigation(now: number) {
+    const manualScrollState = manualScrollStateRef.current;
+    return (
+      manualScrollState.active || now < manualScrollState.suppressBoundaryUntil
+    );
   }
 
   function animateSmoothWheelScroll() {
@@ -306,6 +795,7 @@ export function useReaderController({
         SMOOTH_WHEEL_MAX_BLEND,
         Math.max(SMOOTH_WHEEL_MIN_BLEND, elapsed / SMOOTH_WHEEL_BASE_DURATION_MS)
       );
+      activeState.ignoreScrollEvents += 1;
       activeSurface.scrollTop += delta * blend;
       activeState.animationFrameId = window.requestAnimationFrame(step);
     };
@@ -319,9 +809,7 @@ export function useReaderController({
   function queueSmoothWheelScroll(scrollSurface: HTMLDivElement, nextScrollTop: number) {
     const smoothWheelState = smoothWheelStateRef.current;
     if (smoothWheelState.surface !== scrollSurface) {
-      cancelSmoothWheelAnimation();
-      smoothWheelState.surface = scrollSurface;
-      smoothWheelState.targetScrollTop = scrollSurface.scrollTop;
+      syncSmoothWheelStateToSurface(scrollSurface, { cancelAnimation: true });
     }
 
     smoothWheelState.targetScrollTop = nextScrollTop;
@@ -361,13 +849,6 @@ export function useReaderController({
     if (rapidTurnWheelFinalizeTimerRef.current !== null) {
       window.clearTimeout(rapidTurnWheelFinalizeTimerRef.current);
       rapidTurnWheelFinalizeTimerRef.current = null;
-    }
-  }
-
-  function clearPageCommitTimer() {
-    if (pageCommitTimerRef.current !== null) {
-      window.clearTimeout(pageCommitTimerRef.current);
-      pageCommitTimerRef.current = null;
     }
   }
 
@@ -484,6 +965,11 @@ export function useReaderController({
     };
     clearRapidTurnWheelFinalizeTimer();
     setRapidTurnOverlay(null);
+  }
+
+  function resetRapidTurnSession(reason: string) {
+    rapidTurnLastInputRef.current = null;
+    hideRapidTurnOverlay(reason);
   }
 
   function updateReaderState(nextState: DocumentState | null) {
@@ -642,56 +1128,6 @@ export function useReaderController({
     }
   }
 
-  function commitPageTurnImmediately(nextPage: number, reason: string) {
-    clearPageCommitTimer();
-    pendingCommittedPageRef.current = null;
-    lastPageCommitAtRef.current = Date.now();
-    debugAction("reader.page-commit", {
-      page: nextPage,
-      reason
-    });
-    setCurrentPage((page) => (page === nextPage ? page : nextPage));
-  }
-
-  function commitPageTurn(nextPage: number, reason: string) {
-    pendingCommittedPageRef.current = nextPage;
-
-    const runCommit = () => {
-      clearPageCommitTimer();
-      const pendingPage = pendingCommittedPageRef.current;
-      if (pendingPage === null) {
-        return;
-      }
-
-      pendingCommittedPageRef.current = null;
-      lastPageCommitAtRef.current = Date.now();
-      debugAction("reader.page-commit", {
-        page: pendingPage,
-        reason
-      });
-      setCurrentPage((page) => (page === pendingPage ? page : pendingPage));
-    };
-
-    const now = Date.now();
-    const elapsed = now - lastPageCommitAtRef.current;
-    const shouldCommitImmediately =
-      elapsed >= PAGE_TURN_COMMIT_THROTTLE_MS && pageCommitTimerRef.current === null;
-
-    if (shouldCommitImmediately) {
-      runCommit();
-      return;
-    }
-
-    const remainingDelay = Math.max(PAGE_TURN_COMMIT_THROTTLE_MS - elapsed, 0);
-    clearPageCommitTimer();
-    debugAction("reader.page-commit-scheduled", {
-      delayMs: remainingDelay,
-      page: nextPage,
-      reason
-    });
-    pageCommitTimerRef.current = window.setTimeout(runCommit, remainingDelay);
-  }
-
   function startRapidTurnSession(intent: RapidTurnIntent, nextPage: number) {
     rapidTurnSessionRef.current = {
       active: true,
@@ -736,12 +1172,6 @@ export function useReaderController({
       targetPage: nextPage
     });
 
-    if (currentPage !== nextPage || pendingCommittedPageRef.current !== null) {
-      updateRapidTurnSession(nextPage, true);
-      commitPageTurnImmediately(nextPage, `${reason}:finalize`);
-      return;
-    }
-
     if (displayedPage?.pageNumber === nextPage && !incomingPage && !isRendering) {
       hideRapidTurnOverlay(`${reason}:ready`);
       return;
@@ -752,8 +1182,19 @@ export function useReaderController({
 
   function noteRapidTurnIntent(intent: RapidTurnIntent, nextPage: number) {
     const now = Date.now();
-    const shouldActivate = shouldActivateRapidTurn(rapidTurnLastInputRef.current, intent, now);
     const activeSession = rapidTurnSessionRef.current;
+
+    if (shouldResetRapidTurnSession(activeSession, intent)) {
+      hideRapidTurnOverlay("stream-changed");
+      rapidTurnLastInputRef.current = {
+        at: now,
+        direction: intent.direction,
+        source: intent.source
+      };
+      return;
+    }
+
+    const shouldActivate = shouldActivateRapidTurn(rapidTurnLastInputRef.current, intent, now);
 
     rapidTurnLastInputRef.current = {
       at: now,
@@ -787,8 +1228,19 @@ export function useReaderController({
   ) {
     setTargetPage((currentTargetPage) => {
       if (currentTargetPage === nextPage) {
+        debugAction("reader.page-request-ignored", {
+          currentGeneration: navigationGenerationRef.current,
+          currentTargetPage,
+          nextPage,
+          reason
+        });
         return currentTargetPage;
       }
+
+      recordNavigationIntent(nextPage, reason, currentTargetPage);
+
+      lastNavigationDirectionRef.current =
+        nextPage > currentTargetPage ? "next" : "previous";
 
       queueScrollReset(
         nextPage,
@@ -798,6 +1250,7 @@ export function useReaderController({
       if (intent) {
         noteRapidTurnIntent(intent, nextPage);
       } else {
+        resetRapidTurnSession(`${reason}:non-rapid-navigation`);
         resetWheelGesture();
       }
 
@@ -808,11 +1261,21 @@ export function useReaderController({
       });
       return nextPage;
     });
-    commitPageTurn(nextPage, reason);
+    debugAction("reader.page-commit", {
+      page: nextPage,
+      reason
+    });
   }
 
+  finalizeRapidTurnListenerRef.current = finalizeRapidTurn;
+  flushReaderStateListenerRef.current = flushReaderState;
+
   useEffect(() => {
-    if (document?.document.id === initializedDocumentIdRef.current) {
+    const nextDocumentId = document?.document.id ?? null;
+    const sameDocumentId = nextDocumentId === initializedDocumentIdRef.current;
+    const sameReaderSessionKey = readerSessionKey === initializedReaderSessionKeyRef.current;
+
+    if (sameDocumentId && sameReaderSessionKey) {
       if (!runtimeSessionRef.current && document) {
         runtimeSessionRef.current = createPdfRuntimeSession(document.document.id);
         debugAction("reader.runtime-session-recreated", {
@@ -835,23 +1298,34 @@ export function useReaderController({
     }
 
     const previousRuntimeSession = runtimeSessionRef.current;
-    runtimeSessionRef.current = document ? createPdfRuntimeSession(document.document.id) : null;
-    if (previousRuntimeSession) {
+    const previousDocumentId = previousDocument?.document.id ?? null;
+    const shouldRecreateRuntimeSession =
+      (!previousRuntimeSession && Boolean(document)) || previousDocumentId !== nextDocumentId;
+    if (shouldRecreateRuntimeSession) {
+      runtimeSessionRef.current = document ? createPdfRuntimeSession(document.document.id) : null;
+    }
+    if (previousRuntimeSession && previousDocumentId !== nextDocumentId) {
       void previousRuntimeSession.dispose();
     }
 
-    initializedDocumentIdRef.current = document?.document.id ?? null;
+    initializedDocumentIdRef.current = nextDocumentId;
+    initializedReaderSessionKeyRef.current = null;
     currentDocumentRef.current = document;
+    resetOpenMetrics();
     pageCache.current.clear();
     preloadInFlight.current.clear();
+    documentGenerationRef.current += 1;
+    navigationGenerationRef.current = 0;
+    navigationTargetPageRef.current = 1;
+    renderSequenceRef.current += 1;
+    latestForegroundRequestIdRef.current = renderSequenceRef.current;
+    activeForegroundRenderRef.current = null;
+    firstRenderRequestedSessionRef.current = null;
     if (preloadTimerRef.current !== null) {
       window.clearTimeout(preloadTimerRef.current);
       preloadTimerRef.current = null;
     }
-    clearPageCommitTimer();
     clearRapidTurnWheelFinalizeTimer();
-    pendingCommittedPageRef.current = null;
-    lastPageCommitAtRef.current = 0;
     rapidTurnLastInputRef.current = null;
     rapidTurnSessionRef.current = {
       active: false,
@@ -859,7 +1333,12 @@ export function useReaderController({
       source: null,
       targetPage: 1
     };
+    lastNavigationDirectionRef.current = null;
     resetWheelGesture();
+    manualScrollStateRef.current = {
+      active: false,
+      suppressBoundaryUntil: 0
+    };
     outlineLoadedForDocumentIdRef.current = null;
     embeddedOutlineItemsRef.current = [];
     setDocumentError(null);
@@ -871,6 +1350,7 @@ export function useReaderController({
       state: "missing"
     });
     cancelSmoothWheelAnimation();
+    smoothWheelStateRef.current.ignoreScrollEvents = 0;
     smoothWheelStateRef.current.surface = null;
     smoothWheelStateRef.current.targetScrollTop = 0;
     autoMaximizeZoomRef.current = null;
@@ -878,15 +1358,20 @@ export function useReaderController({
     setIsRendering(false);
     setDisplayedPage(null);
     setIncomingPage(null);
-    setIncomingReady(false);
     setRapidTurnOverlay(null);
     incomingPageKeyRef.current = null;
+    setInitialStateResolved(false);
+    cancelPostVisibleIdleWork();
+    setPreloadReadyTarget(null);
+    setPostVisibleWorkReadyKey(null);
     onOutlineChange([]);
 
     if (!document) {
       setPageCount(0);
       setCurrentPage(1);
       setTargetPage(1);
+      navigationTargetPageRef.current = 1;
+      latestForegroundRequestIdRef.current = 0;
       clearZoomCommitTimer();
       setDisplayZoom(1);
       setCommittedZoom(1);
@@ -900,14 +1385,24 @@ export function useReaderController({
 
     setLoadingDocument(true);
     const nextPageCount = Math.max(document.pageCount, 1);
-    const nextPage = clampPage(document.state.lastPage, nextPageCount);
-    const nextZoom = clampZoom(document.state.zoom ?? 1);
+    const nextPage = clampPage(readerSession?.page ?? document.state.lastPage, nextPageCount);
+    const nextZoom = clampZoom(readerSession?.zoom ?? document.state.zoom ?? 1);
+    latestForegroundRequestIdRef.current = 0;
     setPageCount(nextPageCount);
     setCurrentPage(nextPage);
     setTargetPage(nextPage);
+    recordNavigationIntent(nextPage, "document-open", null);
     clearZoomCommitTimer();
     setDisplayZoom(nextZoom);
     setCommittedZoom(nextZoom);
+    debugAction("reader.initial-page:resolved", {
+      documentId: document.document.id,
+      openSessionId,
+      page: nextPage,
+      pageCount: nextPageCount,
+      source: "stored-state",
+      zoom: nextZoom
+    });
     const rawNextState = {
       ...document.state,
       lastPage: nextPage,
@@ -931,15 +1426,23 @@ export function useReaderController({
         force: true
       });
     }
+    initializedReaderSessionKeyRef.current = readerSessionKey;
+    setInitialStateResolved(true);
     onStatusChange(`Opened ${nextPageCount} pages.`);
-  }, [document, onOutlineChange, onStateChange, onStatusChange]);
+  }, [onOutlineChange, onStateChange, onStatusChange, readerSession, readerSessionKey]);
 
   useEffect(() => {
     return () => {
       const runtimeSession = runtimeSessionRef.current;
       runtimeSessionRef.current = null;
       cancelSmoothWheelAnimation();
+      smoothWheelStateRef.current.ignoreScrollEvents = 0;
+      manualScrollStateRef.current = {
+        active: false,
+        suppressBoundaryUntil: 0
+      };
       clearZoomCommitTimer();
+      cancelPostVisibleIdleWork();
       if (runtimeSession) {
         void runtimeSession.dispose();
       }
@@ -960,14 +1463,16 @@ export function useReaderController({
       }
 
       normalizationGenerationRef.current += 1;
+      documentGenerationRef.current += 1;
       renderSequenceRef.current += 1;
+      latestForegroundRequestIdRef.current = renderSequenceRef.current;
       pageCache.current.clear();
       preloadInFlight.current.clear();
       invalidatePdfPageRenders(event.payload.documentId);
       setIncomingPage(null);
-      setIncomingReady(false);
       incomingPageKeyRef.current = null;
       setIsRendering(false);
+      activeForegroundRenderRef.current = null;
       debugAction("reader.normalization-ready", {
         documentId: event.payload.documentId,
         token: event.payload.token
@@ -989,17 +1494,17 @@ export function useReaderController({
   useEffect(() => {
     function flushOnVisibilityChange() {
       if (window.document.visibilityState === "hidden") {
-        flushReaderState("document-hidden");
+        flushReaderStateListenerRef.current("document-hidden");
       }
     }
 
     function flushOnWindowBlur() {
-      finalizeRapidTurn("window-blur");
-      flushReaderState("window-blur");
+      finalizeRapidTurnListenerRef.current("window-blur");
+      flushReaderStateListenerRef.current("window-blur");
     }
 
     function flushOnBeforeUnload() {
-      flushReaderState("before-unload");
+      flushReaderStateListenerRef.current("before-unload");
     }
 
     window.document.addEventListener("visibilitychange", flushOnVisibilityChange);
@@ -1011,18 +1516,18 @@ export function useReaderController({
       window.removeEventListener("blur", flushOnWindowBlur);
       window.removeEventListener("beforeunload", flushOnBeforeUnload);
       clearZoomCommitTimer();
-      finalizeRapidTurn("controller-unmount");
-      flushReaderState("controller-unmount");
+      finalizeRapidTurnListenerRef.current("controller-unmount");
+      flushReaderStateListenerRef.current("controller-unmount");
     };
   }, []);
 
   useEffect(() => {
     onSnapshotChange({
-      currentPage: targetPage,
+      currentPage,
       pageCount,
       zoom: displayZoom
     });
-  }, [displayZoom, onSnapshotChange, pageCount, targetPage]);
+  }, [currentPage, displayZoom, onSnapshotChange, pageCount]);
 
   useEffect(() => {
     setReaderState((current) => {
@@ -1049,16 +1554,32 @@ export function useReaderController({
       return;
     }
 
+    if (backgroundWorkSuspended) {
+      return;
+    }
+
+    if (postVisibleWorkReadyKey !== displayedPage.requestKey) {
+      return;
+    }
+
     const runtimeSession = runtimeSessionRef.current;
     if (!runtimeSession) {
       return;
     }
 
     void runtimeSession.load().catch(() => undefined);
-  }, [displayedPage, document]);
+  }, [backgroundWorkSuspended, displayedPage, document, postVisibleWorkReadyKey]);
 
   useEffect(() => {
     if (!document || !displayedPage) {
+      return;
+    }
+
+    if (backgroundWorkSuspended) {
+      return;
+    }
+
+    if (postVisibleWorkReadyKey !== displayedPage.requestKey) {
       return;
     }
 
@@ -1093,10 +1614,11 @@ export function useReaderController({
     return () => {
       cancelled = true;
     };
-  }, [displayedPage, document, onOutlineChange]);
+  }, [backgroundWorkSuspended, displayedPage, document, onOutlineChange, postVisibleWorkReadyKey]);
 
-  const displayedPageDocumentId = document?.document.id ?? null;
+  const displayedPageDocumentId = displayedPage?.documentId ?? null;
   const displayedPageNumber = displayedPage?.pageNumber ?? null;
+  const displayedPageRequestKey = displayedPage?.requestKey ?? null;
 
   useEffect(() => {
     if (!document || !displayedPage) {
@@ -1109,6 +1631,32 @@ export function useReaderController({
       setDisplayedPageTextDebugStatus({
         itemCount: 0,
         pageNumber: displayedPage?.pageNumber ?? null,
+        state: "missing"
+      });
+      return;
+    }
+
+    if (backgroundWorkSuspended) {
+      setDisplayedPageTextLayer(null);
+      setDisplayedPageTextDebugStatus({
+        itemCount: 0,
+        pageNumber: displayedPage.pageNumber,
+        state: "missing"
+      });
+      return;
+    }
+
+    if (displayedPage.documentId !== document.document.id) {
+      debugAction("reader.text-layer-cleared", {
+        displayedPageDocumentId: displayedPage.documentId,
+        displayedPageNumber: displayedPage.pageNumber,
+        documentId: document.document.id,
+        reason: "page-document-mismatch"
+      });
+      setDisplayedPageTextLayer(null);
+      setDisplayedPageTextDebugStatus({
+        itemCount: 0,
+        pageNumber: displayedPage.pageNumber,
         state: "missing"
       });
       return;
@@ -1185,14 +1733,14 @@ export function useReaderController({
     return () => {
       cancelled = true;
     };
-  }, [displayedPageDocumentId, displayedPageNumber]);
+  }, [backgroundWorkSuspended, displayedPageDocumentId, displayedPageNumber, displayedPageRequestKey]);
 
   useEffect(() => {
     if (!document) {
       renderSequenceRef.current += 1;
+      activeForegroundRenderRef.current = null;
       setDisplayedPage(null);
       setIncomingPage(null);
-      setIncomingReady(false);
       incomingPageKeyRef.current = null;
       setIsRendering(false);
       setRenderError(null);
@@ -1200,29 +1748,127 @@ export function useReaderController({
       return;
     }
 
-    const logicalKey = makePageCacheKey(document.document.id, currentPage, committedZoom);
-    const cachedPage = pageCache.current.getByLogicalKey(logicalKey);
-    const requestSequence = renderSequenceRef.current + 1;
-    renderSequenceRef.current = requestSequence;
+    if (!initialStateResolved) {
+      return;
+    }
+
+    if (initializedReaderSessionKeyRef.current !== readerSessionKey) {
+      debugAction("reader.render-session-waiting", {
+        documentId: document.document.id,
+        openSessionId,
+        requestedSessionKey: readerSessionKey,
+        initializedSessionKey: initializedReaderSessionKeyRef.current,
+        currentPage,
+        zoom: committedZoom
+      });
+      return;
+    }
+
+    const renderPage = targetPage;
+    const renderZoom = committedZoom;
+    const navigationGeneration = navigationGenerationRef.current;
+
+    if (openSessionId && firstRenderRequestedSessionRef.current !== openSessionId) {
+      openMetricsRef.current.firstRenderRequestAtMs = performance.now();
+      openMetricsRef.current.page = renderPage;
+      openMetricsRef.current.zoom = renderZoom;
+      debugAction("reader.render:first-request", {
+        documentId: document.document.id,
+        openSessionId,
+        source: openMetricsRef.current.source,
+        page: renderPage,
+        zoom: renderZoom
+      });
+      firstRenderRequestedSessionRef.current = openSessionId;
+    }
+
+    const logicalKey = makePageCacheKey(document.document.id, renderPage, renderZoom);
+    const currentDisplayedPage = displayedPageRef.current;
+    const currentIncomingPage = incomingPageRef.current;
+
+    if (currentDisplayedPage?.logicalKey === logicalKey) {
+      if (currentIncomingPage && currentIncomingPage.logicalKey !== logicalKey) {
+        setIncomingPage(null);
+        incomingPageKeyRef.current = null;
+      }
+      activeForegroundRenderRef.current = null;
+      setIsRendering(false);
+      setRenderError(null);
+      setLoadingDocument(false);
+      return;
+    }
+
+    if (currentIncomingPage?.logicalKey === logicalKey) {
+      setRenderError(null);
+      return;
+    }
+
+    if (activeForegroundRenderRef.current?.logicalKey === logicalKey) {
+      debugAction("reader.render-deduped", {
+        documentId: document.document.id,
+        openSessionId,
+        page: renderPage,
+        requestId: activeForegroundRenderRef.current.requestId,
+        zoom: renderZoom
+      });
+      return;
+    }
+
+    const requestId = renderSequenceRef.current + 1;
+    renderSequenceRef.current = requestId;
+    latestForegroundRequestIdRef.current = requestId;
+    activeForegroundRenderRef.current = {
+      logicalKey,
+      requestId
+    };
+
+    const acquisition = acquireForegroundPage(renderPage, renderZoom, navigationGeneration, requestId);
+    if (!acquisition) {
+      if (activeForegroundRenderRef.current?.requestId === requestId) {
+        activeForegroundRenderRef.current = null;
+      }
+      return;
+    }
 
     debugAction("reader.render-request", {
+      cached: acquisition.mode === "immediate",
       documentId: document.document.id,
-      currentPage,
-      zoom: committedZoom,
-      requestSequence,
-      cached: Boolean(cachedPage)
+      openSessionId,
+      currentPage: renderPage,
+      currentGeneration: navigationGenerationRef.current,
+      navigationGeneration,
+      requestId,
+      source: acquisition.mode === "immediate" ? acquisition.candidate.source : acquisition.source,
+      targetPage: renderPage,
+      zoom: renderZoom
     });
 
-    if (cachedPage) {
-      if (!displayedPage) {
-        setDisplayedPage(cachedPage);
-        setLoadingDocument(false);
-      } else if (displayedPage.requestKey !== cachedPage.requestKey) {
-        incomingPageKeyRef.current = cachedPage.requestKey;
-        setIncomingReady(false);
-        setIncomingPage(cachedPage);
+    if (acquisition.mode === "immediate") {
+      const acceptedCandidate = acquisition.candidate;
+      openMetricsRef.current.cacheHit = true;
+      openMetricsRef.current.renderResponseReceivedAtMs = performance.now();
+      openMetricsRef.current.page = acceptedCandidate.page.pageNumber;
+      openMetricsRef.current.zoom = renderZoom;
+      debugAction(
+        acceptedCandidate.source === "local-cache"
+          ? "reader.foreground-local-page-cache-hit"
+          : "reader.foreground-completed-registry-hit",
+        {
+          anchorPage: currentDisplayedPage?.pageNumber ?? renderPage,
+          cacheKey: acceptedCandidate.page.cacheKey,
+          documentGeneration: documentGenerationRef.current,
+          elapsedMs: 0,
+          page: acceptedCandidate.page.pageNumber,
+          requestId,
+          startedAt: performance.now(),
+          zoom: renderZoom
+        }
+      );
+      if (shouldAcceptForegroundCandidate(acceptedCandidate, "acquire")) {
+        assignForegroundPage(acceptedCandidate);
+      } else if (activeForegroundRenderRef.current?.requestId === requestId) {
+        activeForegroundRenderRef.current = null;
       }
-      setRenderError(null);
       setIsRendering(false);
       return;
     }
@@ -1231,72 +1877,74 @@ export function useReaderController({
     setRenderError(null);
     const process = startDebugProcess("reader.render-page", {
       documentId: document.document.id,
-      page: currentPage,
-      zoom: committedZoom,
-      requestSequence
+      openSessionId,
+      page: renderPage,
+      requestId,
+      zoom: renderZoom
     });
 
-    void renderVisiblePdfPage(document.document.id, currentPage, committedZoom)
+    void acquisition.promise
       .then((page) => {
-        if (shouldIgnoreRenderResponse(requestSequence, renderSequenceRef.current)) {
-          process.checkpoint("stale-response", {
-            page: page.pageNumber,
-            activeSequence: renderSequenceRef.current
-          });
-          debugAction("reader.render-stale-ignored", {
-            activeSequence: renderSequenceRef.current,
-            documentId: document.document.id,
-            page: page.pageNumber,
-            requestSequence
-          });
+        const candidate: ForegroundPageCandidate = {
+          navigationGeneration,
+          openSessionId,
+          page,
+          requestId,
+          source: acquisition.source,
+          targetPage: renderPage
+        };
+
+        if (!shouldAcceptForegroundCandidate(candidate, "acquire")) {
+          openMetricsRef.current.staleRequestCount += 1;
+          if (activeForegroundRenderRef.current?.requestId === requestId) {
+            activeForegroundRenderRef.current = null;
+            setIsRendering(false);
+          }
+          process.finish({ stale: true });
           return;
         }
 
-        pageCache.current.set(page.cacheKey, page);
-        if (!displayedPage) {
-          setDisplayedPage(page);
-          setIncomingPage(null);
-          setIncomingReady(false);
-          incomingPageKeyRef.current = null;
-          setLoadingDocument(false);
-        } else {
-          incomingPageKeyRef.current = page.requestKey;
-          setIncomingReady(false);
-          setIncomingPage(page);
-        }
-        setRenderError(null);
+        openMetricsRef.current.renderResponseReceivedAtMs = performance.now();
+        openMetricsRef.current.page = page.pageNumber;
+        openMetricsRef.current.zoom = renderZoom;
+        debugAction("reader.render:response-received", {
+          documentId: document.document.id,
+          openSessionId,
+          page: page.pageNumber,
+          requestId,
+          requestKey: page.requestKey,
+          zoom: renderZoom
+        });
+        assignForegroundPage(candidate);
         process.finish({
           page: page.pageNumber
         });
       })
       .catch((renderFailure) => {
-        if (shouldIgnoreRenderResponse(requestSequence, renderSequenceRef.current)) {
+        if (latestForegroundRequestIdRef.current !== requestId) {
           return;
         }
 
         process.fail(renderFailure);
+        if (activeForegroundRenderRef.current?.requestId === requestId) {
+          activeForegroundRenderRef.current = null;
+        }
         setRenderError("Unable to render this PDF page.");
         setIsRendering(false);
         setLoadingDocument(false);
         onStatusChange("Unable to render this PDF page.");
       });
-  }, [committedZoom, currentPage, displayedPage, document, onStatusChange]);
-
-  useEffect(() => {
-    if (!incomingPage || !incomingReady) {
-      return;
-    }
-
-    debugAction("reader.page-swap-committed", {
-      documentId: currentDocumentRef.current?.document.id ?? null,
-      page: incomingPage.pageNumber
-    });
-    setDisplayedPage(incomingPage);
-    setIncomingPage(null);
-    setIncomingReady(false);
-    incomingPageKeyRef.current = null;
-    setIsRendering(false);
-  }, [incomingPage, incomingReady]);
+  }, [
+    committedZoom,
+    displayedPage,
+    document,
+    incomingPage,
+    initialStateResolved,
+    onStatusChange,
+    openSessionId,
+    readerSessionKey,
+    targetPage
+  ]);
 
   useEffect(() => {
     if (!rapidTurnOverlay?.isFinalizing) {
@@ -1314,100 +1962,276 @@ export function useReaderController({
       preloadTimerRef.current = null;
     }
 
-    if (!document || !displayedPage) {
+    if (backgroundWorkSuspended) {
       return;
     }
 
-    if (displayedPage.pageNumber !== currentPage) {
+    if (!document || !preloadReadyTarget) {
+      return;
+    }
+
+    if (preloadReadyTarget.documentId !== document.document.id) {
+      return;
+    }
+
+    if (preloadReadyTarget.pageNumber !== currentPage) {
       debugAction("reader.preload-skipped", {
         currentPage,
-        displayedPage: displayedPage.pageNumber,
-        reason: "displayed-page-not-current"
+        displayedPage: displayedPage?.pageNumber ?? null,
+        preloadReadyPage: preloadReadyTarget.pageNumber,
+        reason: "preload-ready-page-not-current"
       });
       return;
     }
 
-    const anchorPage = displayedPage.pageNumber;
-    const adjacentPages = [anchorPage - 1, anchorPage + 1].filter(
-      (page) => page >= 1 && page <= pageCount
+    const anchorPage = preloadReadyTarget.pageNumber;
+    const requestedDocumentId = document.document.id;
+    const requestedDocumentGeneration = documentGenerationRef.current;
+    const adjacentPages = resolveAdjacentPreloadPages(
+      anchorPage,
+      pageCount,
+      lastNavigationDirectionRef.current
     );
 
     if (adjacentPages.length === 0) {
       return;
     }
 
+    let cancelled = false;
+    const chainStartedAt = performance.now();
+    const currentDocumentGeneration = documentGenerationRef.current;
+
+    debugAction("reader.preload-chain-started", {
+      anchorPage,
+      cacheKey: makePageCacheKey(requestedDocumentId, anchorPage, committedZoom),
+      documentGeneration: currentDocumentGeneration,
+      elapsedMs: 0,
+      page: anchorPage,
+      startedAt: chainStartedAt,
+      zoom: committedZoom
+    });
+
     preloadTimerRef.current = window.setTimeout(() => {
-      if (!currentDocumentRef.current || currentDocumentRef.current.document.id !== document.document.id) {
+      if (
+        cancelled ||
+        !currentDocumentRef.current ||
+        currentDocumentRef.current.document.id !== document.document.id
+      ) {
+        debugAction("reader.preload-chain-cancelled", {
+          anchorPage,
+          cacheKey: makePageCacheKey(requestedDocumentId, anchorPage, committedZoom),
+          discardReason: cancelled ? "effect-cleanup" : "document-changed-before-start",
+          documentGeneration: currentDocumentGeneration,
+          elapsedMs: Math.round(performance.now() - chainStartedAt),
+          page: anchorPage,
+          startedAt: chainStartedAt,
+          zoom: committedZoom
+        });
         return;
       }
 
-      if (displayedPage.pageNumber !== currentPage) {
+      if (preloadReadyTarget.pageNumber !== currentPage) {
         debugAction("reader.preload-skipped", {
           anchorPage,
           currentPage,
           reason: "navigation-advanced"
         });
+        debugAction("reader.preload-chain-cancelled", {
+          anchorPage,
+          cacheKey: makePageCacheKey(requestedDocumentId, anchorPage, committedZoom),
+          discardReason: "navigation-advanced-before-start",
+          documentGeneration: currentDocumentGeneration,
+          elapsedMs: Math.round(performance.now() - chainStartedAt),
+          page: anchorPage,
+          startedAt: chainStartedAt,
+          zoom: committedZoom
+        });
         return;
       }
 
-      for (const pageNumber of adjacentPages) {
-        const key = makePageCacheKey(document.document.id, pageNumber, committedZoom);
-        if (pageCache.current.hasLogicalKey(key) || preloadInFlight.current.has(key)) {
-          debugAction("reader.preload-skipped", {
-            key,
-            page: pageNumber,
-            reason: pageCache.current.hasLogicalKey(key) ? "cached" : "in-flight"
-          });
-          continue;
-        }
+      const normalizationGeneration = normalizationGenerationRef.current;
 
-        preloadInFlight.current.add(key);
-        debugAction("reader.preload-scheduled", {
-          anchorPage,
-          page: pageNumber,
-          zoom: committedZoom
-        });
-        const normalizationGeneration = normalizationGenerationRef.current;
-        void renderVisiblePdfPage(document.document.id, pageNumber, committedZoom)
-          .then((page) => {
-            if (normalizationGeneration === normalizationGenerationRef.current) {
-              pageCache.current.set(page.cacheKey, page);
-            }
-          })
-          .finally(() => {
-            preloadInFlight.current.delete(key);
+      const preloadSequentially = async () => {
+        for (const [index, pageNumber] of adjacentPages.entries()) {
+          if (
+            cancelled ||
+            currentDocumentRef.current?.document.id !== requestedDocumentId ||
+            documentGenerationRef.current !== requestedDocumentGeneration
+          ) {
+            return;
+          }
+
+          const key = makePageCacheKey(document.document.id, pageNumber, committedZoom);
+          const localCachedPage = pageCache.current.getByLogicalKey(key);
+          const registryCachedPage = localCachedPage
+            ? null
+            : getCompletedRenderedPage(
+                document.document.id,
+                pageNumber,
+                committedZoom,
+                "preload"
+              );
+          const completedPage = localCachedPage ?? registryCachedPage;
+          if (registryCachedPage) {
+            pageCache.current.set(registryCachedPage.cacheKey, registryCachedPage);
+          }
+
+          if (completedPage || preloadInFlight.current.has(key)) {
+            debugAction("reader.preload-skipped", {
+              key,
+              page: pageNumber,
+              priority: index === 0 ? "primary" : "secondary",
+              reason: completedPage ? "cached" : "in-flight"
+            });
+            continue;
+          }
+
+          preloadInFlight.current.add(key);
+          const requestStartedAt = performance.now();
+          debugAction("reader.preload-scheduled", {
+            anchorPage,
+            page: pageNumber,
+            preferredDirection: lastNavigationDirectionRef.current,
+            priority: index === 0 ? "primary" : "secondary",
+            zoom: committedZoom
           });
-      }
+          debugAction("reader.preload-requested", {
+            anchorPage,
+            cacheKey: key,
+            documentGeneration: currentDocumentGeneration,
+            elapsedMs: Math.round(requestStartedAt - chainStartedAt),
+            page: pageNumber,
+            startedAt: requestStartedAt,
+            zoom: committedZoom
+          });
+
+          try {
+            const page = await renderVisiblePdfPage(requestedDocumentId, pageNumber, committedZoom, {
+              caller: "preload",
+              openSessionId
+            });
+            if (
+              !cancelled &&
+              normalizationGeneration === normalizationGenerationRef.current &&
+              currentDocumentRef.current?.document.id === requestedDocumentId &&
+              documentGenerationRef.current === requestedDocumentGeneration
+            ) {
+              pageCache.current.set(page.cacheKey, page);
+              debugAction("reader.preload-completed", {
+                anchorPage,
+                cacheKey: key,
+                documentGeneration: currentDocumentGeneration,
+                elapsedMs: Math.round(performance.now() - requestStartedAt),
+                page: pageNumber,
+                startedAt: requestStartedAt,
+                zoom: committedZoom
+              });
+            } else {
+              debugAction("reader.preload-discarded", {
+                anchorPage,
+                cacheKey: key,
+                discardReason: cancelled
+                  ? "effect-cleanup-after-complete"
+                  : normalizationGeneration !== normalizationGenerationRef.current
+                    ? "normalization-generation-changed"
+                    : currentDocumentRef.current?.document.id !== requestedDocumentId
+                      ? "document-changed"
+                      : documentGenerationRef.current !== requestedDocumentGeneration
+                        ? "document-generation-changed"
+                        : "unknown",
+                documentGeneration: currentDocumentGeneration,
+                elapsedMs: Math.round(performance.now() - requestStartedAt),
+                page: pageNumber,
+                startedAt: requestStartedAt,
+                zoom: committedZoom
+              });
+            }
+          } catch (preloadFailure) {
+            debugAction("reader.preload-failed", {
+              documentId: requestedDocumentId,
+              error:
+                preloadFailure instanceof Error
+                  ? preloadFailure.message
+                  : String(preloadFailure),
+              page: pageNumber,
+              priority: index === 0 ? "primary" : "secondary",
+              zoom: committedZoom
+            });
+            debugAction("reader.preload-discarded", {
+              anchorPage,
+              cacheKey: key,
+              discardReason:
+                preloadFailure instanceof Error
+                  ? preloadFailure.message
+                  : String(preloadFailure),
+              documentGeneration: currentDocumentGeneration,
+              elapsedMs: Math.round(performance.now() - requestStartedAt),
+              page: pageNumber,
+              startedAt: requestStartedAt,
+              zoom: committedZoom
+            });
+          } finally {
+            preloadInFlight.current.delete(key);
+          }
+        }
+      };
+
+      void preloadSequentially();
     }, PRELOAD_DELAY_MS);
 
     return () => {
+      cancelled = true;
       if (preloadTimerRef.current !== null) {
         window.clearTimeout(preloadTimerRef.current);
         preloadTimerRef.current = null;
       }
     };
-  }, [committedZoom, currentPage, displayedPage, document, pageCount]);
+  }, [
+    backgroundWorkSuspended,
+    committedZoom,
+    currentPage,
+    displayedPage,
+    document,
+    pageCount,
+    preloadReadyTarget
+  ]);
 
   useEffect(() => {
     const api: ViewerApi | null = document
       ? {
           nextPage: () => {
-            const nextPage = clampPage(targetPage + 1, pageCount);
+            const baseTargetPage = navigationTargetPageRef.current;
+            const currentPageCount = pageCountRef.current;
+            const nextPage = clampPage(baseTargetPage + 1, currentPageCount || baseTargetPage);
+            debugAction("reader.navigate-header", {
+              currentPageCount,
+              direction: "next",
+              nextPage,
+              targetPage: baseTargetPage
+            });
             requestPageTurnWithIntent(nextPage, "next-page");
           },
           previousPage: () => {
-            const nextPage = clampPage(targetPage - 1, pageCount);
+            const baseTargetPage = navigationTargetPageRef.current;
+            const currentPageCount = pageCountRef.current;
+            const nextPage = clampPage(baseTargetPage - 1, currentPageCount || baseTargetPage);
+            debugAction("reader.navigate-header", {
+              currentPageCount,
+              direction: "previous",
+              nextPage,
+              targetPage: baseTargetPage
+            });
             requestPageTurnWithIntent(nextPage, "previous-page");
           },
           zoomIn: () => {
             const nextFitMode = readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
-            updateZoom(scaleZoomByKeyboardDirection(displayZoom, "in"), "header", {
+            updateZoom(scaleZoomByKeyboardDirection(displayZoomRef.current, "in"), "header", {
               fitMode: nextFitMode
             });
           },
           zoomOut: () => {
             const nextFitMode = readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
-            updateZoom(scaleZoomByKeyboardDirection(displayZoom, "out"), "header", {
+            updateZoom(scaleZoomByKeyboardDirection(displayZoomRef.current, "out"), "header", {
               fitMode: nextFitMode
             });
           },
@@ -1425,7 +2249,7 @@ export function useReaderController({
             }
           },
           goToPage: (page) => {
-            requestPageTurnWithIntent(clampPage(page, pageCount), "go-to-page");
+            requestPageTurnWithIntent(clampPage(page, pageCountRef.current || page), "go-to-page");
           },
           navigateToTarget: (target) => {
             navigateToTarget(target, "target");
@@ -1446,9 +2270,9 @@ export function useReaderController({
               requestPageTurnWithIntent(item.page, "outline");
             }
           },
-          getCurrentPage: () => targetPage,
-          getPageCount: () => pageCount,
-          getReaderState: () => readerState,
+          getCurrentPage: () => navigationTargetPageRef.current,
+          getPageCount: () => pageCountRef.current,
+          getReaderState: () => readerStateRef.current,
           setBookmarks: (bookmarks: Bookmark[]) => {
             setReaderState((current) => {
               if (!current) {
@@ -1486,11 +2310,16 @@ export function useReaderController({
       : null;
 
     registerApi(api);
+  }, [document, getAutoMaximizeMinDocumentWidth, onStateChange, registerApi]);
+
+  useEffect(() => {
     return () => registerApi(null);
-  }, [displayZoom, document, onStateChange, onStatusChange, pageCount, readerState, registerApi, targetPage]);
+  }, [registerApi]);
 
   return {
     currentPage,
+    targetPage,
+    navigationGeneration: navigationGenerationRef.current,
     pageCount,
     fitMode: readerState ? normalizeReaderFitMode(readerState.preferences.fitMode) : "auto-maximize",
     displayZoom,
@@ -1506,6 +2335,14 @@ export function useReaderController({
     documentError,
     renderError,
     handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+      debugAction("reader.keydown-entry", {
+        key: event.key,
+        repeat: event.repeat,
+        timeStamp: event.timeStamp,
+        lastInputAt: rapidTurnLastInputRef.current?.at ?? null,
+        now: Date.now()
+      });
+
       if (event.altKey) {
         return;
       }
@@ -1624,7 +2461,7 @@ export function useReaderController({
       const nextDirection: NavigationDirection = deltaY > 0 ? "next" : "previous";
       const wheelGesture = wheelGestureRef.current;
       if (now - wheelGesture.lastAt > WHEEL_GESTURE_IDLE_MS) {
-        resetWheelGesture();
+        resetWheelGesture({ clearRapidTurnInput: true });
       }
 
       if (wheelGestureRef.current.direction !== nextDirection) {
@@ -1674,6 +2511,11 @@ export function useReaderController({
       }
 
       if (selectionActive || pageCount <= 1) {
+        wheelGestureRef.current.accumulatedBoundaryDistance = 0;
+        return;
+      }
+
+      if (shouldSuppressBoundaryNavigation(now)) {
         wheelGestureRef.current.accumulatedBoundaryDistance = 0;
         return;
       }
@@ -1733,31 +2575,136 @@ export function useReaderController({
       });
       requestPageTurnWithIntent(
         requestedPage,
-        nextDirection === "previous" ? "wheel-boundary-previous" : "wheel-boundary-next"
+        nextDirection === "previous" ? "wheel-boundary-previous" : "wheel-boundary-next",
+        {
+          activationWindowMs: WHEEL_RAPID_TURN_WINDOW_MS,
+          direction: nextDirection,
+          source: "wheel"
+        }
       );
     },
-    markIncomingReady(requestKey: string, imageElement?: HTMLImageElement | null) {
+    handleNativeScroll(event: UIEvent<HTMLDivElement>) {
+      const scrollSurface = event.currentTarget;
+      const smoothWheelState = smoothWheelStateRef.current;
+      if (smoothWheelState.ignoreScrollEvents > 0) {
+        smoothWheelState.ignoreScrollEvents -= 1;
+        return;
+      }
+
+      syncSmoothWheelStateToSurface(scrollSurface);
+      cancelQueuedScrollReset(displayedPage?.pageNumber ?? currentPage);
+      suppressBoundaryNavigationWindow();
+    },
+    releaseSmoothWheelForManualScroll(scrollSurface: HTMLDivElement) {
+      beginManualScroll(scrollSurface);
+    },
+    finishManualScroll() {
+      endManualScroll();
+    },
+    commitIncomingPageSwap(requestKey: string) {
       if (requestKey !== incomingPageKeyRef.current) {
         return;
       }
 
-      const finalizeReady = () => {
-        if (requestKey !== incomingPageKeyRef.current) {
-          return;
+      setIncomingPage((currentIncomingPage) => {
+        if (!currentIncomingPage || currentIncomingPage.requestKey !== requestKey) {
+          return currentIncomingPage;
         }
-        setIncomingReady(true);
-      };
 
-      if (imageElement && typeof imageElement.decode === "function") {
-        void imageElement.decode().then(finalizeReady).catch(() => {
-          if (imageElement.complete) {
-            finalizeReady();
+        const candidate = toForegroundCandidate(currentIncomingPage);
+        if (!shouldAcceptForegroundCandidate(candidate, "promote")) {
+          debugAction("viewer.slot-promotion-discarded", {
+            currentGeneration: navigationGenerationRef.current,
+            currentTargetPage: navigationTargetPageRef.current,
+            navigationGeneration: candidate.navigationGeneration,
+            phase: "promote",
+            requestId: candidate.requestId,
+            resultPage: currentIncomingPage.pageNumber,
+            source: candidate.source,
+            targetPage: candidate.targetPage
+          });
+          if (incomingPageKeyRef.current === requestKey) {
+            incomingPageKeyRef.current = null;
           }
+          setIsRendering(false);
+          return null;
+        }
+
+        debugAction("viewer.slot-promotion-accepted", {
+          currentGeneration: navigationGenerationRef.current,
+          currentTargetPage: navigationTargetPageRef.current,
+          navigationGeneration: candidate.navigationGeneration,
+          phase: "promote",
+          requestId: candidate.requestId,
+          resultPage: currentIncomingPage.pageNumber,
+          source: candidate.source,
+          targetPage: candidate.targetPage
         });
+        debugAction("reader.page-swap-committed", {
+          documentId: currentDocumentRef.current?.document.id ?? null,
+          page: currentIncomingPage.pageNumber
+        });
+        setDisplayedPage(currentIncomingPage);
+        setCurrentPage(currentIncomingPage.pageNumber);
+        setLoadingDocument(false);
+        return currentIncomingPage;
+      });
+    },
+    finalizeIncomingPageSwap(requestKey: string) {
+      if (requestKey !== incomingPageKeyRef.current) {
         return;
       }
 
-      finalizeReady();
+      setIncomingPage((currentIncomingPage) => {
+        if (!currentIncomingPage || currentIncomingPage.requestKey !== requestKey) {
+          return currentIncomingPage;
+        }
+
+        debugAction("reader.page-swap-finalized", {
+          documentId: currentDocumentRef.current?.document.id ?? null,
+          page: currentIncomingPage.pageNumber
+        });
+        setIsRendering(false);
+        incomingPageKeyRef.current = null;
+        return null;
+      });
+    },
+    markDisplayedPageReadyForPreload(target: PreloadReadyTarget) {
+      markPageReadyForPreload(target);
+    },
+    markDisplayedPageVisible(requestKey: string) {
+      const metrics = openMetricsRef.current;
+      if (
+        openSessionId &&
+        metrics.openSessionId === openSessionId &&
+        !metrics.summaryLogged &&
+        metrics.clickStartedAtMs !== null
+      ) {
+        const now = performance.now();
+        debugAction("reader.open:summary", {
+          cacheHit: metrics.cacheHit,
+          clickToRenderRequestMs:
+            metrics.firstRenderRequestAtMs === null
+              ? null
+              : Math.round(metrics.firstRenderRequestAtMs - metrics.clickStartedAtMs),
+          clickToVisibleMs: Math.round(now - metrics.clickStartedAtMs),
+          documentId: metrics.documentId,
+          openSessionId: metrics.openSessionId,
+          page: metrics.page,
+          pdfRuntimeStartedBeforeVisible: metrics.pdfRuntimeStartedBeforeVisible,
+          renderMs:
+            metrics.firstRenderRequestAtMs === null || metrics.renderResponseReceivedAtMs === null
+              ? null
+              : Math.round(
+                  metrics.renderResponseReceivedAtMs - metrics.firstRenderRequestAtMs
+                ),
+          source: metrics.source,
+          staleRequestCount: metrics.staleRequestCount,
+          zoom: metrics.zoom
+        });
+        metrics.summaryLogged = true;
+      }
+      schedulePostVisibleIdleWork(requestKey);
     },
     previewAutoMaximizeZoom(nextZoom: number) {
       autoMaximizeZoomRef.current = normalizeZoom(nextZoom);

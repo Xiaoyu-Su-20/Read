@@ -1,5 +1,3 @@
-use std::fs;
-
 use tempfile::tempdir;
 
 use crate::{
@@ -69,21 +67,22 @@ fn render_pdf_page_reuses_cached_file() {
     let first = store
         .render_pdf_page(&record.id, 1, 1.0, render_cache.clone())
         .unwrap();
-    fs::write(&first.image_path, b"sentinel").unwrap();
 
     let second = store
         .render_pdf_page(&record.id, 1, 1.0, render_cache)
         .unwrap();
-    let cached_contents = fs::read(&second.image_path).unwrap();
 
     assert_eq!(first.cache_key, second.cache_key);
     assert_eq!(second.page_number, 1);
     assert_eq!(second.render_variant, RenderVariant::Raw);
-    assert_eq!(cached_contents, b"sentinel");
+    assert_eq!(first.image_bytes, second.image_bytes);
+    assert!(!second.image_bytes.is_empty());
 }
 
 #[test]
 fn render_pdf_page_uses_ready_normalization_manifest() {
+    use std::fs;
+
     let temp = tempdir().unwrap();
     let source = temp.path().join("normalized.pdf");
     write_valid_pdf(&source, "Normalize me");
@@ -166,46 +165,35 @@ fn open_document_reports_lightweight_page_count() {
 
 #[test]
 fn render_cache_evicts_oldest_entries_beyond_the_limit() {
-    let temp = tempdir().unwrap();
     let render_cache = create_render_cache();
-    let mut previous_paths = Vec::new();
 
     for page_number in 1..=(MAX_RENDER_CACHE_ENTRIES as u32 + 1) {
-        let image_path = temp.path().join(format!("page-{page_number}.jpg"));
-        fs::write(&image_path, format!("page-{page_number}")).unwrap();
         let request = super::super::PageRenderRequest {
             document_id: "doc".to_string(),
+            document_generation_id: None,
             fingerprint: "fingerprint".to_string(),
             document_path: "doc.pdf".to_string(),
             page_number,
+            request_sequence: None,
             zoom: 1.0,
             cache_key: format!("doc:{page_number}:1.00"),
-            image_path: image_path.clone(),
             normalization: None,
         };
 
-        let evicted_paths = {
-            let mut cache = render_cache.lock().unwrap();
-            cache.insert(
-                &request,
-                600,
-                800,
-                crate::models::RenderVariant::Raw,
-                None,
-                crate::models::TextLayerTransform {
-                    source_width: 600.0,
-                    source_height: 800.0,
-                    matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                },
-            )
-        };
-
-        previous_paths.push(image_path);
-        if page_number as usize <= MAX_RENDER_CACHE_ENTRIES {
-            assert!(evicted_paths.is_empty());
-        } else {
-            assert_eq!(evicted_paths, vec![previous_paths[0].clone()]);
-        }
+        let mut cache = render_cache.lock().unwrap();
+        cache.insert(
+            &request,
+            600,
+            800,
+            vec![page_number as u8; 4],
+            crate::models::RenderVariant::Raw,
+            None,
+            crate::models::TextLayerTransform {
+                source_width: 600.0,
+                source_height: 800.0,
+                matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            },
+        );
     }
 
     let cache_keys = {

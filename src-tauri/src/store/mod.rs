@@ -150,6 +150,8 @@ impl LibraryStore {
         fs::copy(source_path, &destination_path)?;
         let relative_path = self.paths.relative_to_root(&root, &destination_path)?;
         let fingerprint = self.catalog.hash_file(&destination_path)?;
+        let (file_size_bytes, file_modified_ms) =
+            self.catalog.file_metadata_signature(&destination_path)?;
         let document = DocumentRecord {
             id: Uuid::new_v4().to_string(),
             title: destination_path
@@ -165,6 +167,8 @@ impl LibraryStore {
             folder_id: self.paths.folder_id_from_relative_path(&relative_path),
             relative_path,
             fingerprint: fingerprint.clone(),
+            file_size_bytes: Some(file_size_bytes),
+            file_modified_ms: Some(file_modified_ms),
             imported_at: timestamp(),
             last_opened_at: None,
             availability: DocumentAvailability::Available,

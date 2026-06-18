@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
 use crate::models::{RenderVariant, RenderedPagePayload, TextLayerTransform};
 
@@ -10,7 +10,7 @@ pub const MAX_RENDER_CACHE_ENTRIES: usize = 20;
 struct RenderCacheEntry {
     cache_key: String,
     fingerprint: String,
-    image_path: PathBuf,
+    image_bytes: Vec<u8>,
     page_number: u32,
     width: u32,
     height: u32,
@@ -35,11 +35,7 @@ impl RenderCache {
     pub fn get(&mut self, request: &PageRenderRequest) -> Option<RenderedPagePayload> {
         let next_access_order = self.next_access_order();
         let should_remove = match self.entries.get(&request.cache_key) {
-            Some(entry) => {
-                entry.fingerprint != request.fingerprint
-                    || entry.image_path != request.image_path
-                    || !entry.image_path.exists()
-            }
+            Some(entry) => entry.fingerprint != request.fingerprint,
             None => return None,
         };
 
@@ -51,7 +47,7 @@ impl RenderCache {
         let entry = self.entries.get_mut(&request.cache_key)?;
         entry.access_order = next_access_order;
         Some(RenderedPagePayload {
-            image_path: entry.image_path.to_string_lossy().to_string(),
+            image_bytes: entry.image_bytes.clone(),
             page_number: entry.page_number,
             width: entry.width,
             height: entry.height,
@@ -67,19 +63,19 @@ impl RenderCache {
         request: &PageRenderRequest,
         width: u32,
         height: u32,
+        image_bytes: Vec<u8>,
         render_variant: RenderVariant,
         normalization_token: Option<String>,
         text_layer_transform: TextLayerTransform,
-    ) -> Vec<PathBuf> {
+    ) {
         let access_order = self.next_access_order();
-        let mut paths_to_remove = Vec::new();
 
-        if let Some(previous) = self.entries.insert(
+        self.entries.insert(
             request.cache_key.clone(),
             RenderCacheEntry {
                 cache_key: request.cache_key.clone(),
                 fingerprint: request.fingerprint.clone(),
-                image_path: request.image_path.clone(),
+                image_bytes,
                 page_number: request.page_number,
                 width,
                 height,
@@ -88,11 +84,7 @@ impl RenderCache {
                 normalization_token,
                 text_layer_transform,
             },
-        ) {
-            if previous.image_path != request.image_path {
-                paths_to_remove.push(previous.image_path);
-            }
-        }
+        );
 
         while self.entries.len() > MAX_RENDER_CACHE_ENTRIES {
             let oldest_key = self
@@ -105,14 +97,8 @@ impl RenderCache {
                 break;
             };
 
-            if let Some(removed) = self.entries.remove(&oldest_key) {
-                if removed.image_path != request.image_path {
-                    paths_to_remove.push(removed.image_path);
-                }
-            }
+            self.entries.remove(&oldest_key);
         }
-
-        paths_to_remove
     }
 
     #[cfg(test)]

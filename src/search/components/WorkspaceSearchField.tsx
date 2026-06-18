@@ -13,8 +13,8 @@ type WorkspaceSearchFieldProps = {
 
 const INITIAL_LIMITS = {
   notes: 3,
-  "nearby-page": 5,
-  "across-document": 5,
+  "nearby-page": 3,
+  "across-document": 3,
   "pdf-names": 5
 } as const;
 
@@ -43,25 +43,6 @@ function GroupIcon({ groupId }: { groupId: keyof typeof INITIAL_LIMITS }) {
   );
 }
 
-function ResultIcon({ result }: { result: SearchResult }) {
-  if (result.kind === "note") {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" aria-hidden="true">
-        <rect x="6" y="4.8" width="12" height="14.4" rx="2" />
-        <path d="M9 9.2h6" />
-        <path d="M9 13h4.4" />
-      </svg>
-    );
-  }
-
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" aria-hidden="true">
-      <path d="M7 4.8h6.5L18 9.1v10a1.4 1.4 0 0 1-1.4 1.4H7.4A1.4 1.4 0 0 1 6 19.1V6.2A1.4 1.4 0 0 1 7.4 4.8Z" />
-      <path d="M13.5 4.9V9H18" />
-    </svg>
-  );
-}
-
 function HighlightedSnippet({ text, ranges }: { text: string; ranges: SearchHighlightRange[] }) {
   if (ranges.length === 0) return <>{text}</>;
   const parts = [];
@@ -78,11 +59,7 @@ function HighlightedSnippet({ text, ranges }: { text: string; ranges: SearchHigh
 function resultMeta(result: SearchResult) {
   if (result.kind === "pdf") return `p. ${result.pageNumber}`;
   if (result.kind === "document") return result.available ? "Document" : "Missing";
-  return "Current note";
-}
-
-function formatResultCount(resultCount: number) {
-  return `${resultCount} result${resultCount === 1 ? "" : "s"}`;
+  return null;
 }
 
 function renderGroupLabel(label: string) {
@@ -187,9 +164,8 @@ export default function WorkspaceSearchField({
   }
 
   const view = state.committedView;
-  const resultCount = view.groups.reduce((sum, group) => sum + group.total, 0);
-  const searchActive = state.phase === "typing" || state.phase === "settling" || state.phase === "streaming";
   const hasQuery = state.inputQuery.trim().length > 0;
+  const hasVisibleDropdownContent = view.groups.length > 0 || view.warnings.length > 0;
 
   return (
     <div
@@ -260,7 +236,7 @@ export default function WorkspaceSearchField({
         </button>
       </label>
 
-      {state.open && hasQuery ? (
+      {state.open && hasQuery && hasVisibleDropdownContent ? (
         <section className="workspace-search__dropdown" role="dialog" aria-label="Search">
           <div className={`unified-search__body${view.stale ? " unified-search__body--stale" : ""}`}>
             {view.groups.map((group) => {
@@ -281,33 +257,35 @@ export default function WorkspaceSearchField({
                       <span className="search-group__icon">
                         <GroupIcon groupId={group.id} />
                       </span>
+                      <span className="search-group__decorator" aria-hidden="true">|</span>
                       {renderGroupLabel(group.label)}
                       <span className="search-group__count">
                         {group.countIsFinal ? group.total : `${group.total}+`}
                       </span>
                     </div>
                   </header>
-                  {visible.map((result) => (
-                    <button
-                      type="button"
-                      key={result.id}
-                      data-search-result-id={result.id}
-                      className={`search-result${state.activeResultId === result.id ? " search-result--active" : ""}`}
-                      disabled={view.stale || (result.kind === "document" && !result.available)}
-                      onMouseEnter={() => controller.setActiveResult(result.id, "pointer")}
-                      onClick={() => void activate(result)}
-                    >
-                      <span className="search-result__leading">
-                        <span className="search-result__icon">
-                          <ResultIcon result={result} />
+                  {visible.map((result) => {
+                    const meta = resultMeta(result);
+
+                    return (
+                      <button
+                        type="button"
+                        key={result.id}
+                        data-search-result-id={result.id}
+                        className={`search-result${state.activeResultId === result.id ? " search-result--active" : ""}`}
+                        disabled={view.stale || (result.kind === "document" && !result.available)}
+                        onMouseEnter={() => controller.setActiveResult(result.id, "pointer")}
+                        onClick={() => void activate(result)}
+                      >
+                        <span className="search-result__leading">
+                          <span className="search-result__snippet">
+                            <HighlightedSnippet text={result.snippet} ranges={result.highlights} />
+                          </span>
                         </span>
-                        <span className="search-result__snippet">
-                          <HighlightedSnippet text={result.snippet} ranges={result.highlights} />
-                        </span>
-                      </span>
-                      <span className="search-result__meta">{resultMeta(result)}</span>
-                    </button>
-                  ))}
+                        {meta ? <span className="search-result__meta">{meta}</span> : null}
+                      </button>
+                    );
+                  })}
                   {group.results.length > INITIAL_LIMITS[group.id] ? (
                     <button
                       type="button"
@@ -330,24 +308,6 @@ export default function WorkspaceSearchField({
               );
             })}
           </div>
-
-          <footer className="unified-search__footer">
-            <span>
-              {searchActive
-                ? "Searching current reader"
-                : state.phase === "cancelled"
-                  ? "Search cancelled"
-                  : formatResultCount(resultCount)}
-              {view.progress ? ` · ${view.progress.completedPages}/${view.progress.totalPages} pages` : ""}
-            </span>
-            <div>
-              {searchActive ? (
-                <button type="button" onClick={() => controller.cancel()}>
-                  Cancel
-                </button>
-              ) : null}
-            </div>
-          </footer>
 
           {view.warnings.length > 0 ? (
             <div className="unified-search__warning">Some sources could not be searched.</div>

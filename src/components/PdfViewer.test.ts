@@ -4,11 +4,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import PdfViewer from "./PdfViewer";
 import type { CachedRenderedPage } from "../lib/reader/PageCache";
-import type { DocumentPayload } from "../lib/types";
+import type { PresentedPage } from "../lib/reader/useReaderController";
+import type { DocumentPayload, ReaderSession } from "../lib/types";
 
 vi.mock("../lib/reader/useReaderController", () => ({
   useReaderController: vi.fn(() => ({
     currentPage: 1,
+    targetPage: 1,
+    navigationGeneration: 1,
     pageCount: 12,
     fitMode: "auto-maximize",
     displayZoom: 1,
@@ -29,8 +32,14 @@ vi.mock("../lib/reader/useReaderController", () => ({
     renderError: null,
     handleKeyDown: vi.fn(),
     handleNavigationKeyUp: vi.fn(),
+    handleNativeScroll: vi.fn(),
     handleWheel: vi.fn(),
-    markIncomingReady: vi.fn(),
+    releaseSmoothWheelForManualScroll: vi.fn(),
+    finishManualScroll: vi.fn(),
+    commitIncomingPageSwap: vi.fn(),
+    finalizeIncomingPageSwap: vi.fn(),
+    markDisplayedPageReadyForPreload: vi.fn(),
+    markDisplayedPageVisible: vi.fn(),
     previewAutoMaximizeZoom: vi.fn(),
     commitAutoMaximizeZoom: vi.fn(),
     reportAutoMaximizeZoom: vi.fn()
@@ -38,7 +47,8 @@ vi.mock("../lib/reader/useReaderController", () => ({
 }));
 
 const mockRenderedPage: CachedRenderedPage = {
-  imagePath: "D:/Read/page-1.png",
+  documentId: "doc-1",
+  imageBytes: [1, 2, 3],
   imageUrl: "/page-1.png",
   pageNumber: 1,
   width: 800,
@@ -55,6 +65,22 @@ const mockRenderedPage: CachedRenderedPage = {
     matrix: [1, 0, 0, 1, 0, 0]
   }
 };
+
+function asPresentedPage(
+  page: CachedRenderedPage,
+  overrides?: Partial<PresentedPage["presentation"]>
+): PresentedPage {
+  return {
+    ...page,
+    presentation: {
+      navigationGeneration: 1,
+      requestId: 1,
+      source: "local-cache",
+      targetPage: page.pageNumber,
+      ...overrides
+    }
+  };
+}
 
 const documentPayload: DocumentPayload = {
   document: {
@@ -85,18 +111,30 @@ const documentPayload: DocumentPayload = {
   pageCount: 12
 };
 
+const readerSession: ReaderSession = {
+  document: documentPayload,
+  documentId: documentPayload.document.id,
+  page: documentPayload.state.lastPage,
+  zoom: documentPayload.state.zoom,
+  openSessionId: "open-test",
+  clickStartedAtMs: 0,
+  source: "collection"
+};
+
 async function renderViewer(
   mode: "light" | "dark",
   options?: {
     displayZoom?: number;
     committedZoom?: number;
-    displayedPage?: CachedRenderedPage | null;
-    incomingPage?: CachedRenderedPage | null;
+    displayedPage?: PresentedPage | null;
+    incomingPage?: PresentedPage | null;
   }
 ) {
   const { useReaderController } = await import("../lib/reader/useReaderController");
   vi.mocked(useReaderController).mockReturnValue({
     currentPage: 1,
+    targetPage: 1,
+    navigationGeneration: 1,
     pageCount: 12,
     fitMode: "auto-maximize",
     displayZoom: options?.displayZoom ?? 1,
@@ -117,8 +155,14 @@ async function renderViewer(
     renderError: null,
     handleKeyDown: vi.fn(),
     handleNavigationKeyUp: vi.fn(),
+    handleNativeScroll: vi.fn(),
     handleWheel: vi.fn(),
-    markIncomingReady: vi.fn(),
+    releaseSmoothWheelForManualScroll: vi.fn(),
+    finishManualScroll: vi.fn(),
+    commitIncomingPageSwap: vi.fn(),
+    finalizeIncomingPageSwap: vi.fn(),
+    markDisplayedPageReadyForPreload: vi.fn(),
+    markDisplayedPageVisible: vi.fn(),
     previewAutoMaximizeZoom: vi.fn(),
     commitAutoMaximizeZoom: vi.fn(),
     reportAutoMaximizeZoom: vi.fn()
@@ -126,7 +170,8 @@ async function renderViewer(
 
   return renderToStaticMarkup(
     createElement(PdfViewer, {
-      document: documentPayload,
+      readerSession,
+      pendingReaderOpenSessionId: null,
       onSnapshotChange: vi.fn(),
       onOutlineChange: vi.fn(),
       onStatusChange: vi.fn(),
@@ -137,6 +182,7 @@ async function renderViewer(
         mode,
         paperColor: mode === "dark" ? "#20242a" : "#f7f1e5",
         inkColor: mode === "dark" ? "#d8d8d8" : "#2f261c",
+        blendMode: mode === "dark" ? "screen" : "multiply",
         imageFilter:
           mode === "dark"
             ? "invert(1) hue-rotate(180deg) grayscale(1) sepia(0.1) saturate(1.4) hue-rotate(0deg) brightness(0.9) contrast(0.92)"
@@ -162,6 +208,7 @@ describe("PdfViewer", () => {
     expect(markup).toContain('data-document-appearance="dark"');
     expect(markup).toContain("--viewer-paper-color:#20242a");
     expect(markup).toContain("--viewer-ink-color:#d8d8d8");
+    expect(markup).toContain("--viewer-image-blend-mode:screen");
     expect(markup).toContain("invert(1)");
     expect(markup).toContain("brightness(0.9)");
     expect(markup).toContain("contrast(0.92)");
@@ -173,7 +220,7 @@ describe("PdfViewer", () => {
       displayZoom: 1.5,
       committedZoom: 1.2,
       displayedPage: {
-        ...mockRenderedPage,
+        ...asPresentedPage(mockRenderedPage),
         renderZoom: 1.2
       }
     });
@@ -189,12 +236,16 @@ describe("PdfViewer", () => {
       displayZoom: 1.5,
       committedZoom: 1.2,
       displayedPage: {
-        ...mockRenderedPage,
+        ...asPresentedPage(mockRenderedPage),
         requestKey: "displayed-1",
         renderZoom: 1
       },
       incomingPage: {
-        ...mockRenderedPage,
+        ...asPresentedPage(mockRenderedPage, {
+          requestId: 2,
+          source: "fresh-render",
+          targetPage: 1
+        }),
         requestKey: "incoming-1",
         renderZoom: 1.2,
         width: 960,

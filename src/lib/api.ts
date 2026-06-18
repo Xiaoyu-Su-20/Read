@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { runDebugProcess } from "./debugLog";
+import { debugAction, runDebugProcess } from "./debugLog";
 
 import type {
   DocumentPayload,
@@ -18,7 +18,29 @@ function invokeLogged<T>(command: string, args?: Record<string, unknown>) {
 }
 
 export function listLibrary() {
-  return invokeLogged<FolderTreeNode>("list_library");
+  debugAction("frontend.before-list-library", {
+    epochMs: Date.now(),
+    navigationMs: performance.now()
+  });
+
+  const startedAt = performance.now();
+
+  return invokeLogged<FolderTreeNode>("list_library")
+    .then((library) => {
+      debugAction("frontend.after-list-library", {
+        durationMs: performance.now() - startedAt,
+        epochMs: Date.now()
+      });
+      return library;
+    })
+    .catch((error) => {
+      debugAction("frontend.list-library-error", {
+        durationMs: performance.now() - startedAt,
+        epochMs: Date.now(),
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    });
 }
 
 export function rescanLibrary() {
@@ -77,9 +99,10 @@ export function removeFromLibrary(documentId: string, destinationDirectory: stri
   });
 }
 
-export function openDocument(documentId: string) {
+export function openDocument(documentId: string, options?: { openSessionId?: string }) {
   return invokeLogged<DocumentPayload>("open_document", {
-    documentId
+    documentId,
+    openSessionId: options?.openSessionId ?? null
   });
 }
 
@@ -92,12 +115,15 @@ export function readDocumentBytes(documentId: string) {
 export function renderPdfPage(
   documentId: string,
   pageNumber: number,
-  zoom: number
+  zoom: number,
+  options?: { openSessionId?: string; requestSequence?: number }
 ) {
   return invokeLogged<RenderedPagePayload>("render_pdf_page", {
     documentId,
     pageNumber,
-    zoom
+    zoom,
+    openSessionId: options?.openSessionId ?? null,
+    requestSequence: options?.requestSequence ?? null
   });
 }
 

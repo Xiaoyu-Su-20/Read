@@ -9,7 +9,7 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::{Arc, Condvar, Mutex},
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use debug::process as debug_process;
@@ -20,19 +20,33 @@ use models::{
 use normalization::{new_manifest_cache, ManifestCache, NormalizationWorker};
 use serde_json::{json, Value};
 use store::{LibraryStore, RenderCache};
-use tauri::{AppHandle, Manager, State};
+use tauri::{webview::PageLoadEvent, AppHandle, Manager, State};
 
 struct AppState {
     lock: Arc<Mutex<()>>,
     render_cache: Arc<Mutex<RenderCache>>,
     in_flight_renders: Arc<Mutex<HashMap<String, Arc<InFlightRender>>>>,
+    active_reader_generation: Arc<Mutex<Option<ActiveReaderGeneration>>>,
     normalization_worker: NormalizationWorker,
     normalization_cache: ManifestCache,
+}
+
+#[derive(Clone)]
+struct ActiveReaderGeneration {
+    document_id: String,
+    generation_id: String,
 }
 
 struct InFlightRender {
     result: Mutex<Option<Result<RenderedPagePayload, String>>>,
     ready: Condvar,
+}
+
+fn epoch_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 impl InFlightRender {
@@ -42,6 +56,40 @@ impl InFlightRender {
             ready: Condvar::new(),
         }
     }
+}
+
+fn set_active_reader_generation(
+    active_reader_generation: &Arc<Mutex<Option<ActiveReaderGeneration>>>,
+    document_id: &str,
+    generation_id: &str,
+) -> Result<(), String> {
+    let mut guard = active_reader_generation
+        .lock()
+        .map_err(|_| "Unable to lock active reader generation.".to_string())?;
+    *guard = Some(ActiveReaderGeneration {
+        document_id: document_id.to_string(),
+        generation_id: generation_id.to_string(),
+    });
+    Ok(())
+}
+
+fn is_active_reader_generation(
+    active_reader_generation: &Arc<Mutex<Option<ActiveReaderGeneration>>>,
+    document_id: &str,
+    generation_id: Option<&str>,
+) -> Result<bool, String> {
+    let Some(generation_id) = generation_id else {
+        return Ok(true);
+    };
+
+    let guard = active_reader_generation
+        .lock()
+        .map_err(|_| "Unable to lock active reader generation.".to_string())?;
+    Ok(matches!(
+        guard.as_ref(),
+        Some(active)
+            if active.document_id == document_id && active.generation_id == generation_id
+    ))
 }
 
 fn run_or_join_in_flight_render(
@@ -71,7 +119,9 @@ fn run_or_join_in_flight_render(
             json!({
                 "cacheKey": cache_key,
                 "documentId": request.document_id,
+                "documentGenerationId": request.document_generation_id,
                 "page": request.page_number,
+                "requestSequence": request.request_sequence,
                 "zoom": request.zoom,
             }),
         );
@@ -377,14 +427,17 @@ fn open_document(
     app: AppHandle,
     state: State<'_, AppState>,
     document_id: String,
+    open_session_id: Option<String>,
 ) -> Result<DocumentPayload, String> {
     run_logged_command(
         "open_document",
         json!({
             "documentId": document_id,
+            "openSessionId": open_session_id,
         }),
         || {
             let worker = state.normalization_worker.clone();
+            let active_reader_generation = state.active_reader_generation.clone();
             let result = with_store(&app, state, |store| {
                 let payload = store
                     .open_document(&document_id)
@@ -402,6 +455,13 @@ fn open_document(
                         json!({"error": error.to_string()}),
                     );
                 }
+            }
+            if let Some(session_id) = open_session_id.as_deref() {
+                set_active_reader_generation(
+                    &active_reader_generation,
+                    &document_id,
+                    session_id,
+                )?;
             }
             Ok(result.0)
         },
@@ -577,32 +637,74 @@ async fn render_pdf_page(
     document_id: String,
     page_number: u32,
     zoom: f32,
+    open_session_id: Option<String>,
+    request_sequence: Option<u32>,
 ) -> Result<RenderedPagePayload, String> {
     let process = debug_process(
         "command.render_pdf_page",
         json!({
             "documentId": document_id,
+            "documentGenerationId": open_session_id,
+            "openSessionId": open_session_id,
             "page": page_number,
+            "requestSequence": request_sequence,
             "zoom": zoom,
         }),
     );
 
     let render_cache = state.render_cache.clone();
     let in_flight_renders = state.in_flight_renders.clone();
+    let active_reader_generation = state.active_reader_generation.clone();
     let normalization_cache = state.normalization_cache.clone();
     let task_document_id = document_id.clone();
+    let task_open_session_id = open_session_id.clone();
+    let queued_at = Instant::now();
 
     let result = tauri::async_runtime::spawn_blocking(move || {
+        crate::debug::action(
+            "command.render_pdf_page:execution-started",
+            json!({
+                "documentId": task_document_id,
+                "documentGenerationId": task_open_session_id,
+                "page": page_number,
+                "queuedWaitMs": queued_at.elapsed().as_millis(),
+                "requestSequence": request_sequence,
+                "zoom": zoom,
+            }),
+        );
+
+        if !is_active_reader_generation(
+            &active_reader_generation,
+            &task_document_id,
+            task_open_session_id.as_deref(),
+        )? {
+            crate::debug::action(
+                "command.render_pdf_page:skipped-stale-generation",
+                json!({
+                    "documentId": task_document_id,
+                    "documentGenerationId": task_open_session_id,
+                    "page": page_number,
+                    "requestSequence": request_sequence,
+                    "zoom": zoom,
+                }),
+            );
+            return Err("Stale render request skipped.".to_string());
+        }
+
         let store = app_store(&app)?;
-        let request = store
+        let mut request = store
             .prepare_render_request(&task_document_id, page_number, zoom, &normalization_cache)
             .map_err(|error| error.to_string())?;
+        request.document_generation_id = task_open_session_id.clone();
+        request.request_sequence = request_sequence;
         crate::debug::action(
             "command.render_pdf_page:document-path-resolved",
             json!({
                 "cacheKey": request.cache_key.clone(),
                 "documentId": request.document_id.clone(),
+                "documentGenerationId": request.document_generation_id,
                 "page": request.page_number,
+                "requestSequence": request.request_sequence,
                 "zoom": request.zoom,
             }),
         );
@@ -624,6 +726,20 @@ async fn render_pdf_page(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .on_page_load(|_webview, payload| {
+            let event = match payload.event() {
+                PageLoadEvent::Started => "started",
+                PageLoadEvent::Finished => "finished",
+            };
+
+            crate::debug::action(
+                &format!("webview.page-load:{event}"),
+                json!({
+                    "epochMs": epoch_ms(),
+                    "url": payload.url(),
+                }),
+            );
+        })
         .setup(|app| {
             let startup_started_at = Instant::now();
             crate::debug::action(
@@ -677,6 +793,7 @@ pub fn run() {
                 lock: Arc::new(Mutex::new(())),
                 render_cache: Arc::new(Mutex::new(RenderCache::default())),
                 in_flight_renders: Arc::new(Mutex::new(HashMap::new())),
+                active_reader_generation: Arc::new(Mutex::new(None)),
                 normalization_worker,
                 normalization_cache,
             });

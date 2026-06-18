@@ -32,6 +32,13 @@
   </head>
   <body style="margin:0;min-height:100%;background:#1e2126;color:#d8d8d8;overflow:hidden;">
     <div id="root"></div>
+    <script>
+      console.log(JSON.stringify({
+        event: "frontend.html-start",
+        epochMs: Date.now(),
+        navigationMs: performance.now()
+      }));
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
   </html>

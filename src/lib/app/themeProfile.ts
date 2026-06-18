@@ -17,6 +17,7 @@ export type ViewerDisplayConfig = {
   paperColor: string;
   inkColor: string;
   imageFilter: string;
+  blendMode: "multiply" | "screen";
 };
 
 export type DocumentRenderTheme = {
@@ -117,6 +118,18 @@ type HslColor = {
   lightness: number;
 };
 
+type OklabColor = {
+  lightness: number;
+  a: number;
+  b: number;
+};
+
+type OklchColor = {
+  lightness: number;
+  chroma: number;
+  hue: number;
+};
+
 function clampChannel(value: number) {
   return Math.min(Math.max(Math.round(value), 0), 255);
 }
@@ -206,6 +219,64 @@ function toHslColor(color: string): HslColor {
   };
 }
 
+function linearToSrgbChannel(channel: number) {
+  return channel <= 0.0031308
+    ? 12.92 * channel
+    : 1.055 * Math.pow(channel, 1 / 2.4) - 0.055;
+}
+
+function toOklabColor(color: string): OklabColor {
+  const { red, green, blue } = parseHexColor(color);
+  const r = normalizeRgbChannel(red);
+  const g = normalizeRgbChannel(green);
+  const b = normalizeRgbChannel(blue);
+
+  const l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
+  const m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
+  const s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+
+  const lRoot = Math.cbrt(l);
+  const mRoot = Math.cbrt(m);
+  const sRoot = Math.cbrt(s);
+
+  return {
+    lightness: 0.2104542553 * lRoot + 0.793617785 * mRoot - 0.0040720468 * sRoot,
+    a: 1.9779984951 * lRoot - 2.428592205 * mRoot + 0.4505937099 * sRoot,
+    b: 0.0259040371 * lRoot + 0.7827717662 * mRoot - 0.808675766 * sRoot
+  };
+}
+
+function toOklchColor(color: string): OklchColor {
+  const oklab = toOklabColor(color);
+  const hue = (Math.atan2(oklab.b, oklab.a) * 180) / Math.PI;
+
+  return {
+    lightness: oklab.lightness,
+    chroma: Math.sqrt(oklab.a ** 2 + oklab.b ** 2),
+    hue: hue >= 0 ? hue : hue + 360
+  };
+}
+
+function fromOklchColor(color: OklchColor) {
+  const hueRadians = (color.hue * Math.PI) / 180;
+  const a = color.chroma * Math.cos(hueRadians);
+  const b = color.chroma * Math.sin(hueRadians);
+
+  const lRoot = color.lightness + 0.3963377774 * a + 0.2158037573 * b;
+  const mRoot = color.lightness - 0.1055613458 * a - 0.0638541728 * b;
+  const sRoot = color.lightness - 0.0894841775 * a - 1.291485548 * b;
+
+  const l = lRoot ** 3;
+  const m = mRoot ** 3;
+  const s = sRoot ** 3;
+
+  return toHexColor({
+    red: linearToSrgbChannel(+4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s) * 255,
+    green: linearToSrgbChannel(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s) * 255,
+    blue: linearToSrgbChannel(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s) * 255
+  });
+}
+
 function getRelativeLuminance(color: string) {
   const { red, green, blue } = parseHexColor(color);
 
@@ -247,6 +318,85 @@ function lighten(color: string, amount: number) {
 
 function darken(color: string, amount: number) {
   return mixColors(color, "#000000", amount);
+}
+
+type RaisedSurfaceFamily = {
+  surface: string;
+  surfaceStrong: string;
+  hover: string;
+  selected: string;
+  border: string;
+  shadow: string;
+};
+
+function createRaisedSurfaceCandidate(
+  baseSurface: string,
+  textColor: string,
+  deltaLightness: number
+): RaisedSurfaceFamily & { textContrast: number } {
+  const baseOklch = toOklchColor(baseSurface);
+  const baseHue = Number.isFinite(baseOklch.hue) ? baseOklch.hue : 0;
+  const direction = deltaLightness >= 0 ? 1 : -1;
+  const sharedChroma = clampNumber(baseOklch.chroma * 0.88, 0, 0.32);
+  const baseLightness = clampUnit(baseOklch.lightness + deltaLightness);
+  const strongLightness = clampUnit(baseLightness + direction * 0.02);
+  const hoverLightness = clampUnit(baseLightness + direction * 0.028);
+  const selectedLightness = clampUnit(baseLightness + direction * 0.042);
+
+  const surface = fromOklchColor({
+    lightness: baseLightness,
+    chroma: sharedChroma,
+    hue: baseHue
+  });
+  const surfaceStrong = fromOklchColor({
+    lightness: strongLightness,
+    chroma: clampNumber(sharedChroma * 0.96, 0, 0.32),
+    hue: baseHue
+  });
+  const hover = fromOklchColor({
+    lightness: hoverLightness,
+    chroma: clampNumber(sharedChroma * 0.94, 0, 0.32),
+    hue: baseHue
+  });
+  const selected = fromOklchColor({
+    lightness: selectedLightness,
+    chroma: clampNumber(sharedChroma * 0.98, 0, 0.32),
+    hue: baseHue
+  });
+  const textContrast = contrastRatio(textColor, surface);
+  const baseLuminance = getRelativeLuminance(baseSurface);
+  const shadowColor =
+    baseLuminance >= 0.34
+      ? withAlpha("#000000", 0.14)
+      : withAlpha(darken(baseSurface, 0.42), 0.42);
+
+  return {
+    surface,
+    surfaceStrong,
+    hover,
+    selected,
+    border: withAlpha(textColor, 0.14),
+    shadow: `0 18px 46px ${shadowColor}`,
+    textContrast
+  };
+}
+
+function createRaisedSurfaceFamily(baseSurface: string, textColor: string): RaisedSurfaceFamily {
+  const baseOklch = toOklchColor(baseSurface);
+  const lighterCandidate = createRaisedSurfaceCandidate(baseSurface, textColor, 0.055);
+  const darkerCandidate = createRaisedSurfaceCandidate(baseSurface, textColor, -0.045);
+
+  if (baseOklch.lightness >= 0.62) {
+    return darkerCandidate;
+  }
+
+  if (baseOklch.lightness <= 0.46) {
+    return lighterCandidate;
+  }
+
+  return lighterCandidate.textContrast >= darkerCandidate.textContrast
+    ? lighterCandidate
+    : darkerCandidate;
 }
 
 function ensureReadableTextColor(
@@ -566,7 +716,8 @@ export function createViewerDisplayConfig(themeDefinition: ThemeDefinition): Vie
     imageFilter: createViewerFilterRecipe(
       themeDefinition.source,
       themeDefinition.document.surfaceTone
-    )
+    ),
+    blendMode: themeDefinition.document.surfaceTone === "dark" ? "screen" : "multiply"
   };
 }
 
@@ -574,6 +725,7 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
   const { source } = themeDefinition;
   const workspaceBase = source.chrome;
   const workspaceElevated = darken(lighten(source.chrome, 0.02), 0.02);
+  const raisedSurfaceFamily = createRaisedSurfaceFamily(workspaceBase, source.uiText);
   const chromeSurface = withAlpha(source.chrome, 0.9);
   const chromeSurfaceStrong = withAlpha(darken(source.chrome, 0.06), 0.96);
   const chromeBorder = lighten(source.chrome, 0.08);
@@ -587,11 +739,14 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
   const interactiveActive = withAlpha(source.interactive, 0.22);
   const switchOn = withAlpha(source.interactive, 0.9);
   const focusRing = withAlpha(lighten(source.interactive, 0.22), 0.62);
-  const overlaySurface = withAlpha(mixColors(source.chrome, "#000000", 0.18), 0.96);
-  const overlaySurfaceStrong = withAlpha(mixColors(source.chrome, "#000000", 0.22), 0.98);
-  const overlayBorder = withAlpha(source.uiText, 0.08);
-  const contextMenuSurface = withAlpha(mixColors(source.chrome, "#000000", 0.22), 0.98);
-  const contextMenuHover = withAlpha(source.uiText, 0.06);
+  const overlaySurface = raisedSurfaceFamily.surface;
+  const overlaySurfaceStrong = raisedSurfaceFamily.surfaceStrong;
+  const overlayBorder = raisedSurfaceFamily.border;
+  const contextMenuSurface = raisedSurfaceFamily.surfaceStrong;
+  const contextMenuHover = raisedSurfaceFamily.hover;
+  const overlaySurfaceHover = raisedSurfaceFamily.hover;
+  const overlaySurfaceSelected = raisedSurfaceFamily.selected;
+  const overlayShadow = raisedSurfaceFamily.shadow;
   const selectionBackground = withAlpha(source.interactive, 0.32);
   const selectionText = ensureReadableTextColor(source.uiText, source.interactive, 4);
   const pageLinkBackground = withAlpha(source.interactive, 0.13);
@@ -700,7 +855,10 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
       "--active-surface": interactiveActive,
       "--overlay-surface": overlaySurface,
       "--overlay-surface-strong": overlaySurfaceStrong,
+      "--overlay-surface-hover": overlaySurfaceHover,
+      "--overlay-surface-selected": overlaySurfaceSelected,
       "--overlay-border": overlayBorder,
+      "--overlay-shadow": overlayShadow,
       "--context-menu-surface": contextMenuSurface,
       "--context-menu-hover": contextMenuHover,
       "--page-link-background": pageLinkBackground,

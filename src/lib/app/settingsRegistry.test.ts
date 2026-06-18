@@ -316,7 +316,8 @@ describe("settingsRegistry", () => {
     expect(viewerConfig).toMatchObject({
       mode: "light",
       paperColor: "#e7d9bb",
-      inkColor: "#3c2d1b"
+      inkColor: "#3c2d1b",
+      blendMode: "multiply"
     });
     expect(viewerConfig.imageFilter).toContain("grayscale(1)");
   });
@@ -393,7 +394,7 @@ describe("settingsRegistry", () => {
     expect(variables["--theme-workspace"]).toBe("#202020");
     expect(variables["--theme-document-paper"]).toBe("#efe1c3");
     expect(variables["--theme-interactive"]).toBe("#4466cc");
-    expect(variables["--context-menu-surface"]).toContain("rgba(");
+    expect(variables["--context-menu-surface"]).toMatch(/^#/);
     expect(variables["--page-link-background"]).toContain("rgba(");
   });
 

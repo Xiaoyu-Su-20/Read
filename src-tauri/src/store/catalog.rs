@@ -1,9 +1,10 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     fs::File,
     io::Read,
     path::{Path, PathBuf},
+    time::{Instant, UNIX_EPOCH},
 };
 
 use serde_json::json;
@@ -27,6 +28,19 @@ use super::{
 #[derive(Debug, Clone, Default)]
 pub struct CatalogStore;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExistingDocumentMatchKind {
+    RelativePath,
+    LegacyState,
+    Fingerprint,
+}
+
+#[derive(Debug, Clone)]
+struct ExistingDocumentMatch {
+    document: DocumentRecord,
+    kind: ExistingDocumentMatchKind,
+}
+
 impl CatalogStore {
     pub fn reconcile_library(
         &self,
@@ -42,11 +56,42 @@ impl CatalogStore {
         );
 
         let result = (|| -> AppResult<()> {
+            let reconcile_started_at = Instant::now();
             let mut index = self.load_index(paths)?;
+            process.checkpoint(
+                "load-index",
+                json!({
+                    "documentCount": index.documents.len(),
+                    "missingCount": index
+                        .documents
+                        .iter()
+                        .filter(|document| document.availability == DocumentAvailability::Missing)
+                        .count(),
+                    "duplicateFingerprintCount": Self::duplicate_count_for(
+                        index.documents.iter().map(|document| document.fingerprint.as_str())
+                    ),
+                    "duplicateRelativePathCount": Self::duplicate_count_for(
+                        index.documents.iter().map(|document| document.relative_path.as_str())
+                    ),
+                }),
+            );
             let previous_index = index.clone();
             self.ensure_default_library_structure(paths)?;
+            process.checkpoint(
+                "default-library-ready",
+                json!({
+                    "elapsedMs": reconcile_started_at.elapsed().as_millis(),
+                }),
+            );
             let migrated_root_pdfs =
                 self.migrate_root_pdfs_into_default_collection(paths, &root)?;
+            process.checkpoint(
+                "root-pdf-migration",
+                json!({
+                    "elapsedMs": reconcile_started_at.elapsed().as_millis(),
+                    "migratedRootPdfCount": migrated_root_pdfs,
+                }),
+            );
             let collection_paths = self.collection_paths(&root)?;
             let mut pdf_paths = Vec::new();
 
@@ -66,11 +111,56 @@ impl CatalogStore {
             let mut matched_ids = HashSet::new();
             let mut next_documents =
                 Vec::with_capacity(existing_documents.len().max(pdf_paths.len()));
+            let mut matched_by_path = 0usize;
+            let mut matched_by_legacy_state = 0usize;
+            let mut matched_by_fingerprint = 0usize;
+            let mut created_documents = 0usize;
+            let mut reused_cached_fingerprint_count = 0usize;
+            let mut hashed_document_count = 0usize;
+            let mut state_reused_same_id = 0usize;
+            let mut state_reused_previous_id = 0usize;
+            let hash_started_at = Instant::now();
+            let mut scanned_documents = Vec::with_capacity(pdf_paths.len());
 
             for pdf_path in pdf_paths {
                 let relative_path = paths.relative_to_root(&root, &pdf_path)?;
-                let fingerprint = self.hash_file(&pdf_path)?;
+                let (file_size_bytes, file_modified_ms) =
+                    self.file_metadata_signature(&pdf_path)?;
+                let fingerprint = if let Some(existing) = existing_documents.iter().find(|document| {
+                    !matched_ids.contains(&document.id)
+                        && document.relative_path == relative_path
+                        && document.file_size_bytes == Some(file_size_bytes)
+                        && document.file_modified_ms == Some(file_modified_ms)
+                        && !document.fingerprint.is_empty()
+                }) {
+                    reused_cached_fingerprint_count += 1;
+                    existing.fingerprint.clone()
+                } else {
+                    hashed_document_count += 1;
+                    self.hash_file(&pdf_path)?
+                };
+                scanned_documents.push((
+                    pdf_path,
+                    relative_path,
+                    fingerprint,
+                    file_size_bytes,
+                    file_modified_ms,
+                ));
+            }
+            process.checkpoint(
+                "hash-complete",
+                json!({
+                    "elapsedMs": reconcile_started_at.elapsed().as_millis(),
+                    "hashElapsedMs": hash_started_at.elapsed().as_millis(),
+                    "hashedDocumentCount": hashed_document_count,
+                    "pdfCount": scanned_documents.len(),
+                    "reusedCachedFingerprintCount": reused_cached_fingerprint_count,
+                }),
+            );
 
+            let match_started_at = Instant::now();
+            let mut available_document_ids_by_fingerprint = HashMap::new();
+            for (pdf_path, relative_path, fingerprint, file_size_bytes, file_modified_ms) in scanned_documents {
                 let existing = self.match_existing_document(
                     &existing_documents,
                     &matched_ids,
@@ -79,7 +169,14 @@ impl CatalogStore {
                     None,
                 );
 
-                let existing_id = existing.as_ref().map(|document| document.id.clone());
+                match existing.as_ref().map(|matched| matched.kind) {
+                    Some(ExistingDocumentMatchKind::RelativePath) => matched_by_path += 1,
+                    Some(ExistingDocumentMatchKind::LegacyState) => matched_by_legacy_state += 1,
+                    Some(ExistingDocumentMatchKind::Fingerprint) => matched_by_fingerprint += 1,
+                    None => created_documents += 1,
+                }
+
+                let existing_id = existing.as_ref().map(|matched| matched.document.id.clone());
                 let document_id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
                 let file_name = pdf_path
@@ -93,14 +190,17 @@ impl CatalogStore {
                     .unwrap_or("Untitled PDF")
                     .to_string();
 
-                let previous_document_id = existing.as_ref().map(|document| document.id.clone());
-                let mut document = existing.unwrap_or(DocumentRecord {
+                let previous_document_id =
+                    existing.as_ref().map(|matched| matched.document.id.clone());
+                let mut document = existing.map(|matched| matched.document).unwrap_or(DocumentRecord {
                     id: document_id.clone(),
                     title: title.clone(),
                     file_name: file_name.clone(),
                     folder_id: paths.folder_id_from_relative_path(&relative_path),
                     relative_path: relative_path.clone(),
                     fingerprint: fingerprint.clone(),
+                    file_size_bytes: Some(file_size_bytes),
+                    file_modified_ms: Some(file_modified_ms),
                     imported_at: timestamp(),
                     last_opened_at: None,
                     availability: DocumentAvailability::Available,
@@ -112,6 +212,8 @@ impl CatalogStore {
                 document.folder_id = paths.folder_id_from_relative_path(&relative_path);
                 document.relative_path = relative_path;
                 document.fingerprint = fingerprint;
+                document.file_size_bytes = Some(file_size_bytes);
+                document.file_modified_ms = Some(file_modified_ms);
                 document.availability = DocumentAvailability::Available;
 
                 let private_state = states
@@ -122,6 +224,13 @@ impl CatalogStore {
                             .as_ref()
                             .and_then(|id| states.read_state_file(&paths.state_path(id)).ok())
                     });
+                if private_state.is_some() {
+                    if previous_document_id.as_deref() == Some(document.id.as_str()) {
+                        state_reused_same_id += 1;
+                    } else {
+                        state_reused_previous_id += 1;
+                    }
+                }
                 let merged_state = states.merge_for_document(&document, private_state);
                 document.last_opened_at = merged_state.last_opened_at.clone();
                 states.write_state(paths, &merged_state)?;
@@ -136,11 +245,41 @@ impl CatalogStore {
                 }
 
                 matched_ids.insert(document.id.clone());
+                available_document_ids_by_fingerprint
+                    .insert(document.fingerprint.clone(), document.id.clone());
                 next_documents.push(document);
             }
+            process.checkpoint(
+                "match-and-state-complete",
+                json!({
+                    "createdDocumentCount": created_documents,
+                    "elapsedMs": reconcile_started_at.elapsed().as_millis(),
+                    "matchElapsedMs": match_started_at.elapsed().as_millis(),
+                    "matchedByFingerprintCount": matched_by_fingerprint,
+                    "matchedByLegacyStateCount": matched_by_legacy_state,
+                    "matchedByRelativePathCount": matched_by_path,
+                    "stateReusedPreviousIdCount": state_reused_previous_id,
+                    "stateReusedSameIdCount": state_reused_same_id,
+                }),
+            );
 
+            let missing_started_at = Instant::now();
+            let mut carried_missing_documents = 0usize;
+            let mut removed_stale_missing_documents = 0usize;
             for mut document in existing_documents {
                 if matched_ids.contains(&document.id) {
+                    continue;
+                }
+
+                if let Some(target_document_id) =
+                    available_document_ids_by_fingerprint.get(&document.fingerprint)
+                {
+                    self.merge_stale_state_into_available(paths, states, &mut next_documents, target_document_id, &document.id)?;
+                    let stale_state_path = paths.state_path(&document.id);
+                    if stale_state_path.exists() {
+                        fs::remove_file(stale_state_path)?;
+                    }
+                    removed_stale_missing_documents += 1;
                     continue;
                 }
 
@@ -149,10 +288,42 @@ impl CatalogStore {
                 document.last_opened_at = merged_state.last_opened_at.clone();
                 document.availability = DocumentAvailability::Missing;
                 states.write_state(paths, &merged_state)?;
+                carried_missing_documents += 1;
                 next_documents.push(document);
             }
+            process.checkpoint(
+                "missing-documents-complete",
+                json!({
+                    "carriedMissingDocumentCount": carried_missing_documents,
+                    "elapsedMs": reconcile_started_at.elapsed().as_millis(),
+                    "missingElapsedMs": missing_started_at.elapsed().as_millis(),
+                    "removedStaleMissingDocumentCount": removed_stale_missing_documents,
+                }),
+            );
 
             index.documents = next_documents;
+            process.checkpoint(
+                "final-catalog-stats",
+                json!({
+                    "availableDocumentCount": index
+                        .documents
+                        .iter()
+                        .filter(|document| document.availability == DocumentAvailability::Available)
+                        .count(),
+                    "documentCount": index.documents.len(),
+                    "duplicateFingerprintCount": Self::duplicate_count_for(
+                        index.documents.iter().map(|document| document.fingerprint.as_str())
+                    ),
+                    "duplicateRelativePathCount": Self::duplicate_count_for(
+                        index.documents.iter().map(|document| document.relative_path.as_str())
+                    ),
+                    "missingDocumentCount": index
+                        .documents
+                        .iter()
+                        .filter(|document| document.availability == DocumentAvailability::Missing)
+                        .count(),
+                }),
+            );
             if index != previous_index {
                 self.save_index(paths, &index)?;
                 process.checkpoint(
@@ -502,13 +673,17 @@ impl CatalogStore {
         relative_path: &str,
         fingerprint: &str,
         legacy_state: Option<&crate::models::DocumentState>,
-    ) -> Option<DocumentRecord> {
+    ) -> Option<ExistingDocumentMatch> {
         documents
             .iter()
             .find(|document| {
                 !matched_ids.contains(&document.id) && document.relative_path == relative_path
             })
             .cloned()
+            .map(|document| ExistingDocumentMatch {
+                document,
+                kind: ExistingDocumentMatchKind::RelativePath,
+            })
             .or_else(|| {
                 legacy_state.and_then(|state| {
                     documents
@@ -517,6 +692,10 @@ impl CatalogStore {
                             !matched_ids.contains(&document.id) && document.id == state.document_id
                         })
                         .cloned()
+                        .map(|document| ExistingDocumentMatch {
+                            document,
+                            kind: ExistingDocumentMatchKind::LegacyState,
+                        })
                 })
             })
             .or_else(|| {
@@ -526,7 +705,81 @@ impl CatalogStore {
                         !matched_ids.contains(&document.id) && document.fingerprint == fingerprint
                     })
                     .cloned()
+                    .map(|document| ExistingDocumentMatch {
+                        document,
+                        kind: ExistingDocumentMatchKind::Fingerprint,
+                    })
             })
+    }
+
+    fn duplicate_count_for<'a>(values: impl Iterator<Item = &'a str>) -> usize {
+        let mut counts = HashMap::new();
+        for value in values {
+            *counts.entry(value).or_insert(0usize) += 1;
+        }
+
+        counts
+            .into_values()
+            .filter(|count| *count > 1)
+            .map(|count| count - 1)
+            .sum()
+    }
+
+    pub fn file_metadata_signature(&self, path: &Path) -> AppResult<(u64, u64)> {
+        let metadata = fs::metadata(path)?;
+        let modified_ms = metadata
+            .modified()?
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Ok((metadata.len(), modified_ms))
+    }
+
+    fn merge_stale_state_into_available(
+        &self,
+        paths: &StorePaths,
+        states: &DocumentStateStore,
+        next_documents: &mut [DocumentRecord],
+        target_document_id: &str,
+        stale_document_id: &str,
+    ) -> AppResult<()> {
+        let Some(target_document) = next_documents
+            .iter_mut()
+            .find(|document| document.id == target_document_id)
+        else {
+            return Ok(());
+        };
+
+        let stale_state_path = paths.state_path(stale_document_id);
+        if !stale_state_path.exists() {
+            return Ok(());
+        }
+
+        let stale_state = states.read_state_file(&stale_state_path).ok();
+        if stale_state.is_none() {
+            return Ok(());
+        }
+
+        let current_state_path = paths.state_path(&target_document.id);
+        let current_state = if current_state_path.exists() {
+            states.read_state_file(&current_state_path).ok()
+        } else {
+            None
+        };
+
+        let should_promote_stale_state = match (&stale_state, &current_state) {
+            (Some(stale), Some(current)) => stale.last_opened_at > current.last_opened_at,
+            (Some(_), None) => true,
+            _ => false,
+        };
+
+        if should_promote_stale_state {
+            let merged_state = states.merge_for_document(target_document, stale_state);
+            target_document.last_opened_at = merged_state.last_opened_at.clone();
+            states.write_state(paths, &merged_state)?;
+        }
+
+        Ok(())
     }
 
     fn migrate_legacy_library_root_if_needed(&self, paths: &StorePaths) -> AppResult<()> {

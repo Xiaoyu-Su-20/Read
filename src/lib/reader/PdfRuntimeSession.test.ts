@@ -1,6 +1,26 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { debugAction, debugError } = vi.hoisted(() => ({
+  debugAction: vi.fn(),
+  debugError: vi.fn()
+}));
+
+vi.mock("../debugLog", () => ({
+  debugAction,
+  debugError
+}));
 
 import { createPdfRuntimeSession } from "./PdfRuntimeSession";
+
+function createDeferredPromise<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
 
 function createRuntimeFixture() {
   const readDocumentBytes = vi.fn(async () => [1, 2, 3, 4]);
@@ -155,6 +175,11 @@ function createRuntimeFixture() {
 }
 
 describe("PdfRuntimeSession", () => {
+  beforeEach(() => {
+    debugAction.mockReset();
+    debugError.mockReset();
+  });
+
   it("does not read bytes until load is requested", async () => {
     const fixture = createRuntimeFixture();
 
@@ -243,5 +268,89 @@ describe("PdfRuntimeSession", () => {
     await expect(fixture.session.getPageText(1)).rejects.toThrow("disposed");
     expect(fixture.destroyDocument).toHaveBeenCalledTimes(1);
     expect(fixture.destroyLoadingTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("suppresses document-load errors from stale page text requests after disposal", async () => {
+    const loadDeferred = createDeferredPromise<{
+      numPages: number;
+      getDestination: () => Promise<null>;
+      getPageIndex: () => Promise<number>;
+      getOutline: () => Promise<[]>;
+      getPage: () => Promise<never>;
+      destroy: () => Promise<void>;
+    }>();
+    void loadDeferred.promise.catch(() => undefined);
+    const destroyLoadingTask = vi.fn(async () => undefined);
+    const session = createPdfRuntimeSession("doc-1", {
+      readDocumentBytes: vi.fn(async () => [1, 2, 3]),
+      getDocument: vi.fn(() => ({
+        promise: loadDeferred.promise,
+        destroy: destroyLoadingTask
+      })) as never
+    });
+
+    const pageTextPromise = session.getPageText(1);
+    const rejection = expect(pageTextPromise).rejects.toThrow("disposed");
+    await session.dispose();
+    loadDeferred.reject(new Error("Worker was destroyed"));
+
+    await rejection;
+    expect(
+      debugError.mock.calls.some(([event]) => event === "pdf-runtime.ensure-document-error")
+    ).toBe(false);
+  });
+
+  it("suppresses page-text errors from stale requests after disposal", async () => {
+    const textDeferred = createDeferredPromise<{
+      items: Array<{
+        str: string;
+        dir: string;
+        transform: [number, number, number, number, number, number];
+        width: number;
+        height: number;
+        fontName: string;
+        hasEOL: boolean;
+      }>;
+      styles: {
+        f1: {
+          fontFamily: string;
+          ascent: number;
+          descent: number;
+          vertical: boolean;
+        };
+      };
+      lang: null;
+    }>();
+    void textDeferred.promise.catch(() => undefined);
+    const session = createPdfRuntimeSession("doc-1", {
+      readDocumentBytes: vi.fn(async () => [1, 2, 3]),
+      getDocument: vi.fn(() => ({
+        promise: Promise.resolve({
+          numPages: 1,
+          getDestination: vi.fn(async () => null),
+          getPageIndex: vi.fn(async () => 0),
+          getOutline: vi.fn(async () => []),
+          getPage: vi.fn(async () => ({
+            getViewport: vi.fn(() => ({
+              width: 100,
+              height: 120,
+              transform: [1, 0, 0, 1, 0, 0]
+            })),
+            getTextContent: vi.fn(() => textDeferred.promise)
+          })),
+          destroy: vi.fn(async () => undefined)
+        })
+      })) as never
+    });
+
+    const pageTextPromise = session.getPageText(1);
+    const rejection = expect(pageTextPromise).rejects.toThrow("disposed");
+    await session.dispose();
+    textDeferred.reject(new Error("Invalid page request."));
+
+    await rejection;
+    expect(
+      debugError.mock.calls.some(([event]) => event === "pdf-runtime.page-text-error")
+    ).toBe(false);
   });
 });

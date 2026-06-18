@@ -1,15 +1,17 @@
-use std::{path::Path, sync::OnceLock};
+use std::sync::OnceLock;
 
 use mupdf::Pixmap;
 
 #[cfg(target_os = "windows")]
-pub fn write_pixmap_as_jpeg(path: &Path, pixmap: &Pixmap, quality: u32) -> Result<(), String> {
-    use std::{ffi::c_void, os::windows::ffi::OsStrExt, ptr};
+pub fn encode_pixmap_as_jpeg(pixmap: &Pixmap, quality: u32) -> Result<Vec<u8>, String> {
+    use std::{ffi::c_void, ptr, slice};
 
     type GpStatus = i32;
     type GpBitmap = c_void;
     type GpImage = c_void;
     type UlongPtr = usize;
+    type HResult = i32;
+    type HGlobal = *mut c_void;
 
     #[repr(C)]
     struct GdiplusStartupInput {
@@ -41,7 +43,21 @@ pub fn write_pixmap_as_jpeg(path: &Path, pixmap: &Pixmap, quality: u32) -> Resul
         parameter: [EncoderParameter; 1],
     }
 
+    #[repr(C)]
+    struct IUnknownVTable {
+        query_interface:
+            unsafe extern "system" fn(*mut IStream, *const Guid, *mut *mut c_void) -> HResult,
+        add_ref: unsafe extern "system" fn(*mut IStream) -> u32,
+        release: unsafe extern "system" fn(*mut IStream) -> u32,
+    }
+
+    #[repr(C)]
+    struct IStream {
+        lp_vtbl: *const IUnknownVTable,
+    }
+
     const OK: GpStatus = 0;
+    const S_OK: HResult = 0;
     const PIXEL_FORMAT_24BPP_RGB: i32 = 137224;
     const ENCODER_PARAMETER_VALUE_TYPE_LONG: u32 = 4;
 
@@ -60,13 +76,29 @@ pub fn write_pixmap_as_jpeg(path: &Path, pixmap: &Pixmap, quality: u32) -> Resul
             scan0: *mut u8,
             bitmap: *mut *mut GpBitmap,
         ) -> GpStatus;
-        fn GdipSaveImageToFile(
+        fn GdipSaveImageToStream(
             image: *mut GpImage,
-            filename: *const u16,
+            stream: *mut IStream,
             clsid_encoder: *const Guid,
             encoder_params: *const EncoderParameters,
         ) -> GpStatus;
         fn GdipDisposeImage(image: *mut GpImage) -> GpStatus;
+    }
+
+    #[link(name = "ole32")]
+    unsafe extern "system" {
+        fn CreateStreamOnHGlobal(
+            h_global: HGlobal,
+            delete_on_release: i32,
+            stream: *mut *mut IStream,
+        ) -> HResult;
+        fn GetHGlobalFromStream(stream: *mut IStream, h_global: *mut HGlobal) -> HResult;
+    }
+
+    unsafe extern "system" {
+        fn GlobalLock(memory: HGlobal) -> *mut c_void;
+        fn GlobalUnlock(memory: HGlobal) -> i32;
+        fn GlobalSize(memory: HGlobal) -> usize;
     }
 
     fn status_to_result(status: GpStatus, action: &str) -> Result<(), String> {
@@ -74,6 +106,20 @@ pub fn write_pixmap_as_jpeg(path: &Path, pixmap: &Pixmap, quality: u32) -> Resul
             Ok(())
         } else {
             Err(format!("{action} failed with GDI+ status {status}."))
+        }
+    }
+
+    fn hresult_to_result(status: HResult, action: &str) -> Result<(), String> {
+        if status == S_OK {
+            Ok(())
+        } else {
+            Err(format!("{action} failed with HRESULT 0x{status:08x}."))
+        }
+    }
+
+    unsafe fn release_stream(stream: *mut IStream) {
+        if !stream.is_null() {
+            ((*(*stream).lp_vtbl).release)(stream);
         }
     }
 
@@ -153,27 +199,55 @@ pub fn write_pixmap_as_jpeg(path: &Path, pixmap: &Pixmap, quality: u32) -> Resul
     };
     status_to_result(create_status, "GdipCreateBitmapFromScan0")?;
 
-    let wide_path = path
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<u16>>();
-    let save_result = unsafe {
-        GdipSaveImageToFile(
-            bitmap.cast(),
-            wide_path.as_ptr(),
-            &jpeg_clsid,
-            &encoder_parameters,
-        )
-    };
-    let dispose_result = unsafe { GdipDisposeImage(bitmap.cast()) };
+    let mut stream = ptr::null_mut();
+    let create_stream_result =
+        unsafe { CreateStreamOnHGlobal(ptr::null_mut(), 1, &mut stream) };
+    if let Err(error) = hresult_to_result(create_stream_result, "CreateStreamOnHGlobal") {
+        let _ = unsafe { GdipDisposeImage(bitmap.cast()) };
+        return Err(error);
+    }
 
-    status_to_result(save_result, "GdipSaveImageToFile")?;
+    let encode_result = (|| -> Result<Vec<u8>, String> {
+        let save_status = unsafe {
+            GdipSaveImageToStream(
+                bitmap.cast(),
+                stream,
+                &jpeg_clsid,
+                &encoder_parameters,
+            )
+        };
+        status_to_result(save_status, "GdipSaveImageToStream")?;
+
+        let mut h_global = ptr::null_mut();
+        let get_hglobal_result = unsafe { GetHGlobalFromStream(stream, &mut h_global) };
+        hresult_to_result(get_hglobal_result, "GetHGlobalFromStream")?;
+
+        let byte_length = unsafe { GlobalSize(h_global) };
+        let data_ptr = unsafe { GlobalLock(h_global) } as *const u8;
+        if data_ptr.is_null() && byte_length > 0 {
+            return Err("GlobalLock returned a null pointer for JPEG bytes.".to_string());
+        }
+
+        let bytes = unsafe { slice::from_raw_parts(data_ptr, byte_length).to_vec() };
+        if !data_ptr.is_null() {
+            unsafe {
+                GlobalUnlock(h_global);
+            }
+        }
+        Ok(bytes)
+    })();
+
+    let dispose_result = unsafe { GdipDisposeImage(bitmap.cast()) };
+    let release_result = {
+        unsafe { release_stream(stream) };
+        Ok::<(), String>(())
+    };
     status_to_result(dispose_result, "GdipDisposeImage")?;
-    Ok(())
+    release_result?;
+    encode_result
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn write_pixmap_as_jpeg(_path: &Path, _pixmap: &Pixmap, _quality: u32) -> Result<(), String> {
+pub fn encode_pixmap_as_jpeg(_pixmap: &Pixmap, _quality: u32) -> Result<Vec<u8>, String> {
     Err("JPEG output is only implemented for Windows in this build.".to_string())
 }

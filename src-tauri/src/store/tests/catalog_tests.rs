@@ -1,5 +1,6 @@
 use std::{fs, thread, time::Duration};
 
+use serde_json::Value;
 use tempfile::tempdir;
 
 use super::{
@@ -210,6 +211,93 @@ fn reconcile_library_skips_index_write_when_catalog_is_unchanged() {
 
     let after = fs::metadata(&index_path).unwrap().modified().unwrap();
     assert_eq!(after, before);
+}
+
+#[test]
+fn reconcile_library_persists_file_metadata_for_cached_fingerprints() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("steady-metadata.pdf");
+    write_sample_pdf(&source, "steady");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+
+    let _ = store.list_library().unwrap();
+
+    let index_path = app_dir.join("library-index.json");
+    let raw = fs::read_to_string(index_path).unwrap();
+    let parsed: Value = serde_json::from_str(&raw).unwrap();
+    let documents = parsed["documents"].as_array().unwrap();
+    let document = documents
+        .iter()
+        .find(|document| document["id"].as_str() == Some(record.id.as_str()))
+        .unwrap();
+
+    assert!(document["fileSizeBytes"].as_u64().unwrap() > 0);
+    assert!(document["fileModifiedMs"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn reconcile_library_removes_stale_missing_duplicates_with_same_fingerprint() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("duplicate.pdf");
+    write_sample_pdf(&source, "duplicate");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+
+    let stale_document_id = "stale-document".to_string();
+    let stale_state = crate::models::DocumentState {
+        last_opened_at: Some("2026-06-17T10:00:00Z".to_string()),
+        last_page: 23,
+        zoom: 1.4,
+        ..crate::models::DocumentState::new(stale_document_id.clone(), record.fingerprint.clone())
+    };
+    let stale_state_path = app_dir
+        .join("document-states")
+        .join(format!("{stale_document_id}.json"));
+    fs::create_dir_all(stale_state_path.parent().unwrap()).unwrap();
+    fs::write(&stale_state_path, serde_json::to_string_pretty(&stale_state).unwrap()).unwrap();
+
+    let index_path = app_dir.join("library-index.json");
+    let mut index: crate::models::LibraryIndex =
+        serde_json::from_str(&fs::read_to_string(&index_path).unwrap()).unwrap();
+    index.documents.push(crate::models::DocumentRecord {
+        id: stale_document_id.clone(),
+        title: "duplicate".to_string(),
+        file_name: "duplicate.pdf".to_string(),
+        folder_id: DEFAULT_COLLECTION_ID.to_string(),
+        relative_path: "Collection 2/duplicate.pdf".to_string(),
+        fingerprint: record.fingerprint.clone(),
+        file_size_bytes: None,
+        file_modified_ms: None,
+        imported_at: "2026-06-16T00:00:00Z".to_string(),
+        last_opened_at: stale_state.last_opened_at.clone(),
+        availability: DocumentAvailability::Missing,
+    });
+    fs::write(&index_path, serde_json::to_string_pretty(&index).unwrap()).unwrap();
+
+    let _ = store.list_library().unwrap();
+
+    let reconciled: crate::models::LibraryIndex =
+        serde_json::from_str(&fs::read_to_string(&index_path).unwrap()).unwrap();
+    assert_eq!(reconciled.documents.len(), 1);
+    assert_eq!(reconciled.documents[0].id, record.id);
+    assert_eq!(
+        reconciled.documents[0].last_opened_at,
+        Some("2026-06-17T10:00:00Z".to_string())
+    );
+    assert!(!stale_state_path.exists());
+
+    let reopened = store.open_document(&record.id).unwrap();
+    assert_eq!(reopened.state.last_page, 23);
+    assert!((reopened.state.zoom - 1.4).abs() < f32::EPSILON);
 }
 
 #[test]

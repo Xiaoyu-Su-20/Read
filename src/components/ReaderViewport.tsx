@@ -1,11 +1,24 @@
-import { memo } from "react";
+import { memo, useEffect } from "react";
 
 import PdfViewer from "./PdfViewer";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
-import type { DocumentPayload, DocumentState, OutlineItem, ViewerApi, ViewerSnapshot } from "../lib/types";
+import { debugAction } from "../lib/debugLog";
+import type { DocumentState, OutlineItem, ReaderSession, ViewerApi, ViewerSnapshot } from "../lib/types";
+
+function toViewEventName(view: "reader" | "collection") {
+  return view === "reader" ? "document" : "collection";
+}
 
 type ReaderViewportProps = {
-  document: DocumentPayload | null;
+  activeViewTransition: {
+    clickStartedAtMs: number;
+    fromView: "reader" | "collection";
+    source: string;
+    toView: "reader" | "collection";
+    viewTransitionId: string;
+  } | null;
+  readerSession: ReaderSession | null;
+  pendingReaderOpenSessionId: string | null;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
   onOutlineChange: (items: OutlineItem[]) => void;
   onStatusChange: (message: string) => void;
@@ -16,7 +29,9 @@ type ReaderViewportProps = {
 };
 
 const ReaderViewport = memo(function ReaderViewport({
-  document,
+  activeViewTransition,
+  readerSession,
+  pendingReaderOpenSessionId,
   onSnapshotChange,
   onOutlineChange,
   onStatusChange,
@@ -25,10 +40,49 @@ const ReaderViewport = memo(function ReaderViewport({
   viewerDisplayConfig,
   suspendAutoFitDuringPaneResize
 }: ReaderViewportProps) {
+  useEffect(() => {
+    const elapsedFromClickMs =
+      activeViewTransition?.clickStartedAtMs == null
+        ? null
+        : Math.round(performance.now() - activeViewTransition.clickStartedAtMs);
+    let mountLogged = false;
+    const timeoutId = window.setTimeout(() => {
+      mountLogged = true;
+      debugAction("view.document:component-mounted", {
+        documentId: readerSession?.documentId ?? null,
+        elapsedFromClickMs,
+        fromView: activeViewTransition ? toViewEventName(activeViewTransition.fromView) : null,
+        openSessionId: readerSession?.openSessionId ?? null,
+        source: activeViewTransition?.source ?? null,
+        toView: activeViewTransition ? toViewEventName(activeViewTransition.toView) : null,
+        viewTransitionId: activeViewTransition?.viewTransitionId ?? null
+      });
+      debugAction("reader:mounted", {
+        documentId: readerSession?.documentId ?? null,
+        elapsedFromClickMs,
+        openSessionId: readerSession?.openSessionId ?? null,
+        viewTransitionId: activeViewTransition?.viewTransitionId ?? null
+      });
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      if (!mountLogged) {
+        return;
+      }
+      debugAction("reader:unmounted", {
+        documentId: readerSession?.documentId ?? null,
+        openSessionId: readerSession?.openSessionId ?? null,
+        viewTransitionId: activeViewTransition?.viewTransitionId ?? null
+      });
+    };
+  }, []);
+
   return (
     <section className="reader-viewport" aria-label="Reader viewport">
       <PdfViewer
-        document={document}
+        readerSession={readerSession}
+        pendingReaderOpenSessionId={pendingReaderOpenSessionId}
         onSnapshotChange={onSnapshotChange}
         onOutlineChange={onOutlineChange}
         onStateChange={onStateChange}

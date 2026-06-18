@@ -23,13 +23,29 @@ export type RapidTurnOverlayModel = {
   progress: number;
 };
 
+export type RapidTurnSessionState = {
+  active: boolean;
+  source: NavigationSource | null;
+  direction: NavigationDirection | null;
+};
+
+export function shouldResetRapidTurnSession(
+  session: RapidTurnSessionState,
+  intent: RapidTurnIntent
+) {
+  return (
+    session.active &&
+    (session.source !== intent.source || session.direction !== intent.direction)
+  );
+}
+
 export function shouldActivateRapidTurn(
   lastInput: RapidTurnLastInput | null,
   intent: RapidTurnIntent,
   now: number
 ) {
-  if (intent.isRepeat) {
-    return true;
+  if (intent.source === "keyboard" && !intent.isRepeat) {
+    return false;
   }
 
   if (!lastInput) {

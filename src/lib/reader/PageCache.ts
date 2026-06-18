@@ -1,11 +1,31 @@
 import type { RenderedPagePayload } from "../types";
+import { debugAction } from "../debugLog";
 
 export type CachedRenderedPage = RenderedPagePayload & {
+  documentId: string;
   imageUrl: string;
   requestKey: string;
   logicalKey: string;
   renderZoom: number;
 };
+
+function revokeCachedPageImage(page: CachedRenderedPage | undefined) {
+  if (!page) {
+    return;
+  }
+
+  if (page.imageUrl.startsWith("blob:")) {
+    debugAction("viewer.blob-url-revoked", {
+      blobUrl: page.imageUrl,
+      cacheKey: page.cacheKey,
+      documentId: page.documentId,
+      logicalKey: page.logicalKey,
+      page: page.pageNumber,
+      zoom: page.renderZoom
+    });
+    URL.revokeObjectURL(page.imageUrl);
+  }
+}
 
 export function makePageCacheKey(documentId: string, pageNumber: number, zoom = 1) {
   return `${documentId}:${pageNumber}:${zoom.toFixed(2)}`;
@@ -16,6 +36,9 @@ export function createPageCache(maxEntries: number) {
 
   return {
     clear() {
+      for (const page of entries.values()) {
+        revokeCachedPageImage(page);
+      }
       entries.clear();
     },
     get(key: string) {
@@ -48,7 +71,15 @@ export function createPageCache(maxEntries: number) {
       return [...entries.keys()];
     },
     set(key: string, value: CachedRenderedPage) {
-      if (entries.has(key)) {
+      const existing = entries.get(key);
+      if (existing === value) {
+        entries.delete(key);
+        entries.set(key, value);
+        return;
+      }
+
+      if (existing) {
+        revokeCachedPageImage(existing);
         entries.delete(key);
       }
 
@@ -58,6 +89,7 @@ export function createPageCache(maxEntries: number) {
         if (!oldestKey) {
           break;
         }
+        revokeCachedPageImage(entries.get(oldestKey));
         entries.delete(oldestKey);
       }
     }

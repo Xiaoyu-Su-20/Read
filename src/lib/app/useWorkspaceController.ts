@@ -16,18 +16,39 @@ import {
 } from "../api";
 import { sortRecentDocuments } from "../commands";
 import { debugAction, runDebugProcess } from "../debugLog";
-import { ROOT_FOLDER_ID, type DocumentPayload, type DocumentRecord, type DocumentState, type FolderTreeNode, type OutlineItem, type ViewerApi, type ViewerSnapshot } from "../types";
+import { ROOT_FOLDER_ID, type DocumentPayload, type DocumentRecord, type DocumentState, type FolderTreeNode, type OutlineItem, type ReaderSession, type ViewerApi, type ViewerSnapshot } from "../types";
 import { toCollectionOptions } from "./helpers";
 
 type OpenDocumentOptions = {
   refreshLibrary?: boolean;
+  source?: ReaderSession["source"];
 };
+
+type ReaderOpenSession = {
+  clickStartedAtMs: number;
+  documentId: string;
+  openSessionId: string;
+  source: ReaderSession["source"];
+};
+
+function createReaderOpenSession(
+  documentId: string,
+  source: ReaderSession["source"]
+): ReaderOpenSession {
+  return {
+    clickStartedAtMs: performance.now(),
+    documentId,
+    openSessionId: `open-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    source
+  };
+}
 
 export function useWorkspaceController() {
   const [libraryTree, setLibraryTree] = useState<FolderTreeNode | null>(null);
   const [libraryRoot, setLibraryRootPath] = useState("");
   const [recentDocuments, setRecentDocuments] = useState<DocumentRecord[]>([]);
-  const [activeDocument, setActiveDocument] = useState<DocumentPayload | null>(null);
+  const [activeReaderSession, setActiveReaderSession] = useState<ReaderSession | null>(null);
+  const [pendingReaderOpenSessionId, setPendingReaderOpenSessionId] = useState<string | null>(null);
   const [readerState, setReaderState] = useState<DocumentState | null>(null);
   const [viewerSnapshot, setViewerSnapshot] = useState<ViewerSnapshot>({
     currentPage: 1,
@@ -38,11 +59,12 @@ export function useWorkspaceController() {
   const [statusMessage, setStatusMessage] = useState("Ready");
   const [workspaceMode, setWorkspaceMode] = useState<"reader" | "collection">("collection");
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
-
   const viewerApiRef = useRef<ViewerApi | null>(null);
   const [viewerApi, setViewerApi] = useState<ViewerApi | null>(null);
   const initialBootstrapStartedRef = useRef(false);
+  const pendingReaderOpenSessionRef = useRef<ReaderOpenSession | null>(null);
 
+  const activeDocument = activeReaderSession?.document ?? null;
   const collections = libraryTree?.folders ?? [];
   const selectedCollection = useMemo(
     () =>
@@ -52,7 +74,7 @@ export function useWorkspaceController() {
     [collections, selectedCollectionId]
   );
   const collectionOptions = useMemo(() => toCollectionOptions(collections), [collections]);
-  const activeDocumentId = activeDocument?.document.id ?? null;
+  const activeDocumentId = activeReaderSession?.documentId ?? null;
 
   const refreshRecentDocuments = useCallback(async () => {
     return runDebugProcess("app.refresh-recent-documents", {}, async () => {
@@ -79,7 +101,8 @@ export function useWorkspaceController() {
 
   const resetOpenDocument = useCallback(() => {
     debugAction("app.reset-open-document");
-    setActiveDocument(null);
+    setActiveReaderSession(null);
+    setPendingReaderOpenSessionId(null);
     setReaderState(null);
     setOutlineItems([]);
     setWorkspaceMode("collection");
@@ -140,26 +163,82 @@ export function useWorkspaceController() {
 
   const handleOpenDocument = useCallback(
     async (documentId: string, options?: OpenDocumentOptions) => {
+      const openSession = createReaderOpenSession(documentId, options?.source ?? "unknown");
+      pendingReaderOpenSessionRef.current = openSession;
+      setPendingReaderOpenSessionId(openSession.openSessionId);
+      debugAction("reader.open:click", {
+        documentId,
+        openSessionId: openSession.openSessionId,
+        refreshLibrary: Boolean(options?.refreshLibrary),
+        source: openSession.source
+      });
       await runDebugProcess(
         "app.open-document",
         {
-          documentId,
-          refreshLibrary: Boolean(options?.refreshLibrary)
+            documentId,
+            openSessionId: openSession.openSessionId,
+            refreshLibrary: Boolean(options?.refreshLibrary),
+            source: openSession.source
         },
         async () => {
-          const payload = await openDocument(documentId);
-          setActiveDocument(payload);
+          debugAction("reader.open:command-start", {
+            documentId,
+            openSessionId: openSession.openSessionId,
+            elapsedMs: Math.round(performance.now() - openSession.clickStartedAtMs),
+            source: openSession.source
+          });
+          const payload = await openDocument(documentId, {
+            openSessionId: openSession.openSessionId
+          });
+          if (pendingReaderOpenSessionRef.current?.openSessionId !== openSession.openSessionId) {
+            debugAction("reader.open:stale-payload-ignored", {
+              documentId,
+              openSessionId: openSession.openSessionId
+            });
+            return;
+          }
+          debugAction("reader.open:document-ready", {
+            documentId,
+            openSessionId: openSession.openSessionId,
+            elapsedMs: Math.round(performance.now() - openSession.clickStartedAtMs),
+            source: openSession.source
+          });
+          setActiveReaderSession({
+            document: payload,
+            documentId: payload.document.id,
+            page: payload.state.lastPage,
+            zoom: payload.state.zoom,
+            openSessionId: openSession.openSessionId,
+            clickStartedAtMs: openSession.clickStartedAtMs,
+            source: openSession.source
+          });
           setReaderState(payload.state);
           setSelectedCollectionId(payload.document.folderId);
           setStatusMessage(`Opened ${payload.document.title}.`);
           setWorkspaceMode("reader");
+          debugAction("reader.open:active-document-committed", {
+            documentId: payload.document.id,
+            openSessionId: openSession.openSessionId,
+            elapsedMs: Math.round(performance.now() - openSession.clickStartedAtMs),
+            source: openSession.source
+          });
+          setPendingReaderOpenSessionId((currentOpenSessionId) =>
+            currentOpenSessionId === openSession.openSessionId ? null : currentOpenSessionId
+          );
           if (options?.refreshLibrary) {
             await refreshLibraryState();
           } else {
             await refreshRecentDocuments();
           }
         }
-      );
+      ).finally(() => {
+        if (pendingReaderOpenSessionRef.current?.openSessionId === openSession.openSessionId) {
+          pendingReaderOpenSessionRef.current = null;
+        }
+        setPendingReaderOpenSessionId((currentOpenSessionId) =>
+          currentOpenSessionId === openSession.openSessionId ? null : currentOpenSessionId
+        );
+      });
     },
     [refreshLibraryState, refreshRecentDocuments]
   );
@@ -173,11 +252,25 @@ export function useWorkspaceController() {
       await runDebugProcess(
         "app.sync-active-document",
         {
-          documentId: activeDocument.document.id
+          documentId: activeDocument.document.id,
+          openSessionId: activeReaderSession?.openSessionId ?? null
         },
         async () => {
-          const payload = await openDocument(activeDocument.document.id);
-          setActiveDocument(payload);
+          const payload = await openDocument(activeDocument.document.id, {
+            openSessionId: activeReaderSession?.openSessionId
+          });
+          setActiveReaderSession((currentSession) =>
+            currentSession
+              ? {
+                  ...currentSession,
+                  document: payload,
+                  documentId: payload.document.id,
+                  page: payload.state.lastPage,
+                  zoom: payload.state.zoom,
+                  source: currentSession.source
+                }
+              : null
+          );
           setReaderState(payload.state);
           setSelectedCollectionId(payload.document.folderId);
           await refreshRecentDocuments();
@@ -186,7 +279,7 @@ export function useWorkspaceController() {
     } catch {
       resetOpenDocument();
     }
-  }, [activeDocument, refreshRecentDocuments, resetOpenDocument]);
+  }, [activeDocument, activeReaderSession?.openSessionId, refreshRecentDocuments, resetOpenDocument]);
 
   const createCollection = useCallback(
     async (name: string) => {
@@ -350,6 +443,8 @@ export function useWorkspaceController() {
     outlineItems,
     statusMessage,
     workspaceMode,
+    activeReaderSession,
+    pendingReaderOpenSessionId,
     selectedCollectionId,
     selectedCollection,
     collectionOptions,

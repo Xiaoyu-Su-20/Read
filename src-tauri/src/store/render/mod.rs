@@ -1,12 +1,10 @@
 use std::{
-    fs,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, Mutex},
 };
 
 use mupdf::{Colorspace, Device, Document, IRect, Matrix, Pixmap};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 use crate::{
     debug::process as debug_process,
@@ -23,9 +21,9 @@ mod jpeg_windows;
 pub use cache::RenderCache;
 #[cfg(test)]
 pub use cache::MAX_RENDER_CACHE_ENTRIES;
-use jpeg_windows::write_pixmap_as_jpeg;
+use jpeg_windows::encode_pixmap_as_jpeg;
 
-const RENDERER_VERSION: &str = "mupdf-v4";
+const RENDERER_VERSION: &str = "mupdf-v5";
 const BASE_PDF_RENDER_SCALE: f32 = 1.0;
 const JPEG_QUALITY: u32 = 82;
 const MIN_RENDER_ZOOM: f32 = 0.1;
@@ -34,12 +32,13 @@ const MAX_RENDER_ZOOM: f32 = 5.0;
 #[derive(Debug, Clone)]
 pub struct PageRenderRequest {
     pub document_id: String,
+    pub document_generation_id: Option<String>,
     pub fingerprint: String,
     pub document_path: String,
     pub page_number: u32,
+    pub request_sequence: Option<u32>,
     pub zoom: f32,
     pub cache_key: String,
-    pub image_path: PathBuf,
     pub normalization: Option<Arc<DocumentNormalizationManifest>>,
 }
 
@@ -49,7 +48,7 @@ pub struct PdfRenderStore;
 impl PdfRenderStore {
     pub fn prepare_request(
         &self,
-        paths: &StorePaths,
+        _paths: &StorePaths,
         document: &DocumentRecord,
         document_path: &Path,
         page_number: u32,
@@ -78,23 +77,16 @@ impl PdfRenderStore {
             zoom,
             normalization_token,
         );
-        let image_path = self.render_output_path(
-            paths,
-            &document.id,
-            &document.fingerprint,
-            page_number,
-            zoom,
-            normalization_token,
-        );
 
         Ok(PageRenderRequest {
             document_id: document.id.clone(),
+            document_generation_id: None,
             fingerprint: document.fingerprint.clone(),
             document_path: document_path.to_string_lossy().to_string(),
             page_number,
+            request_sequence: None,
             zoom,
             cache_key,
-            image_path,
             normalization,
         })
     }
@@ -126,29 +118,6 @@ impl PdfRenderStore {
         format!("{RENDERER_VERSION}:{document_id}:{fingerprint}:{variant}:{page_number}:{zoom:.2}")
     }
 
-    fn render_output_path(
-        &self,
-        paths: &StorePaths,
-        document_id: &str,
-        fingerprint: &str,
-        page_number: u32,
-        zoom: f32,
-        normalization_token: Option<&str>,
-    ) -> PathBuf {
-        let digest = Sha256::digest(
-            format!(
-                "{RENDERER_VERSION}:{document_id}:{fingerprint}:{}:{page_number}:{zoom:.2}",
-                normalization_token.unwrap_or("raw")
-            )
-            .as_bytes(),
-        );
-        paths.rendered_pages_dir.join(format!(
-            "{RENDERER_VERSION}-{}-p{page_number}-z{:.2}.jpg",
-            &format!("{digest:x}")[..16],
-            zoom
-        ))
-    }
-
     pub fn render_pdf_page_blocking(
         request: PageRenderRequest,
         render_cache: Arc<Mutex<RenderCache>>,
@@ -158,8 +127,9 @@ impl PdfRenderStore {
             json!({
                 "cacheKey": request.cache_key,
                 "documentId": request.document_id,
-                "imagePath": request.image_path.to_string_lossy().to_string(),
+                "documentGenerationId": request.document_generation_id,
                 "page": request.page_number,
+                "requestSequence": request.request_sequence,
                 "zoom": request.zoom,
             }),
         );
@@ -177,9 +147,11 @@ impl PdfRenderStore {
             }
             process.checkpoint("cache-miss", json!({}));
 
+            process.checkpoint("document-open-start", json!({}));
             let document = Document::open(&request.document_path).map_err(|error| {
                 AppError::Render(format!("Unable to open PDF with MuPDF: {error}"))
             })?;
+            process.checkpoint("document-open-finished", json!({}));
 
             let page_count = document.page_count().map_err(|error| {
                 AppError::Render(format!("Unable to inspect PDF pages: {error}"))
@@ -198,6 +170,7 @@ impl PdfRenderStore {
                 }),
             );
 
+            process.checkpoint("page-load-start", json!({}));
             let page = document
                 .load_page((request.page_number - 1) as i32)
                 .map_err(|error| {
@@ -206,6 +179,7 @@ impl PdfRenderStore {
                         request.page_number
                     ))
                 })?;
+            process.checkpoint("page-load-finished", json!({}));
             let render_scale =
                 BASE_PDF_RENDER_SCALE * request.zoom.clamp(MIN_RENDER_ZOOM, MAX_RENDER_ZOOM);
             let page_bounds = page.bounds().map_err(|error| {
@@ -237,6 +211,7 @@ impl PdfRenderStore {
                 if let Some(rendered) = rendered {
                     rendered
                 } else {
+                    process.checkpoint("rasterize-start", json!({}));
                     let matrix = Matrix::new_scale(render_scale, render_scale);
                     let logical_rect = page_bounds.transform(&matrix).round();
                     let width = logical_rect.width().max(1) as u32;
@@ -250,6 +225,13 @@ impl PdfRenderStore {
                                     request.page_number
                                 ))
                             })?;
+                    process.checkpoint(
+                        "rasterize-finished",
+                        json!({
+                            "height": height,
+                            "width": width,
+                        }),
+                    );
                     (
                         pixmap,
                         width,
@@ -271,36 +253,35 @@ impl PdfRenderStore {
                 }),
             );
 
-            write_pixmap_as_jpeg(&request.image_path, &pixmap, JPEG_QUALITY).map_err(|error| {
+            process.checkpoint("jpeg-encode-start", json!({}));
+            let image_bytes = encode_pixmap_as_jpeg(&pixmap, JPEG_QUALITY).map_err(|error| {
                 AppError::Render(format!(
-                    "Unable to write JPEG for page {}: {error}",
+                    "Unable to encode JPEG for page {}: {error}",
                     request.page_number
                 ))
             })?;
+            process.checkpoint("jpeg-encode-finished", json!({}));
             process.checkpoint(
-                "image-written",
+                "image-encoded",
                 json!({
+                    "byteLength": image_bytes.len(),
                     "jpegQuality": JPEG_QUALITY,
                 }),
             );
 
-            let evicted_paths = Self::render_cache_store(
+            Self::render_cache_store(
                 &render_cache,
                 &request,
                 width,
                 height,
+                image_bytes.clone(),
                 render_variant,
                 normalization_token.clone(),
                 text_layer_transform.clone(),
             )?;
-            for path in evicted_paths {
-                if path != request.image_path {
-                    let _ = fs::remove_file(path);
-                }
-            }
 
             Ok(RenderedPagePayload {
-                image_path: request.image_path.to_string_lossy().to_string(),
+                image_bytes,
                 page_number: request.page_number,
                 width,
                 height,
@@ -404,21 +385,24 @@ impl PdfRenderStore {
         request: &PageRenderRequest,
         width: u32,
         height: u32,
+        image_bytes: Vec<u8>,
         render_variant: RenderVariant,
         normalization_token: Option<String>,
         text_layer_transform: TextLayerTransform,
-    ) -> AppResult<Vec<PathBuf>> {
+    ) -> AppResult<()> {
         let mut cache = render_cache
             .lock()
             .map_err(|_| AppError::Render("Unable to lock render cache.".to_string()))?;
-        Ok(cache.insert(
+        cache.insert(
             request,
             width,
             height,
+            image_bytes,
             render_variant,
             normalization_token,
             text_layer_transform,
-        ))
+        );
+        Ok(())
     }
 }
 
