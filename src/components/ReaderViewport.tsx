@@ -18,6 +18,7 @@ type ReaderViewportProps = {
     viewTransitionId: string;
   } | null;
   readerSession: ReaderSession | null;
+  readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
   onOutlineChange: (items: OutlineItem[]) => void;
@@ -31,6 +32,7 @@ type ReaderViewportProps = {
 const ReaderViewport = memo(function ReaderViewport({
   activeViewTransition,
   readerSession,
+  readerActive,
   pendingReaderOpenSessionId,
   onSnapshotChange,
   onOutlineChange,
@@ -82,6 +84,7 @@ const ReaderViewport = memo(function ReaderViewport({
     <section className="reader-viewport" aria-label="Reader viewport">
       <PdfViewer
         readerSession={readerSession}
+        readerActive={readerActive}
         pendingReaderOpenSessionId={pendingReaderOpenSessionId}
         onSnapshotChange={onSnapshotChange}
         onOutlineChange={onOutlineChange}

@@ -111,6 +111,7 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
   return ReaderWorkspace({
     activeViewTransition: null,
     readerSession,
+    readerActive: true,
     pendingReaderOpenSessionId: null,
     note: null,
     notesLoading: false,

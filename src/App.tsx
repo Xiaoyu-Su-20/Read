@@ -1,4 +1,8 @@
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type {
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode
+} from "react";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -31,6 +35,10 @@ import { debugAction } from "./lib/debugLog";
 import { collectDocuments } from "./lib/tree";
 
 const appWindow = getCurrentWindow();
+const COLLECTION_CLICK_MARK = "collection-click";
+const COLLECTION_FIRST_FRAME_MARK = "collection-first-frame";
+const COLLECTION_CLICK_TO_FRAME_MEASURE = "collection-click-to-frame";
+const COLLECTION_SIDEBAR_CONTROL_ID = "sidebar-collection";
 
 type FullscreenState =
   | "windowed"
@@ -67,6 +75,19 @@ function shouldStartWindowDrag(target: EventTarget | null) {
   return !target.closest(
     "button, input, textarea, select, [contenteditable='true'], [data-no-window-drag]"
   );
+}
+
+function describePointerElement(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return null;
+  }
+
+  return {
+    ariaLabel: target.getAttribute("aria-label"),
+    className: target.className,
+    dataset: { ...target.dataset },
+    tagName: target.tagName.toLowerCase()
+  };
 }
 
 function ChromeIcon({
@@ -107,9 +128,18 @@ export default function App() {
   const [fullscreenState, setFullscreenState] = useState<FullscreenState>("windowed");
   const [showFullscreenHint, setShowFullscreenHint] = useState(false);
   const fullscreenTransitionRef = useRef(false);
+  const fullscreenWindowStateRef = useRef<{ wasMaximized: boolean } | null>(null);
   const pendingViewNavigationRef = useRef<PendingViewNavigationTrace | null>(null);
   const committedViewNavigationRef = useRef<PendingViewNavigationTrace | null>(null);
   const activeViewTransitionRef = useRef<ActiveViewTransition | null>(null);
+  const currentViewRef = useRef<ViewMode>(workspace.workspaceMode);
+  const activeDocumentIdRef = useRef<string | null>(workspace.activeDocumentId);
+  const collectionPointerDownSequenceRef = useRef(0);
+  const lastCollectionPointerDownRef = useRef<{
+    eventTimestamp: number;
+    receivedAt: number;
+    sequence: number;
+  } | null>(null);
   const settingsContainerRef = useRef<HTMLDivElement | null>(null);
   const searchableDocuments = useMemo(
     () => workspace.libraryTree ? collectDocuments(workspace.libraryTree) : [],
@@ -163,6 +193,12 @@ export default function App() {
         toView: trace.toView,
         viewTransitionId: trace.viewTransitionId
       };
+      if (toView === "collection") {
+        performance.clearMarks(COLLECTION_CLICK_MARK);
+        performance.clearMarks(COLLECTION_FIRST_FRAME_MARK);
+        performance.clearMeasures(COLLECTION_CLICK_TO_FRAME_MEASURE);
+        performance.mark(COLLECTION_CLICK_MARK);
+      }
       debugAction(`view.${toViewEventName(toView)}:click`, {
         documentId: trace.documentId,
         elapsedFromClickMs: 0,
@@ -175,6 +211,59 @@ export default function App() {
     },
     [workspace.activeDocument, workspace.activeReaderSession?.openSessionId, workspace.workspaceMode]
   );
+
+  useEffect(() => {
+    currentViewRef.current = workspace.workspaceMode;
+    activeDocumentIdRef.current = workspace.activeDocumentId;
+  }, [workspace.activeDocumentId, workspace.workspaceMode]);
+
+  useEffect(() => {
+    if (
+      typeof PerformanceObserver === "undefined" ||
+      !PerformanceObserver.supportedEntryTypes?.includes("longtask")
+    ) {
+      return;
+    }
+
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        debugAction("frontend.long-task", {
+          activeDocumentId: activeDocumentIdRef.current,
+          currentView: toViewEventName(currentViewRef.current),
+          duration: Math.round(entry.duration),
+          startTime: Math.round(entry.startTime)
+        });
+      }
+    });
+
+    observer.observe({ type: "longtask", buffered: true });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const intervalMs = 100;
+    const gapThresholdMs = 250;
+    let lastTick = performance.now();
+    const intervalId = window.setInterval(() => {
+      const now = performance.now();
+      const gapMs = Math.round(now - lastTick - intervalMs);
+      lastTick = now;
+      if (gapMs < gapThresholdMs) {
+        return;
+      }
+
+      debugAction("frontend.event-loop-gap", {
+        activeDocumentId: activeDocumentIdRef.current,
+        currentView: toViewEventName(currentViewRef.current),
+        expectedIntervalMs: intervalMs,
+        gapMs
+      });
+    }, intervalMs);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   useEffect(() => {
     const pendingTrace = pendingViewNavigationRef.current;
@@ -204,6 +293,34 @@ export default function App() {
     let cancelled = false;
     let secondFrameId = 0;
     const firstFrameId = window.requestAnimationFrame(() => {
+      if (!cancelled && committedTrace.toView === "collection") {
+        let measureMs: number | null = null;
+        try {
+          performance.mark(COLLECTION_FIRST_FRAME_MARK);
+          performance.measure(
+            COLLECTION_CLICK_TO_FRAME_MEASURE,
+            COLLECTION_CLICK_MARK,
+            COLLECTION_FIRST_FRAME_MARK
+          );
+          const measures = performance.getEntriesByName(COLLECTION_CLICK_TO_FRAME_MEASURE);
+          const latestMeasure = measures[measures.length - 1];
+          measureMs = latestMeasure ? Math.round(latestMeasure.duration) : null;
+        } catch {
+          measureMs = null;
+        }
+
+        debugAction("view.collection:first-frame", {
+          documentId: committedTrace.documentId,
+          elapsedFromClickMs: Math.round(performance.now() - committedTrace.clickStartedAtMs),
+          fromView: toViewEventName(committedTrace.fromView),
+          measureMs,
+          openSessionId: committedTrace.openSessionId,
+          source: committedTrace.source,
+          toView: toViewEventName(committedTrace.toView),
+          viewTransitionId: committedTrace.viewTransitionId
+        });
+      }
+
       secondFrameId = window.requestAnimationFrame(() => {
         if (cancelled) {
           return;
@@ -218,6 +335,17 @@ export default function App() {
           toView: toViewEventName(committedTrace.toView),
           viewTransitionId: committedTrace.viewTransitionId
         });
+        if (committedTrace.toView === "collection") {
+          debugAction("view.collection:presented", {
+            documentId: committedTrace.documentId,
+            clickToPresentedMs: Math.round(performance.now() - committedTrace.clickStartedAtMs),
+            fromView: toViewEventName(committedTrace.fromView),
+            openSessionId: committedTrace.openSessionId,
+            source: committedTrace.source,
+            toView: toViewEventName(committedTrace.toView),
+            viewTransitionId: committedTrace.viewTransitionId
+          });
+        }
         if (committedViewNavigationRef.current === committedTrace) {
           committedViewNavigationRef.current = null;
           if (
@@ -244,8 +372,9 @@ export default function App() {
     }
 
     try {
-      const fullscreen = await appWindow.isFullscreen();
-      setFullscreenState(fullscreen ? "fullscreen" : "windowed");
+      const nativeFullscreen = await appWindow.isFullscreen();
+      const readerFullscreenActive = nativeFullscreen || fullscreenWindowStateRef.current !== null;
+      setFullscreenState(readerFullscreenActive ? "fullscreen" : "windowed");
     } catch (error) {
       console.error("fullscreen sync failed:", error);
     }
@@ -265,10 +394,15 @@ export default function App() {
     setFullscreenState("entering");
 
     try {
-      await appWindow.setFullscreen(true);
+      const wasMaximized = await appWindow.isMaximized();
+      fullscreenWindowStateRef.current = { wasMaximized };
+      if (!wasMaximized) {
+        await appWindow.maximize();
+      }
       setSettingsOpen(false);
       setFullscreenState("fullscreen");
     } catch (error) {
+      fullscreenWindowStateRef.current = null;
       setFullscreenState("windowed");
       workspace.setStatusMessage("Unable to enter fullscreen.");
       console.error("enter fullscreen failed:", error);
@@ -289,7 +423,15 @@ export default function App() {
     setFullscreenState("exiting");
 
     try {
-      await appWindow.setFullscreen(false);
+      const nativeFullscreen = await appWindow.isFullscreen();
+      const previousWindowState = fullscreenWindowStateRef.current;
+      fullscreenWindowStateRef.current = null;
+      if (nativeFullscreen) {
+        await appWindow.setFullscreen(false);
+      }
+      if (previousWindowState && !previousWindowState.wasMaximized) {
+        await appWindow.unmaximize();
+      }
       setFullscreenState("windowed");
     } catch (error) {
       setFullscreenState("fullscreen");
@@ -656,6 +798,42 @@ export default function App() {
     });
   }
 
+  function handleCollectionPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+
+    const receivedAt = performance.now();
+    const previousPointerDown = lastCollectionPointerDownRef.current;
+    const sequence = collectionPointerDownSequenceRef.current + 1;
+    collectionPointerDownSequenceRef.current = sequence;
+    lastCollectionPointerDownRef.current = {
+      eventTimestamp: event.timeStamp,
+      receivedAt,
+      sequence
+    };
+
+    debugAction("view.collection:pointer-down", {
+      activeDocumentId: workspace.activeDocumentId,
+      currentTarget: describePointerElement(event.currentTarget),
+      dispatchDelayMs: Math.max(0, Math.round(receivedAt - event.timeStamp)),
+      duplicateWithinMs: previousPointerDown
+        ? Math.round(receivedAt - previousPointerDown.receivedAt)
+        : null,
+      eventTimestamp: Math.round(event.timeStamp),
+      handlerReceivedAt: Math.round(receivedAt),
+      isPrimary: event.isPrimary,
+      openSessionId: workspace.activeReaderSession?.openSessionId ?? null,
+      pointerId: event.pointerId,
+      pointerType: event.pointerType,
+      previousEventTimestamp: previousPointerDown
+        ? Math.round(previousPointerDown.eventTimestamp)
+        : null,
+      previousSequence: previousPointerDown?.sequence ?? null,
+      sequence,
+      target: describePointerElement(event.target),
+      workspaceMode: workspace.workspaceMode
+    });
+  }
+
   function renderWindowControls() {
     return (
       <div className="window-controls" data-no-window-drag>
@@ -751,6 +929,8 @@ export default function App() {
             }`}
             type="button"
             aria-label="Collections"
+            data-sidebar-control={COLLECTION_SIDEBAR_CONTROL_ID}
+            onPointerDownCapture={handleCollectionPointerDown}
             onClick={() => {
               if (workspace.workspaceMode !== "collection") {
                 startViewNavigationTrace("collection", "sidebar");
@@ -947,6 +1127,7 @@ export default function App() {
             <ReaderWorkspace
               activeViewTransition={activeViewTransitionRef.current}
               readerSession={workspace.activeReaderSession}
+              readerActive={workspace.workspaceMode === "reader"}
               pendingReaderOpenSessionId={workspace.pendingReaderOpenSessionId}
               note={notes.note}
               notesLoading={notes.loading}

@@ -1,3 +1,4 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import type {
   PDFDocumentLoadingTask,
@@ -38,6 +39,8 @@ type PdfLoadingTaskLike = {
   destroy?: () => Promise<unknown> | unknown;
 };
 type RuntimeDependencies = {
+  convertFileSrc?: typeof convertFileSrc;
+  documentFilePath?: string | null;
   readDocumentBytes?: typeof readDocumentBytes;
   getDocument?: (src: Parameters<typeof pdfjsLib.getDocument>[0]) => PdfLoadingTaskLike;
 };
@@ -211,11 +214,38 @@ function getViewportRawDims(viewport: RuntimeViewport) {
   };
 }
 
+async function loadDocumentBytesForPdfJs(
+  documentId: string,
+  readBytes: typeof readDocumentBytes
+) {
+  const readStartedAt = performance.now();
+  debugAction("pdf-runtime.bytes-read-start", {
+    documentId
+  });
+  const loadedBytes = await readBytes(documentId);
+  const bytesLoadedAt = performance.now();
+  debugAction("pdf-runtime.bytes-loaded", {
+    documentId,
+    byteLength: loadedBytes.length,
+    elapsedMs: Math.round(bytesLoadedAt - readStartedAt)
+  });
+
+  const convertStartedAt = performance.now();
+  const documentBytes = new Uint8Array(loadedBytes);
+  debugAction("pdf-runtime.bytes-converted", {
+    documentId,
+    byteLength: documentBytes.byteLength,
+    elapsedMs: Math.round(performance.now() - convertStartedAt)
+  });
+  return documentBytes;
+}
+
 export function createPdfRuntimeSession(
   documentId: string,
   dependencies: RuntimeDependencies = {}
 ) {
   const readBytes = dependencies.readDocumentBytes ?? readDocumentBytes;
+  const toAssetUrl = dependencies.convertFileSrc ?? convertFileSrc;
   const getDocument: NonNullable<RuntimeDependencies["getDocument"]> =
     dependencies.getDocument ??
     ((src) => pdfjsLib.getDocument(src) as unknown as PdfLoadingTaskLike);
@@ -267,15 +297,24 @@ export function createPdfRuntimeSession(
         documentId
       });
       documentPromise = (async () => {
-        const loadedBytes = await readBytes(documentId);
-        assertActive();
-        debugAction("pdf-runtime.bytes-loaded", {
-          documentId,
-          byteLength: loadedBytes.length
-        });
+        const documentSource = dependencies.documentFilePath
+          ? {
+              transport: "asset-url" as const,
+              url: toAssetUrl(dependencies.documentFilePath)
+            }
+          : {
+              transport: "ipc-bytes" as const,
+              data: await loadDocumentBytesForPdfJs(documentId, readBytes)
+            };
 
+        debugAction("pdf-runtime.document-load-start", {
+          documentId,
+          transport: documentSource.transport
+        });
         const nextLoadingTask = getDocument({
-          data: Uint8Array.from(loadedBytes),
+          ...(documentSource.transport === "asset-url"
+            ? { url: documentSource.url }
+            : { data: documentSource.data }),
           cMapUrl,
           cMapPacked: true,
           iccUrl,

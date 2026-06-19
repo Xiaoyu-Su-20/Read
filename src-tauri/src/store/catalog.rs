@@ -126,13 +126,14 @@ impl CatalogStore {
                 let relative_path = paths.relative_to_root(&root, &pdf_path)?;
                 let (file_size_bytes, file_modified_ms) =
                     self.file_metadata_signature(&pdf_path)?;
-                let fingerprint = if let Some(existing) = existing_documents.iter().find(|document| {
-                    !matched_ids.contains(&document.id)
-                        && document.relative_path == relative_path
-                        && document.file_size_bytes == Some(file_size_bytes)
-                        && document.file_modified_ms == Some(file_modified_ms)
-                        && !document.fingerprint.is_empty()
-                }) {
+                let fingerprint = if let Some(existing) =
+                    existing_documents.iter().find(|document| {
+                        !matched_ids.contains(&document.id)
+                            && document.relative_path == relative_path
+                            && document.file_size_bytes == Some(file_size_bytes)
+                            && document.file_modified_ms == Some(file_modified_ms)
+                            && !document.fingerprint.is_empty()
+                    }) {
                     reused_cached_fingerprint_count += 1;
                     existing.fingerprint.clone()
                 } else {
@@ -160,7 +161,9 @@ impl CatalogStore {
 
             let match_started_at = Instant::now();
             let mut available_document_ids_by_fingerprint = HashMap::new();
-            for (pdf_path, relative_path, fingerprint, file_size_bytes, file_modified_ms) in scanned_documents {
+            for (pdf_path, relative_path, fingerprint, file_size_bytes, file_modified_ms) in
+                scanned_documents
+            {
                 let existing = self.match_existing_document(
                     &existing_documents,
                     &matched_ids,
@@ -192,19 +195,22 @@ impl CatalogStore {
 
                 let previous_document_id =
                     existing.as_ref().map(|matched| matched.document.id.clone());
-                let mut document = existing.map(|matched| matched.document).unwrap_or(DocumentRecord {
-                    id: document_id.clone(),
-                    title: title.clone(),
-                    file_name: file_name.clone(),
-                    folder_id: paths.folder_id_from_relative_path(&relative_path),
-                    relative_path: relative_path.clone(),
-                    fingerprint: fingerprint.clone(),
-                    file_size_bytes: Some(file_size_bytes),
-                    file_modified_ms: Some(file_modified_ms),
-                    imported_at: timestamp(),
-                    last_opened_at: None,
-                    availability: DocumentAvailability::Available,
-                });
+                let mut document =
+                    existing
+                        .map(|matched| matched.document)
+                        .unwrap_or(DocumentRecord {
+                            id: document_id.clone(),
+                            title: title.clone(),
+                            file_name: file_name.clone(),
+                            folder_id: paths.folder_id_from_relative_path(&relative_path),
+                            relative_path: relative_path.clone(),
+                            fingerprint: fingerprint.clone(),
+                            file_size_bytes: Some(file_size_bytes),
+                            file_modified_ms: Some(file_modified_ms),
+                            imported_at: timestamp(),
+                            last_opened_at: None,
+                            availability: DocumentAvailability::Available,
+                        });
 
                 document.id = document_id.clone();
                 document.title = title;
@@ -274,7 +280,13 @@ impl CatalogStore {
                 if let Some(target_document_id) =
                     available_document_ids_by_fingerprint.get(&document.fingerprint)
                 {
-                    self.merge_stale_state_into_available(paths, states, &mut next_documents, target_document_id, &document.id)?;
+                    self.merge_stale_state_into_available(
+                        paths,
+                        states,
+                        &mut next_documents,
+                        target_document_id,
+                        &document.id,
+                    )?;
                     let stale_state_path = paths.state_path(&document.id);
                     if stale_state_path.exists() {
                         fs::remove_file(stale_state_path)?;

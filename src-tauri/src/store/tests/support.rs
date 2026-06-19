@@ -5,6 +5,7 @@ use std::{
 };
 
 use super::super::RenderCache;
+use super::super::RenderSessionRegistry;
 
 pub fn write_sample_pdf(path: &Path, label: &str) {
     write_valid_pdf(path, label);
@@ -98,4 +99,12 @@ pub fn write_valid_pdf_pages(path: &Path, texts: &[&str]) {
 
 pub fn create_render_cache() -> Arc<Mutex<RenderCache>> {
     Arc::new(Mutex::new(RenderCache::default()))
+}
+
+pub fn create_render_sessions() -> RenderSessionRegistry {
+    RenderSessionRegistry::default()
+}
+
+pub fn create_render_sessions_with_budget(byte_budget: usize) -> RenderSessionRegistry {
+    RenderSessionRegistry::with_display_list_byte_budget(byte_budget)
 }

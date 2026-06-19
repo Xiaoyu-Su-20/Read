@@ -6,13 +6,13 @@ export type RapidTurnIntent = {
   source: NavigationSource;
   direction: NavigationDirection;
   activationWindowMs: number;
-  isRepeat?: boolean;
 };
 
-export type RapidTurnLastInput = {
+export type RapidTurnSample = {
   at: number;
   source: NavigationSource;
   direction: NavigationDirection;
+  page: number;
 };
 
 export type RapidTurnOverlayModel = {
@@ -33,30 +33,30 @@ export function shouldResetRapidTurnSession(
   session: RapidTurnSessionState,
   intent: RapidTurnIntent
 ) {
-  return (
-    session.active &&
-    (session.source !== intent.source || session.direction !== intent.direction)
-  );
+  return session.active && session.direction !== intent.direction;
 }
 
 export function shouldActivateRapidTurn(
-  lastInput: RapidTurnLastInput | null,
+  recentSamples: RapidTurnSample[],
   intent: RapidTurnIntent,
-  now: number
+  now: number,
+  nextPage: number
 ) {
-  if (intent.source === "keyboard" && !intent.isRepeat) {
-    return false;
-  }
-
-  if (!lastInput) {
-    return false;
-  }
-
-  return (
-    lastInput.source === intent.source &&
-    lastInput.direction === intent.direction &&
-    now - lastInput.at <= intent.activationWindowMs
+  const windowStart = now - intent.activationWindowMs;
+  const matchingSamples = recentSamples.filter(
+    (sample) => sample.direction === intent.direction && sample.at >= windowStart
   );
+  if (matchingSamples.length === 0) {
+    return false;
+  }
+
+  const previousSample = matchingSamples[matchingSamples.length - 1];
+  const expectedStep = intent.direction === "next" ? 1 : -1;
+  if (nextPage - previousSample.page !== expectedStep) {
+    return false;
+  }
+
+  return matchingSamples.length >= 1;
 }
 
 export function makeRapidTurnOverlayModel(

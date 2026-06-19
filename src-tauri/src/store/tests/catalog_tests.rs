@@ -263,7 +263,11 @@ fn reconcile_library_removes_stale_missing_duplicates_with_same_fingerprint() {
         .join("document-states")
         .join(format!("{stale_document_id}.json"));
     fs::create_dir_all(stale_state_path.parent().unwrap()).unwrap();
-    fs::write(&stale_state_path, serde_json::to_string_pretty(&stale_state).unwrap()).unwrap();
+    fs::write(
+        &stale_state_path,
+        serde_json::to_string_pretty(&stale_state).unwrap(),
+    )
+    .unwrap();
 
     let index_path = app_dir.join("library-index.json");
     let mut index: crate::models::LibraryIndex =

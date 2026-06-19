@@ -26,7 +26,10 @@ mod state;
 
 #[cfg(test)]
 pub use render::MAX_RENDER_CACHE_ENTRIES;
-pub use render::{PageRenderRequest, RenderCache};
+pub use render::{
+    DisplayListWarmupRequest, NativeOutlineRequest, NativeTextPageRequest, PageRenderRequest,
+    RenderCache, RenderSessionRegistry,
+};
 
 use catalog::CatalogStore;
 use notes::NoteStore;
@@ -368,6 +371,61 @@ impl LibraryStore {
         )
     }
 
+    pub fn prepare_display_list_warmup_request(
+        &self,
+        document_id: &str,
+        page_numbers: Vec<u32>,
+    ) -> AppResult<DisplayListWarmupRequest> {
+        self.ensure_ready()?;
+        let document = self.catalog.find_document_by_id(&self.paths, document_id)?;
+        self.catalog.ensure_document_available(&document)?;
+        let path = self.resolved_document_path(&document)?;
+
+        Ok(DisplayListWarmupRequest {
+            document_id: document.id,
+            document_generation_id: None,
+            fingerprint: document.fingerprint,
+            document_path: path.to_string_lossy().to_string(),
+            page_numbers,
+        })
+    }
+
+    pub fn prepare_native_text_page_request(
+        &self,
+        document_id: &str,
+        page_number: u32,
+    ) -> AppResult<NativeTextPageRequest> {
+        self.ensure_ready()?;
+        let document = self.catalog.find_document_by_id(&self.paths, document_id)?;
+        self.catalog.ensure_document_available(&document)?;
+        let path = self.resolved_document_path(&document)?;
+
+        Ok(NativeTextPageRequest {
+            document_id: document.id,
+            document_generation_id: None,
+            fingerprint: document.fingerprint,
+            document_path: path.to_string_lossy().to_string(),
+            page_number,
+        })
+    }
+
+    pub fn prepare_native_outline_request(
+        &self,
+        document_id: &str,
+    ) -> AppResult<NativeOutlineRequest> {
+        self.ensure_ready()?;
+        let document = self.catalog.find_document_by_id(&self.paths, document_id)?;
+        self.catalog.ensure_document_available(&document)?;
+        let path = self.resolved_document_path(&document)?;
+
+        Ok(NativeOutlineRequest {
+            document_id: document.id,
+            document_generation_id: None,
+            fingerprint: document.fingerprint,
+            document_path: path.to_string_lossy().to_string(),
+        })
+    }
+
     pub fn prepare_normalization_job(&self, document_id: &str) -> AppResult<NormalizationJob> {
         self.ensure_ready()?;
         let document = self.catalog.find_document_by_id(&self.paths, document_id)?;
@@ -391,14 +449,29 @@ impl LibraryStore {
     ) -> AppResult<RenderedPagePayload> {
         let cache = crate::normalization::new_manifest_cache();
         let request = self.prepare_render_request(document_id, page_number, zoom, &cache)?;
-        Self::render_pdf_page_blocking(request, render_cache)
+        Self::render_pdf_page_blocking(request, render_cache, RenderSessionRegistry::default())
+    }
+
+    #[cfg(test)]
+    pub fn render_pdf_page_with_sessions(
+        &self,
+        document_id: &str,
+        page_number: u32,
+        zoom: f32,
+        render_cache: Arc<Mutex<RenderCache>>,
+        render_sessions: RenderSessionRegistry,
+    ) -> AppResult<RenderedPagePayload> {
+        let cache = crate::normalization::new_manifest_cache();
+        let request = self.prepare_render_request(document_id, page_number, zoom, &cache)?;
+        Self::render_pdf_page_blocking(request, render_cache, render_sessions)
     }
 
     pub fn render_pdf_page_blocking(
         request: PageRenderRequest,
         render_cache: Arc<Mutex<RenderCache>>,
+        render_sessions: RenderSessionRegistry,
     ) -> AppResult<RenderedPagePayload> {
-        PdfRenderStore::render_pdf_page_blocking(request, render_cache)
+        PdfRenderStore::render_pdf_page_blocking(request, render_cache, render_sessions)
     }
 
     #[cfg(test)]

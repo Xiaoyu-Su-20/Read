@@ -171,6 +171,7 @@ async function renderViewer(
   return renderToStaticMarkup(
     createElement(PdfViewer, {
       readerSession,
+      readerActive: true,
       pendingReaderOpenSessionId: null,
       onSnapshotChange: vi.fn(),
       onOutlineChange: vi.fn(),

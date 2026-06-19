@@ -12,11 +12,12 @@ import {
   shouldAutoFitReaderPage
 } from "../lib/reader/zoom";
 import type { DocumentPayload, DocumentState, OutlineItem, ReaderSession, ViewerApi, ViewerSnapshot } from "../lib/types";
-import PdfTextLayer from "./PdfTextLayer";
+import NativePdfTextLayer from "./NativePdfTextLayer";
 import RapidTurnOverlay from "./RapidTurnOverlay";
 
 type PdfViewerProps = {
   readerSession: ReaderSession | null;
+  readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
   onOutlineChange: (items: OutlineItem[]) => void;
@@ -35,6 +36,7 @@ type ImageSlotState = {
 
 const PdfViewer = memo(function PdfViewer({
   readerSession,
+  readerActive,
   pendingReaderOpenSessionId,
   onSnapshotChange,
   onOutlineChange,
@@ -106,6 +108,7 @@ const PdfViewer = memo(function PdfViewer({
     reportAutoMaximizeZoom
   } = useReaderController({
     readerSession,
+    readerActive,
     pendingReaderOpenSessionId,
     onOutlineChange,
     onSnapshotChange,
@@ -829,7 +832,6 @@ const PdfViewer = memo(function PdfViewer({
     return (
       <div className="reader-empty">
         <div className="empty-state">
-          <h2>学中做，做中学</h2>
         </div>
       </div>
     );
@@ -1030,7 +1032,7 @@ const PdfViewer = memo(function PdfViewer({
 
                   {displayedPage && activeSlotPageKey === displayedPage.requestKey ? (
                     <>
-                      <PdfTextLayer
+                      <NativePdfTextLayer
                         pageNumber={displayedPage.pageNumber}
                         textLayer={displayedPageTextLayer}
                         renderedWidth={displayedPage.width}

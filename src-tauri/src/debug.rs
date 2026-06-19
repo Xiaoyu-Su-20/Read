@@ -1,4 +1,8 @@
-use std::{env, sync::OnceLock, time::{Instant, SystemTime, UNIX_EPOCH}};
+use std::{
+    env,
+    sync::OnceLock,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use serde_json::{json, Value};
 
@@ -50,6 +54,9 @@ fn event_level(event: &str) -> LogLevel {
             | "reader.initial-page:resolved"
             | "reader.open:active-document-committed"
             | "view.collection:click"
+            | "view.collection:first-frame"
+            | "view.collection:pointer-down"
+            | "view.collection:presented"
             | "view.collection:state-committed"
             | "view.collection:first-painted"
             | "view.document:click"
@@ -67,12 +74,52 @@ fn event_level(event: &str) -> LogLevel {
             | "viewer.image:decode-finished"
             | "reader.first-visible"
             | "reader.open:summary"
+            | "frontend.event-loop-gap"
+            | "frontend.long-task"
+            | "frontend.native-text.requested"
+            | "frontend.native-text.response-received"
+            | "frontend.native-text.response-discarded"
+            | "frontend.native-text.state-enqueued"
+            | "frontend.native-text.load-failed"
+            | "frontend.native-text-layer.mounted"
+            | "frontend.native-text-layer.ready"
+            | "frontend.native-text-layer.missing"
+            | "frontend.native-text-layer.unmounted"
+            | "frontend.native-text-layer.selectable-frame"
+            | "reader.outline-load-scheduled"
+            | "reader.outline-load-started"
+            | "reader.outline-load-completed"
+            | "reader.outline-load-cancelled"
+            | "reader.outline-load-failed"
+            | "pdf-runtime.ensure-document-start"
+            | "pdf-runtime.ensure-document-cache-hit"
+            | "pdf-runtime.bytes-read-start"
+            | "pdf-runtime.bytes-loaded"
+            | "pdf-runtime.bytes-converted"
+            | "pdf-runtime.document-load-start"
+            | "pdf-runtime.document-loaded"
             | "pdf-runtime.ensure-document-error"
             | "pdf-runtime.page-text-error"
             | "command.render_pdf_page:execution-started"
             | "command.render_pdf_page:document-path-resolved"
             | "command.render_pdf_page:join-in-flight"
             | "command.render_pdf_page:skipped-stale-generation"
+            | "command.get_pdf_native_text_page:execution-started"
+            | "command.get_pdf_native_text_page:skipped-stale-generation"
+            | "command.get_pdf_native_outline:execution-started"
+            | "command.get_pdf_native_outline:skipped-stale-generation"
+            | "command.warm_pdf_display_lists:skipped-stale-generation"
+            | "render-session.created"
+            | "render-session.document-opened"
+            | "native-outline.loaded"
+            | "native-text.cache-hit"
+            | "native-text.cache-miss"
+            | "native-text.loaded"
+            | "display-list.cache-hit"
+            | "display-list.cache-miss"
+            | "display-list.loaded"
+            | "display-list.warm-start"
+            | "display-list.warm-finish"
     ) {
         return LogLevel::Info;
     }

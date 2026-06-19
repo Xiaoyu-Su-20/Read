@@ -6,8 +6,8 @@ use crate::{
     error::AppResult,
     models::{
         DocumentRecord, DocumentSourceReference, DocumentSourceReferenceKind, NoteBlock,
-        NoteBlockType, NoteDocument, NoteIndex, NoteIndexEntry, NoteInlineNode,
-        NotePageLinkNode, NoteTextNode,
+        NoteBlockType, NoteDocument, NoteIndex, NoteIndexEntry, NoteInlineNode, NotePageLinkNode,
+        NoteTextNode,
     },
 };
 
@@ -185,7 +185,13 @@ impl NoteStore {
             reference.id = Uuid::new_v4().to_string();
         }
 
-        if reference.document_id.as_deref().unwrap_or("").trim().is_empty() {
+        if reference
+            .document_id
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
             reference.document_id = reference
                 .target
                 .as_ref()

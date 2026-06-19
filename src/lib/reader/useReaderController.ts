@@ -2,7 +2,12 @@ import type { KeyboardEvent, UIEvent, WheelEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
-import { saveDocumentState } from "../api";
+import {
+  getPdfNativeOutline,
+  getPdfNativeTextPage,
+  saveDocumentState,
+  warmPdfDisplayLists
+} from "../api";
 import { dedupeBookmarks } from "../commands";
 import { debugAction, startDebugProcess } from "../debugLog";
 import { dedupeOutlineItems, mergeOutlineItems } from "../documentReferences";
@@ -10,8 +15,8 @@ import type {
   Bookmark,
   DocumentPayload,
   DocumentState,
+  NativeTextPagePayload,
   OutlineItem,
-  PageTextLayerData,
   PdfNavigationTarget,
   PdfOutlineItem,
   ReaderSession,
@@ -27,7 +32,12 @@ import {
   renderVisiblePdfPage,
   startFreshPdfPageRender
 } from "./PdfPageRenderer";
-import { resolveAdjacentPreloadPages } from "./preloadStrategy";
+import { resolveAdjacentPreloadPages, resolveDisplayListWarmupPages } from "./preloadStrategy";
+import {
+  PDF_RUNTIME_OUTLINE_LOAD_DELAY_MS,
+  shouldRequestNativeTextLayer,
+  shouldScheduleDeferredOutlineLoad
+} from "./backgroundWorkPolicy";
 import { createPdfRuntimeSession, type PdfRuntimeSession } from "./PdfRuntimeSession";
 import {
   makeRapidTurnOverlayModel,
@@ -35,7 +45,7 @@ import {
   shouldActivateRapidTurn,
   type NavigationDirection,
   type RapidTurnIntent,
-  type RapidTurnLastInput,
+  type RapidTurnSample,
   type RapidTurnOverlayModel
 } from "./rapidTurn";
 import {
@@ -51,8 +61,8 @@ const RENDER_CACHE_SIZE = 20;
 const PRELOAD_DELAY_MS = 0;
 const NAVIGATION_SAVE_DEBOUNCE_MS = 700;
 const BOOKMARK_SAVE_DEBOUNCE_MS = 200;
-const KEYBOARD_RAPID_TURN_WINDOW_MS = 220;
-const WHEEL_RAPID_TURN_WINDOW_MS = 180;
+const KEYBOARD_RAPID_TURN_WINDOW_MS = 100;
+const WHEEL_RAPID_TURN_WINDOW_MS = 100;
 const ZOOM_COMMIT_DEBOUNCE_MS = 120;
 const WHEEL_GESTURE_IDLE_MS = 160;
 const WHEEL_PAGE_TURN_THRESHOLD_PX = 56;
@@ -66,6 +76,7 @@ const MANUAL_SCROLL_BOUNDARY_SUPPRESSION_MS = 220;
 
 type UseReaderControllerArgs = {
   readerSession: ReaderSession | null;
+  readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
   onOutlineChange: (items: OutlineItem[]) => void;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
@@ -115,6 +126,8 @@ type ActiveForegroundRender = {
   logicalKey: string;
   requestId: number;
 };
+
+const RAPID_TURN_MIN_TURN_COUNT = 2;
 
 type ForegroundPageSource =
   | "local-cache"
@@ -175,6 +188,13 @@ type PreloadReadyTarget = {
   documentId: string;
   pageNumber: number;
   requestKey: string;
+};
+
+type ResolvedOpenState = {
+  documentId: string;
+  generationId: string | null;
+  page: number;
+  zoom: number;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -264,6 +284,7 @@ function stateSignature(state: DocumentState) {
 
 export function useReaderController({
   readerSession,
+  readerActive,
   pendingReaderOpenSessionId,
   onOutlineChange,
   onSnapshotChange,
@@ -288,9 +309,10 @@ export function useReaderController({
   const [incomingPage, setIncomingPage] = useState<PresentedPage | null>(null);
   const [readerState, setReaderState] = useState<DocumentState | null>(null);
   const [initialStateResolved, setInitialStateResolved] = useState(false);
+  const [resolvedOpenState, setResolvedOpenState] = useState<ResolvedOpenState | null>(null);
   const [preloadReadyTarget, setPreloadReadyTarget] = useState<PreloadReadyTarget | null>(null);
   const [postVisibleWorkReadyKey, setPostVisibleWorkReadyKey] = useState<string | null>(null);
-  const [displayedPageTextLayer, setDisplayedPageTextLayer] = useState<PageTextLayerData | null>(null);
+  const [displayedPageTextLayer, setDisplayedPageTextLayer] = useState<NativeTextPagePayload | null>(null);
   const [displayedPageTextDebugStatus, setDisplayedPageTextDebugStatus] =
     useState<DisplayedPageTextDebugStatus>({
       itemCount: 0,
@@ -327,7 +349,7 @@ export function useReaderController({
   const preloadTimerRef = useRef<number | null>(null);
   const zoomCommitTimerRef = useRef<number | null>(null);
   const rapidTurnWheelFinalizeTimerRef = useRef<number | null>(null);
-  const rapidTurnLastInputRef = useRef<RapidTurnLastInput | null>(null);
+  const rapidTurnSamplesRef = useRef<RapidTurnSample[]>([]);
   const lastNavigationDirectionRef = useRef<NavigationDirection | null>(null);
   const autoMaximizeZoomRef = useRef<number | null>(null);
   const rapidTurnSessionRef = useRef<RapidTurnSession>({
@@ -356,6 +378,7 @@ export function useReaderController({
   });
   const firstRenderRequestedSessionRef = useRef<string | null>(null);
   const postVisibleIdleHandleRef = useRef<IdleCallbackHandle | null>(null);
+  const displayListWarmupKeyRef = useRef<string | null>(null);
   const initializedReaderSessionKeyRef = useRef<string | null>(null);
   const finalizeRapidTurnListenerRef = useRef<(reason: string) => void>(() => undefined);
   const flushReaderStateListenerRef = useRef<(reason: string) => void>(() => undefined);
@@ -392,7 +415,8 @@ export function useReaderController({
   }
 
   const backgroundWorkSuspended =
-    pendingReaderOpenSessionId !== null && pendingReaderOpenSessionId !== openSessionId;
+    !readerActive ||
+    (pendingReaderOpenSessionId !== null && pendingReaderOpenSessionId !== openSessionId);
 
   navigationTargetPageRef.current = targetPage;
   pageCountRef.current = pageCount;
@@ -683,8 +707,10 @@ export function useReaderController({
       pageTurned: false
     };
 
-    if (options?.clearRapidTurnInput && rapidTurnLastInputRef.current?.source === "wheel") {
-      rapidTurnLastInputRef.current = null;
+    if (options?.clearRapidTurnInput) {
+      rapidTurnSamplesRef.current = rapidTurnSamplesRef.current.filter(
+        (sample) => sample.source !== "wheel"
+      );
     }
   }
 
@@ -968,7 +994,7 @@ export function useReaderController({
   }
 
   function resetRapidTurnSession(reason: string) {
-    rapidTurnLastInputRef.current = null;
+    rapidTurnSamplesRef.current = [];
     hideRapidTurnOverlay(reason);
   }
 
@@ -1180,27 +1206,41 @@ export function useReaderController({
     updateRapidTurnSession(nextPage, true);
   }
 
-  function noteRapidTurnIntent(intent: RapidTurnIntent, nextPage: number) {
+  function noteRapidTurnIntent(
+    intent: RapidTurnIntent,
+    currentTargetPage: number,
+    nextPage: number
+  ) {
     const now = Date.now();
-    const activeSession = rapidTurnSessionRef.current;
+    const windowStart = now - intent.activationWindowMs;
+    const recentSamples = rapidTurnSamplesRef.current.filter(
+      (sample) => sample.at >= windowStart
+    );
 
-    if (shouldResetRapidTurnSession(activeSession, intent)) {
+    if (shouldResetRapidTurnSession(rapidTurnSessionRef.current, intent)) {
       hideRapidTurnOverlay("stream-changed");
-      rapidTurnLastInputRef.current = {
-        at: now,
-        direction: intent.direction,
-        source: intent.source
-      };
-      return;
+      rapidTurnSamplesRef.current = [];
     }
 
-    const shouldActivate = shouldActivateRapidTurn(rapidTurnLastInputRef.current, intent, now);
+    const shouldActivate = shouldActivateRapidTurn(
+      recentSamples,
+      intent,
+      now,
+      nextPage
+    );
 
-    rapidTurnLastInputRef.current = {
-      at: now,
-      direction: intent.direction,
-      source: intent.source
-    };
+    const nextSamples = [
+      ...recentSamples,
+      {
+        at: now,
+        direction: intent.direction,
+        page: nextPage,
+        source: intent.source
+      }
+    ];
+    rapidTurnSamplesRef.current = nextSamples.slice(-RAPID_TURN_MIN_TURN_COUNT * 2);
+
+    const activeSession = rapidTurnSessionRef.current;
 
     if (activeSession.active) {
       rapidTurnSessionRef.current = {
@@ -1209,7 +1249,11 @@ export function useReaderController({
         source: intent.source
       };
       updateRapidTurnSession(nextPage, false);
-    } else if (shouldActivate) {
+    } else if (
+      shouldActivate &&
+      nextSamples.length >= RAPID_TURN_MIN_TURN_COUNT &&
+      Math.abs(nextPage - currentTargetPage) === 1
+    ) {
       startRapidTurnSession(intent, nextPage);
     }
 
@@ -1248,7 +1292,7 @@ export function useReaderController({
       );
 
       if (intent) {
-        noteRapidTurnIntent(intent, nextPage);
+        noteRapidTurnIntent(intent, currentTargetPage, nextPage);
       } else {
         resetRapidTurnSession(`${reason}:non-rapid-navigation`);
         resetWheelGesture();
@@ -1277,7 +1321,9 @@ export function useReaderController({
 
     if (sameDocumentId && sameReaderSessionKey) {
       if (!runtimeSessionRef.current && document) {
-        runtimeSessionRef.current = createPdfRuntimeSession(document.document.id);
+        runtimeSessionRef.current = createPdfRuntimeSession(document.document.id, {
+          documentFilePath: document.filePath
+        });
         debugAction("reader.runtime-session-recreated", {
           documentId: document.document.id,
           reason: "strict-mode-remount"
@@ -1302,7 +1348,11 @@ export function useReaderController({
     const shouldRecreateRuntimeSession =
       (!previousRuntimeSession && Boolean(document)) || previousDocumentId !== nextDocumentId;
     if (shouldRecreateRuntimeSession) {
-      runtimeSessionRef.current = document ? createPdfRuntimeSession(document.document.id) : null;
+      runtimeSessionRef.current = document
+        ? createPdfRuntimeSession(document.document.id, {
+            documentFilePath: document.filePath
+          })
+        : null;
     }
     if (previousRuntimeSession && previousDocumentId !== nextDocumentId) {
       void previousRuntimeSession.dispose();
@@ -1321,12 +1371,13 @@ export function useReaderController({
     latestForegroundRequestIdRef.current = renderSequenceRef.current;
     activeForegroundRenderRef.current = null;
     firstRenderRequestedSessionRef.current = null;
+    displayListWarmupKeyRef.current = null;
     if (preloadTimerRef.current !== null) {
       window.clearTimeout(preloadTimerRef.current);
       preloadTimerRef.current = null;
     }
     clearRapidTurnWheelFinalizeTimer();
-    rapidTurnLastInputRef.current = null;
+    rapidTurnSamplesRef.current = [];
     rapidTurnSessionRef.current = {
       active: false,
       direction: null,
@@ -1361,6 +1412,7 @@ export function useReaderController({
     setRapidTurnOverlay(null);
     incomingPageKeyRef.current = null;
     setInitialStateResolved(false);
+    setResolvedOpenState(null);
     cancelPostVisibleIdleWork();
     setPreloadReadyTarget(null);
     setPostVisibleWorkReadyKey(null);
@@ -1395,8 +1447,15 @@ export function useReaderController({
     clearZoomCommitTimer();
     setDisplayZoom(nextZoom);
     setCommittedZoom(nextZoom);
+    setResolvedOpenState({
+      documentId: document.document.id,
+      generationId: readerSessionKey,
+      page: nextPage,
+      zoom: nextZoom
+    });
     debugAction("reader.initial-page:resolved", {
       documentId: document.document.id,
+      generationId: readerSessionKey,
       openSessionId,
       page: nextPage,
       pageCount: nextPageCount,
@@ -1562,70 +1621,189 @@ export function useReaderController({
       return;
     }
 
-    const runtimeSession = runtimeSessionRef.current;
-    if (!runtimeSession) {
+    if (displayListWarmupKeyRef.current === displayedPage.requestKey) {
       return;
     }
 
-    void runtimeSession.load().catch(() => undefined);
-  }, [backgroundWorkSuspended, displayedPage, document, postVisibleWorkReadyKey]);
+    const pageNumbers = resolveDisplayListWarmupPages(
+      displayedPage.pageNumber,
+      pageCount,
+      lastNavigationDirectionRef.current
+    );
+    if (pageNumbers.length === 0) {
+      return;
+    }
+
+    const documentId = document.document.id;
+    const requestedDocumentGeneration = documentGenerationRef.current;
+    displayListWarmupKeyRef.current = displayedPage.requestKey;
+    debugAction("reader.display-list-warm-requested", {
+      documentId,
+      openSessionId,
+      page: displayedPage.pageNumber,
+      pageNumbers
+    });
+
+    void warmPdfDisplayLists(documentId, pageNumbers, {
+      openSessionId: openSessionId ?? undefined
+    })
+      .then(() => {
+        if (
+          currentDocumentRef.current?.document.id !== documentId ||
+          documentGenerationRef.current !== requestedDocumentGeneration
+        ) {
+          return;
+        }
+
+        debugAction("reader.display-list-warm-completed", {
+          documentId,
+          openSessionId,
+          pageNumbers
+        });
+      })
+      .catch((error) => {
+        if (
+          currentDocumentRef.current?.document.id !== documentId ||
+          documentGenerationRef.current !== requestedDocumentGeneration
+        ) {
+          return;
+        }
+
+        debugAction("reader.display-list-warm-failed", {
+          documentId,
+          error: error instanceof Error ? error.message : String(error),
+          openSessionId,
+          pageNumbers
+        });
+      });
+  }, [backgroundWorkSuspended, displayedPage, document, openSessionId, pageCount, postVisibleWorkReadyKey]);
 
   useEffect(() => {
+    if (
+      !shouldScheduleDeferredOutlineLoad({
+        backgroundWorkSuspended,
+        displayedPageRequestKey,
+        hasDisplayedPage: Boolean(displayedPage),
+        hasOutlineProvider: Boolean(document),
+        outlineLoadedForDocument:
+          Boolean(document) && outlineLoadedForDocumentIdRef.current === document?.document.id,
+        postVisibleWorkReadyKey
+      })
+    ) {
+      return;
+    }
     if (!document || !displayedPage) {
       return;
     }
 
-    if (backgroundWorkSuspended) {
-      return;
-    }
-
-    if (postVisibleWorkReadyKey !== displayedPage.requestKey) {
-      return;
-    }
-
-    if (outlineLoadedForDocumentIdRef.current === document.document.id) {
-      return;
-    }
-
-    const runtimeSession = runtimeSessionRef.current;
-    if (!runtimeSession) {
-      return;
-    }
-
     let cancelled = false;
-    void runtimeSession
-      .getOutline()
-      .then((nextOutline) => {
-        if (cancelled || runtimeSessionRef.current !== runtimeSession) {
-          return;
-        }
+    let started = false;
+    const scheduledAt = performance.now();
 
-        outlineLoadedForDocumentIdRef.current = document.document.id;
-        embeddedOutlineItemsRef.current = nextOutline;
-        publishOutlineItems();
-      })
-      .catch(() => {
-        if (!cancelled && runtimeSessionRef.current === runtimeSession) {
-          embeddedOutlineItemsRef.current = [];
-          publishOutlineItems();
-        }
+    debugAction("reader.outline-load-scheduled", {
+      delayMs: PDF_RUNTIME_OUTLINE_LOAD_DELAY_MS,
+      documentId: document.document.id,
+      openSessionId,
+      pageNumber: displayedPage.pageNumber,
+      requestKey: displayedPage.requestKey
+    });
+
+    const timerId = window.setTimeout(() => {
+      if (cancelled || currentDocumentRef.current?.document.id !== document.document.id) {
+        debugAction("reader.outline-load-cancelled", {
+          documentId: document.document.id,
+          elapsedMs: Math.round(performance.now() - scheduledAt),
+          openSessionId,
+          reason: cancelled ? "effect-cleanup-before-start" : "document-session-changed-before-start"
+        });
+        return;
+      }
+
+      started = true;
+      const startedAt = performance.now();
+      debugAction("reader.outline-load-started", {
+        documentId: document.document.id,
+        elapsedSinceScheduledMs: Math.round(startedAt - scheduledAt),
+        openSessionId,
+        pageNumber: displayedPage.pageNumber,
+        requestKey: displayedPage.requestKey
       });
+
+      const requestedDocumentGeneration = documentGenerationRef.current;
+      void getPdfNativeOutline(document.document.id, {
+        openSessionId: openSessionId ?? undefined
+      })
+        .then((nextOutline) => {
+          if (
+            cancelled ||
+            currentDocumentRef.current?.document.id !== document.document.id ||
+            documentGenerationRef.current !== requestedDocumentGeneration
+          ) {
+            return;
+          }
+
+          outlineLoadedForDocumentIdRef.current = document.document.id;
+          embeddedOutlineItemsRef.current = nextOutline;
+          publishOutlineItems();
+          debugAction("reader.outline-load-completed", {
+            documentId: document.document.id,
+            elapsedMs: Math.round(performance.now() - startedAt),
+            itemCount: nextOutline.length,
+            openSessionId
+          });
+        })
+        .catch(() => {
+          if (
+            !cancelled &&
+            currentDocumentRef.current?.document.id === document.document.id &&
+            documentGenerationRef.current === requestedDocumentGeneration
+          ) {
+            embeddedOutlineItemsRef.current = [];
+            publishOutlineItems();
+            debugAction("reader.outline-load-failed", {
+              documentId: document.document.id,
+              elapsedMs: Math.round(performance.now() - startedAt),
+              openSessionId
+            });
+          }
+        });
+    }, PDF_RUNTIME_OUTLINE_LOAD_DELAY_MS);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timerId);
+      if (!started) {
+        debugAction("reader.outline-load-cancelled", {
+          documentId: document.document.id,
+          elapsedMs: Math.round(performance.now() - scheduledAt),
+          openSessionId,
+          reason: "effect-cleanup-before-start"
+        });
+      }
     };
-  }, [backgroundWorkSuspended, displayedPage, document, onOutlineChange, postVisibleWorkReadyKey]);
+  }, [backgroundWorkSuspended, displayedPage, document, onOutlineChange, openSessionId, postVisibleWorkReadyKey]);
 
   const displayedPageDocumentId = displayedPage?.documentId ?? null;
   const displayedPageNumber = displayedPage?.pageNumber ?? null;
   const displayedPageRequestKey = displayedPage?.requestKey ?? null;
 
   useEffect(() => {
-    if (!document || !displayedPage) {
+    if (
+      !shouldRequestNativeTextLayer({
+        backgroundWorkSuspended,
+        displayedPageDocumentId,
+        documentId: document?.document.id ?? null,
+        hasDisplayedPage: Boolean(displayedPage)
+      })
+    ) {
       debugAction("reader.text-layer-cleared", {
         displayedPageNumber: displayedPage?.pageNumber ?? null,
         documentId: document?.document.id ?? null,
-        reason: "missing-document-or-page"
+        reason: !document || !displayedPage
+          ? "missing-document-or-page"
+          : backgroundWorkSuspended
+            ? "background-work-suspended"
+            : "page-document-mismatch"
       });
       setDisplayedPageTextLayer(null);
       setDisplayedPageTextDebugStatus({
@@ -1635,56 +1813,32 @@ export function useReaderController({
       });
       return;
     }
-
-    if (backgroundWorkSuspended) {
-      setDisplayedPageTextLayer(null);
-      setDisplayedPageTextDebugStatus({
-        itemCount: 0,
-        pageNumber: displayedPage.pageNumber,
-        state: "missing"
-      });
-      return;
-    }
-
-    if (displayedPage.documentId !== document.document.id) {
-      debugAction("reader.text-layer-cleared", {
-        displayedPageDocumentId: displayedPage.documentId,
-        displayedPageNumber: displayedPage.pageNumber,
-        documentId: document.document.id,
-        reason: "page-document-mismatch"
-      });
-      setDisplayedPageTextLayer(null);
-      setDisplayedPageTextDebugStatus({
-        itemCount: 0,
-        pageNumber: displayedPage.pageNumber,
-        state: "missing"
-      });
-      return;
-    }
-
-    const runtimeSession = runtimeSessionRef.current;
-    if (!runtimeSession) {
-      debugAction("reader.text-layer-cleared", {
-        displayedPageNumber: displayedPage.pageNumber,
-        documentId: document.document.id,
-        reason: "missing-runtime-session"
-      });
-      setDisplayedPageTextLayer(null);
-      setDisplayedPageTextDebugStatus({
-        itemCount: 0,
-        pageNumber: displayedPage.pageNumber,
-        state: "missing-runtime"
-      });
+    if (!document || !displayedPage) {
       return;
     }
 
     let cancelled = false;
     const pageNumber = displayedPage.pageNumber;
+    const documentId = document.document.id;
+    const requestedDocumentGeneration = documentGenerationRef.current;
+    const nativeTextRequestStartedAt = performance.now();
     debugAction("reader.text-layer-requested", {
       displayedPageNumber: displayedPage.pageNumber,
-      documentId: document.document.id,
+      documentId,
       renderedHeight: displayedPage.height,
-      renderedWidth: displayedPage.width
+      renderedWidth: displayedPage.width,
+      source: "native-mupdf"
+    });
+    debugAction("frontend.native-text.requested", {
+      charPipeline: "mupdf-native",
+      documentGeneration: requestedDocumentGeneration,
+      documentId,
+      logOrigin: "reader-controller",
+      openSessionId,
+      pageNumber,
+      renderedHeight: displayedPage.height,
+      renderedWidth: displayedPage.width,
+      requestKey: displayedPage.requestKey
     });
     setDisplayedPageTextDebugStatus({
       itemCount: 0,
@@ -1692,22 +1846,63 @@ export function useReaderController({
       state: "loading"
     });
 
-    void runtimeSession
-      .getPageText(pageNumber)
+    void getPdfNativeTextPage(documentId, pageNumber, {
+      openSessionId: openSessionId ?? undefined
+    })
       .then((nextTextLayer) => {
-        if (cancelled || runtimeSessionRef.current !== runtimeSession) {
+        debugAction("frontend.native-text.response-received", {
+          charCount: nextTextLayer.chars.length,
+          documentGeneration: requestedDocumentGeneration,
+          documentId,
+          elapsedMs: Math.round(performance.now() - nativeTextRequestStartedAt),
+          lineCount: nextTextLayer.lines.length,
+          logOrigin: "reader-controller",
+          openSessionId,
+          pageNumber,
+          responsePageNumber: nextTextLayer.pageNumber,
+          requestKey: displayedPage.requestKey
+        });
+        if (
+          cancelled ||
+          currentDocumentRef.current?.document.id !== documentId ||
+          documentGenerationRef.current !== requestedDocumentGeneration
+        ) {
+          debugAction("frontend.native-text.response-discarded", {
+            cancelled,
+            currentDocumentId: currentDocumentRef.current?.document.id ?? null,
+            currentDocumentGeneration: documentGenerationRef.current,
+            documentGeneration: requestedDocumentGeneration,
+            documentId,
+            logOrigin: "reader-controller",
+            openSessionId,
+            pageNumber,
+            reason: cancelled ? "effect-cancelled" : "stale-generation",
+            requestKey: displayedPage.requestKey
+          });
           return;
         }
-        const itemCount = nextTextLayer.textContent.items.length;
+        const itemCount = nextTextLayer.chars.length;
         debugAction("reader.text-layer-loaded", {
           displayedPageNumber: displayedPage.pageNumber,
-          documentId: document.document.id,
+          documentId,
           itemCount,
+          lineCount: nextTextLayer.lines.length,
+          source: "native-mupdf",
           textLayerPageNumber: nextTextLayer.pageNumber,
-          viewportHeight: nextTextLayer.viewportHeight,
-          viewportWidth: nextTextLayer.viewportWidth
+          viewportHeight: nextTextLayer.sourceHeight,
+          viewportWidth: nextTextLayer.sourceWidth
         });
         setDisplayedPageTextLayer(nextTextLayer);
+        debugAction("frontend.native-text.state-enqueued", {
+          charCount: itemCount,
+          documentGeneration: requestedDocumentGeneration,
+          documentId,
+          lineCount: nextTextLayer.lines.length,
+          logOrigin: "reader-controller",
+          openSessionId,
+          pageNumber: nextTextLayer.pageNumber,
+          requestKey: displayedPage.requestKey
+        });
         setDisplayedPageTextDebugStatus({
           itemCount,
           pageNumber: nextTextLayer.pageNumber,
@@ -1715,10 +1910,24 @@ export function useReaderController({
         });
       })
       .catch((error) => {
-        if (!cancelled && runtimeSessionRef.current === runtimeSession) {
+        if (
+          !cancelled &&
+          currentDocumentRef.current?.document.id === documentId &&
+          documentGenerationRef.current === requestedDocumentGeneration
+        ) {
+          debugAction("frontend.native-text.load-failed", {
+            documentGeneration: requestedDocumentGeneration,
+            documentId,
+            elapsedMs: Math.round(performance.now() - nativeTextRequestStartedAt),
+            error: error instanceof Error ? error.message : String(error),
+            logOrigin: "reader-controller",
+            openSessionId,
+            pageNumber,
+            requestKey: displayedPage.requestKey
+          });
           debugAction("reader.text-layer-load-failed", {
             displayedPageNumber: displayedPage.pageNumber,
-            documentId: document.document.id,
+            documentId,
             error: error instanceof Error ? error.message : String(error)
           });
           setDisplayedPageTextLayer(null);
@@ -1733,7 +1942,7 @@ export function useReaderController({
     return () => {
       cancelled = true;
     };
-  }, [backgroundWorkSuspended, displayedPageDocumentId, displayedPageNumber, displayedPageRequestKey]);
+  }, [backgroundWorkSuspended, displayedPageDocumentId, displayedPageNumber, displayedPageRequestKey, openSessionId]);
 
   useEffect(() => {
     if (!document) {
@@ -1752,9 +1961,15 @@ export function useReaderController({
       return;
     }
 
-    if (initializedReaderSessionKeyRef.current !== readerSessionKey) {
+    if (
+      initializedReaderSessionKeyRef.current !== readerSessionKey ||
+      resolvedOpenState?.documentId !== document.document.id ||
+      resolvedOpenState.generationId !== readerSessionKey
+    ) {
       debugAction("reader.render-session-waiting", {
         documentId: document.document.id,
+        resolvedDocumentId: resolvedOpenState?.documentId ?? null,
+        resolvedGenerationId: resolvedOpenState?.generationId ?? null,
         openSessionId,
         requestedSessionKey: readerSessionKey,
         initializedSessionKey: initializedReaderSessionKeyRef.current,
@@ -1943,6 +2158,7 @@ export function useReaderController({
     onStatusChange,
     openSessionId,
     readerSessionKey,
+    resolvedOpenState,
     targetPage
   ]);
 
@@ -2339,7 +2555,7 @@ export function useReaderController({
         key: event.key,
         repeat: event.repeat,
         timeStamp: event.timeStamp,
-        lastInputAt: rapidTurnLastInputRef.current?.at ?? null,
+        lastInputAt: rapidTurnSamplesRef.current[rapidTurnSamplesRef.current.length - 1]?.at ?? null,
         now: Date.now()
       });
 
@@ -2382,8 +2598,7 @@ export function useReaderController({
         requestPageTurnWithIntent(clampPage(targetPage + 1, pageCount || targetPage), "keyboard-next", {
           source: "keyboard",
           direction: "next",
-          activationWindowMs: KEYBOARD_RAPID_TURN_WINDOW_MS,
-          isRepeat: event.repeat
+          activationWindowMs: KEYBOARD_RAPID_TURN_WINDOW_MS
         });
       }
 
@@ -2397,8 +2612,7 @@ export function useReaderController({
         requestPageTurnWithIntent(clampPage(targetPage - 1, pageCount), "keyboard-previous", {
           source: "keyboard",
           direction: "previous",
-          activationWindowMs: KEYBOARD_RAPID_TURN_WINDOW_MS,
-          isRepeat: event.repeat
+          activationWindowMs: KEYBOARD_RAPID_TURN_WINDOW_MS
         });
       }
     },

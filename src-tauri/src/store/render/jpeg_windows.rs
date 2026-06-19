@@ -200,8 +200,7 @@ pub fn encode_pixmap_as_jpeg(pixmap: &Pixmap, quality: u32) -> Result<Vec<u8>, S
     status_to_result(create_status, "GdipCreateBitmapFromScan0")?;
 
     let mut stream = ptr::null_mut();
-    let create_stream_result =
-        unsafe { CreateStreamOnHGlobal(ptr::null_mut(), 1, &mut stream) };
+    let create_stream_result = unsafe { CreateStreamOnHGlobal(ptr::null_mut(), 1, &mut stream) };
     if let Err(error) = hresult_to_result(create_stream_result, "CreateStreamOnHGlobal") {
         let _ = unsafe { GdipDisposeImage(bitmap.cast()) };
         return Err(error);
@@ -209,12 +208,7 @@ pub fn encode_pixmap_as_jpeg(pixmap: &Pixmap, quality: u32) -> Result<Vec<u8>, S
 
     let encode_result = (|| -> Result<Vec<u8>, String> {
         let save_status = unsafe {
-            GdipSaveImageToStream(
-                bitmap.cast(),
-                stream,
-                &jpeg_clsid,
-                &encoder_parameters,
-            )
+            GdipSaveImageToStream(bitmap.cast(), stream, &jpeg_clsid, &encoder_parameters)
         };
         status_to_result(save_status, "GdipSaveImageToStream")?;
 

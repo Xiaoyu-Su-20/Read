@@ -14,21 +14,29 @@ use std::{
 
 use debug::process as debug_process;
 use models::{
-    DocumentPayload, DocumentRecord, DocumentState, FolderRecord, FolderTreeNode, NoteDocument,
-    RenderedPagePayload,
+    DocumentPayload, DocumentRecord, DocumentState, FolderRecord, FolderTreeNode,
+    NativeTextPagePayload, NoteDocument, PdfOutlineItem, RenderedPagePayload,
 };
 use normalization::{new_manifest_cache, ManifestCache, NormalizationWorker};
+use serde::Deserialize;
 use serde_json::{json, Value};
-use store::{LibraryStore, RenderCache};
+use store::{LibraryStore, RenderCache, RenderSessionRegistry};
 use tauri::{webview::PageLoadEvent, AppHandle, Manager, State};
 
 struct AppState {
     lock: Arc<Mutex<()>>,
     render_cache: Arc<Mutex<RenderCache>>,
+    render_sessions: RenderSessionRegistry,
     in_flight_renders: Arc<Mutex<HashMap<String, Arc<InFlightRender>>>>,
     active_reader_generation: Arc<Mutex<Option<ActiveReaderGeneration>>>,
     normalization_worker: NormalizationWorker,
     normalization_cache: ManifestCache,
+}
+
+#[derive(Deserialize)]
+struct MirroredDebugEvent {
+    event: String,
+    fields: Value,
 }
 
 #[derive(Clone)]
@@ -95,6 +103,7 @@ fn is_active_reader_generation(
 fn run_or_join_in_flight_render(
     request: store::PageRenderRequest,
     render_cache: Arc<Mutex<RenderCache>>,
+    render_sessions: RenderSessionRegistry,
     in_flight_renders: Arc<Mutex<HashMap<String, Arc<InFlightRender>>>>,
 ) -> Result<RenderedPagePayload, String> {
     let cache_key = request.cache_key.clone();
@@ -141,7 +150,7 @@ fn run_or_join_in_flight_render(
             .ok_or_else(|| "Unable to resolve in-flight render result.".to_string())?;
     }
 
-    let result = LibraryStore::render_pdf_page_blocking(request, render_cache)
+    let result = LibraryStore::render_pdf_page_blocking(request, render_cache, render_sessions)
         .map_err(|error| error.to_string());
 
     {
@@ -457,11 +466,7 @@ fn open_document(
                 }
             }
             if let Some(session_id) = open_session_id.as_deref() {
-                set_active_reader_generation(
-                    &active_reader_generation,
-                    &document_id,
-                    session_id,
-                )?;
+                set_active_reader_generation(&active_reader_generation, &document_id, session_id)?;
             }
             Ok(result.0)
         },
@@ -536,6 +541,14 @@ fn save_note(
 #[tauri::command]
 fn log_note_debug_event(event: String, fields: Value) -> Result<(), String> {
     crate::debug::action(&event, fields);
+    Ok(())
+}
+
+#[tauri::command]
+fn log_note_debug_events(events: Vec<MirroredDebugEvent>) -> Result<(), String> {
+    for event in events {
+        crate::debug::action(&event.event, event.fields);
+    }
     Ok(())
 }
 
@@ -631,6 +644,71 @@ fn read_document_bytes(
 }
 
 #[tauri::command]
+async fn warm_pdf_display_lists(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    document_id: String,
+    page_numbers: Vec<u32>,
+    open_session_id: Option<String>,
+) -> Result<(), String> {
+    let process = debug_process(
+        "command.warm_pdf_display_lists",
+        json!({
+            "documentId": document_id,
+            "openSessionId": open_session_id,
+            "pageNumbers": page_numbers.clone(),
+        }),
+    );
+
+    if page_numbers.is_empty() {
+        process.finish(json!({"skipped": "empty"}));
+        return Ok(());
+    }
+
+    let render_sessions = state.render_sessions.clone();
+    let active_reader_generation = state.active_reader_generation.clone();
+    let task_document_id = document_id.clone();
+    let task_open_session_id = open_session_id.clone();
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        if !is_active_reader_generation(
+            &active_reader_generation,
+            &task_document_id,
+            task_open_session_id.as_deref(),
+        )? {
+            crate::debug::action(
+                "command.warm_pdf_display_lists:skipped-stale-generation",
+                json!({
+                    "documentId": task_document_id,
+                    "documentGenerationId": task_open_session_id,
+                    "pageNumbers": page_numbers,
+                }),
+            );
+            return Ok(());
+        }
+
+        let store = app_store(&app)?;
+        let mut request = store
+            .prepare_display_list_warmup_request(&task_document_id, page_numbers)
+            .map_err(|error| error.to_string())?;
+        request.document_generation_id = task_open_session_id;
+        render_sessions
+            .warm_display_lists(request)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Unable to join display-list warmup task: {error}"))?;
+
+    if let Err(error) = &result {
+        process.fail(error, json!({}));
+    } else {
+        process.finish(json!({}));
+    }
+
+    result
+}
+
+#[tauri::command]
 async fn render_pdf_page(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -653,6 +731,7 @@ async fn render_pdf_page(
     );
 
     let render_cache = state.render_cache.clone();
+    let render_sessions = state.render_sessions.clone();
     let in_flight_renders = state.in_flight_renders.clone();
     let active_reader_generation = state.active_reader_generation.clone();
     let normalization_cache = state.normalization_cache.clone();
@@ -709,7 +788,7 @@ async fn render_pdf_page(
             }),
         );
 
-        run_or_join_in_flight_render(request, render_cache, in_flight_renders)
+        run_or_join_in_flight_render(request, render_cache, render_sessions, in_flight_renders)
     })
     .await
     .map_err(|error| format!("Unable to join blocking render task: {error}"))?;
@@ -718,6 +797,150 @@ async fn render_pdf_page(
         process.fail(error, json!({}));
     } else {
         process.finish(json!({}));
+    }
+
+    result
+}
+
+#[tauri::command]
+async fn get_pdf_native_text_page(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    document_id: String,
+    page_number: u32,
+    open_session_id: Option<String>,
+) -> Result<NativeTextPagePayload, String> {
+    let process = debug_process(
+        "command.get_pdf_native_text_page",
+        json!({
+            "documentId": document_id,
+            "documentGenerationId": open_session_id,
+            "openSessionId": open_session_id,
+            "page": page_number,
+        }),
+    );
+
+    let render_sessions = state.render_sessions.clone();
+    let active_reader_generation = state.active_reader_generation.clone();
+    let task_document_id = document_id.clone();
+    let task_open_session_id = open_session_id.clone();
+    let queued_at = Instant::now();
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        crate::debug::action(
+            "command.get_pdf_native_text_page:execution-started",
+            json!({
+                "documentId": task_document_id,
+                "documentGenerationId": task_open_session_id,
+                "page": page_number,
+                "queuedWaitMs": queued_at.elapsed().as_millis(),
+            }),
+        );
+
+        if !is_active_reader_generation(
+            &active_reader_generation,
+            &task_document_id,
+            task_open_session_id.as_deref(),
+        )? {
+            crate::debug::action(
+                "command.get_pdf_native_text_page:skipped-stale-generation",
+                json!({
+                    "documentId": task_document_id,
+                    "documentGenerationId": task_open_session_id,
+                    "page": page_number,
+                }),
+            );
+            return Err("Stale native text request skipped.".to_string());
+        }
+
+        let store = app_store(&app)?;
+        let mut request = store
+            .prepare_native_text_page_request(&task_document_id, page_number)
+            .map_err(|error| error.to_string())?;
+        request.document_generation_id = task_open_session_id;
+        render_sessions
+            .get_native_text_page(request)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Unable to join native text task: {error}"))?;
+
+    match &result {
+        Ok(payload) => process.finish(json!({
+            "charCount": payload.chars.len(),
+            "lineCount": payload.lines.len(),
+            "page": payload.page_number,
+        })),
+        Err(error) => process.fail(error, json!({})),
+    }
+
+    result
+}
+
+#[tauri::command]
+async fn get_pdf_native_outline(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    document_id: String,
+    open_session_id: Option<String>,
+) -> Result<Vec<PdfOutlineItem>, String> {
+    let process = debug_process(
+        "command.get_pdf_native_outline",
+        json!({
+            "documentId": document_id,
+            "documentGenerationId": open_session_id,
+            "openSessionId": open_session_id,
+        }),
+    );
+
+    let render_sessions = state.render_sessions.clone();
+    let active_reader_generation = state.active_reader_generation.clone();
+    let task_document_id = document_id.clone();
+    let task_open_session_id = open_session_id.clone();
+    let queued_at = Instant::now();
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        crate::debug::action(
+            "command.get_pdf_native_outline:execution-started",
+            json!({
+                "documentId": task_document_id,
+                "documentGenerationId": task_open_session_id,
+                "queuedWaitMs": queued_at.elapsed().as_millis(),
+            }),
+        );
+
+        if !is_active_reader_generation(
+            &active_reader_generation,
+            &task_document_id,
+            task_open_session_id.as_deref(),
+        )? {
+            crate::debug::action(
+                "command.get_pdf_native_outline:skipped-stale-generation",
+                json!({
+                    "documentId": task_document_id,
+                    "documentGenerationId": task_open_session_id,
+                }),
+            );
+            return Err("Stale native outline request skipped.".to_string());
+        }
+
+        let store = app_store(&app)?;
+        let mut request = store
+            .prepare_native_outline_request(&task_document_id)
+            .map_err(|error| error.to_string())?;
+        request.document_generation_id = task_open_session_id;
+        render_sessions
+            .get_native_outline(request)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Unable to join native outline task: {error}"))?;
+
+    match &result {
+        Ok(items) => process.finish(json!({
+            "rootItemCount": items.len(),
+        })),
+        Err(error) => process.fail(error, json!({})),
     }
 
     result
@@ -792,6 +1015,7 @@ pub fn run() {
             app.manage(AppState {
                 lock: Arc::new(Mutex::new(())),
                 render_cache: Arc::new(Mutex::new(RenderCache::default())),
+                render_sessions: RenderSessionRegistry::default(),
                 in_flight_renders: Arc::new(Mutex::new(HashMap::new())),
                 active_reader_generation: Arc::new(Mutex::new(None)),
                 normalization_worker,
@@ -826,6 +1050,10 @@ pub fn run() {
             show_document_in_explorer,
             show_folder_in_explorer,
             read_document_bytes,
+            log_note_debug_events,
+            warm_pdf_display_lists,
+            get_pdf_native_text_page,
+            get_pdf_native_outline,
             render_pdf_page
         ])
         .run(tauri::generate_context!())

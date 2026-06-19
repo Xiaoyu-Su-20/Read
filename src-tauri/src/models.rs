@@ -209,6 +209,64 @@ pub struct TextLayerTransform {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeTextPagePayload {
+    pub page_number: u32,
+    pub source_width: f32,
+    pub source_height: f32,
+    pub bounds: NativeRect,
+    pub lines: Vec<NativeTextLine>,
+    pub chars: Vec<NativeTextChar>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeQuad {
+    pub ul: NativePoint,
+    pub ur: NativePoint,
+    pub ll: NativePoint,
+    pub lr: NativePoint,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeRect {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTextLine {
+    pub index: u32,
+    pub char_start: u32,
+    pub char_end: u32,
+    pub bounds: NativeRect,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTextChar {
+    pub index: u32,
+    pub line_index: u32,
+    pub text: String,
+    pub quad: NativeQuad,
+    pub origin: NativePoint,
+    pub size: f32,
+    pub flags: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct FolderTreeNode {
     pub folder: FolderRecord,
     pub folders: Vec<FolderTreeNode>,

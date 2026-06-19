@@ -1,7 +1,7 @@
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
-import { debugAction, debugError } from "../lib/debugLog";
+import { debugAction, debugError, debugLocalAction } from "../lib/debugLog";
 import {
   buildPageTextRunSnapshots,
   extractSelectedRunFragments,
@@ -216,10 +216,16 @@ function enableGlobalSelectionListener() {
   document.addEventListener(
     "selectionchange",
     () => {
+      const selectionChangeStartedAt = performance.now();
       const selection = document.getSelection();
       if (!selection || selection.rangeCount === 0) {
         activeTextLayers.forEach((selectionTail, container) => {
           resetSelectionArtifacts(selectionTail, container);
+        });
+        debugLocalAction("reader.text-layer-selectionchange", {
+          activeLayerCount: activeTextLayers.size,
+          elapsedMs: Math.round(performance.now() - selectionChangeStartedAt),
+          rangeCount: 0
         });
         return;
       }
@@ -244,6 +250,12 @@ function enableGlobalSelectionListener() {
           resetSelectionArtifacts(selectionTail, textLayerDiv);
         }
       }
+      debugLocalAction("reader.text-layer-selectionchange", {
+        activeLayerCount: activeTextLayers.size,
+        activeSelectionLayerCount: activeSelectionLayers.size,
+        elapsedMs: Math.round(performance.now() - selectionChangeStartedAt),
+        rangeCount: selection.rangeCount
+      });
     },
     { signal }
   );
@@ -367,8 +379,10 @@ const PdfTextLayer = memo(function PdfTextLayer({
     }
 
     setTextLayerState("rendering");
+    const textLayerRenderStartedAt = performance.now();
 
     try {
+      const constructorStartedAt = performance.now();
       runtimeTextLayer = new pdfjsLib.TextLayer({
         textContentSource: textLayer.textContent,
         container,
@@ -378,6 +392,10 @@ const PdfTextLayer = memo(function PdfTextLayer({
           resolvedRenderTransform.sourceHeight
         ) as never
       }) as RuntimeTextLayerInstance;
+      debugLocalAction("reader.text-layer-constructor", {
+        ...baseFields,
+        elapsedMs: Math.round(performance.now() - constructorStartedAt)
+      });
       debugAction("reader.text-layer-render-start", {
         ...baseFields,
         rawPageHeight: textLayer.viewportRawDims.pageHeight,
@@ -425,6 +443,12 @@ const PdfTextLayer = memo(function PdfTextLayer({
           }
         );
         setTextLayerState("ready");
+        debugLocalAction("reader.text-layer-rendered", {
+          ...baseFields,
+          elapsedMs: Math.round(performance.now() - textLayerRenderStartedAt),
+          textRunCount: textRunsRef.current.length,
+          ...getContainerMetrics(container)
+        });
         debugAction("reader.text-layer-rendered", {
           ...baseFields,
           textRunCount: textRunsRef.current.length,
@@ -455,6 +479,11 @@ const PdfTextLayer = memo(function PdfTextLayer({
       cleanupSelectionBehavior?.();
       textRunsRef.current = [];
       container.replaceChildren();
+      debugLocalAction("reader.text-layer-unmount", {
+        ...baseFields,
+        elapsedMs: Math.round(performance.now() - textLayerRenderStartedAt),
+        ...getContainerMetrics(container)
+      });
       debugAction("reader.text-layer-unmount", {
         ...baseFields,
         ...getContainerMetrics(container)

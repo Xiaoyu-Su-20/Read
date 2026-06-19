@@ -1231,7 +1231,6 @@ const NotesPane = memo(function NotesPane({
             />
           ) : (
             <div className="notes-pane__empty">
-              {loading ? "Loading note..." : "Open a document to start taking notes."}
             </div>
           )}
         </div>

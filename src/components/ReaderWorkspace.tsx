@@ -32,6 +32,7 @@ type ReaderWorkspaceProps = {
     viewTransitionId: string;
   } | null;
   readerSession: ReaderSession | null;
+  readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
   note: NoteDocument | null;
   notesLoading: boolean;
@@ -82,6 +83,7 @@ const STATIC_HEADER_SPLIT_RATIO = 0.46;
 export default function ReaderWorkspace({
   activeViewTransition,
   readerSession,
+  readerActive,
   pendingReaderOpenSessionId,
   note,
   notesLoading,
@@ -351,6 +353,7 @@ export default function ReaderWorkspace({
           <ReaderViewport
             activeViewTransition={activeViewTransition}
             readerSession={readerSession}
+            readerActive={readerActive}
             pendingReaderOpenSessionId={pendingReaderOpenSessionId}
             onSnapshotChange={onSnapshotChange}
             onOutlineChange={onOutlineChange}

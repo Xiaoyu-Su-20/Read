@@ -191,6 +191,27 @@ describe("PdfRuntimeSession", () => {
     expect(fixture.getDocument).toHaveBeenCalledTimes(1);
   });
 
+  it("loads PDF.js through an asset URL when a document file path is available", async () => {
+    const fixture = createRuntimeFixture();
+    const convertFileSrc = vi.fn(() => "asset://localhost/doc-1.pdf");
+    const session = createPdfRuntimeSession("doc-1", {
+      convertFileSrc,
+      documentFilePath: "D:\\Read\\doc-1.pdf",
+      getDocument: fixture.getDocument as never,
+      readDocumentBytes: fixture.readDocumentBytes
+    });
+
+    await session.load();
+
+    expect(convertFileSrc).toHaveBeenCalledWith("D:\\Read\\doc-1.pdf");
+    expect(fixture.readDocumentBytes).not.toHaveBeenCalled();
+    expect(fixture.getDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "asset://localhost/doc-1.pdf"
+      })
+    );
+  });
+
   it("loads lazily for outline, page text, and page plain text", async () => {
     const fixture = createRuntimeFixture();
 

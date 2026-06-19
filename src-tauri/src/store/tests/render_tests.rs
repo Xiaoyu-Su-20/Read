@@ -11,7 +11,10 @@ use crate::{
 
 use super::{
     super::{LibraryStore, DEFAULT_COLLECTION_ID, MAX_RENDER_CACHE_ENTRIES},
-    support::{create_render_cache, write_valid_pdf, write_valid_pdf_pages},
+    support::{
+        create_render_cache, create_render_sessions, create_render_sessions_with_budget,
+        write_valid_pdf, write_valid_pdf_pages,
+    },
 };
 
 #[test]
@@ -80,6 +83,79 @@ fn render_pdf_page_reuses_cached_file() {
 }
 
 #[test]
+fn render_pdf_page_reuses_display_list_between_zoom_levels() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("display-list.pdf");
+    write_valid_pdf(&source, "Display list reuse");
+
+    let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let render_cache = create_render_cache();
+    let render_sessions = create_render_sessions();
+
+    let first = store
+        .render_pdf_page_with_sessions(
+            &record.id,
+            1,
+            1.0,
+            render_cache.clone(),
+            render_sessions.clone(),
+        )
+        .unwrap();
+    let second = store
+        .render_pdf_page_with_sessions(&record.id, 1, 1.25, render_cache, render_sessions.clone())
+        .unwrap();
+
+    assert_eq!(first.page_number, 1);
+    assert_eq!(second.page_number, 1);
+    let stats = render_sessions
+        .stats_for_fingerprint(&record.fingerprint)
+        .unwrap();
+    assert_eq!(stats.misses, 1);
+    assert_eq!(stats.hits, 1);
+    assert_eq!(stats.loaded_count, 1);
+    assert!(stats.estimated_bytes > 0);
+    assert!(stats.entry_pages.contains(&1));
+}
+
+#[test]
+fn native_text_page_uses_render_session_display_list() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("native-text.pdf");
+    write_valid_pdf(&source, "Native text path");
+
+    let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let render_sessions = create_render_sessions();
+    let request = store
+        .prepare_native_text_page_request(&record.id, 1)
+        .unwrap();
+
+    let first = render_sessions
+        .get_native_text_page(request.clone())
+        .unwrap();
+    let second = render_sessions.get_native_text_page(request).unwrap();
+
+    assert_eq!(first.page_number, 1);
+    assert!(first.source_width > 0.0);
+    assert!(first.source_height > 0.0);
+    assert!(!first.lines.is_empty());
+    assert!(first.lines.iter().any(|line| line.text.contains("Native")));
+    assert_eq!(first, second);
+
+    let stats = render_sessions
+        .stats_for_fingerprint(&record.fingerprint)
+        .unwrap();
+    assert_eq!(stats.misses, 1);
+    assert_eq!(stats.hits, 0);
+    assert_eq!(stats.loaded_count, 1);
+}
+
+#[test]
 fn render_pdf_page_uses_ready_normalization_manifest() {
     use std::fs;
 
@@ -145,6 +221,49 @@ fn render_pdf_page_uses_ready_normalization_manifest() {
     );
     assert_eq!((rendered.width, rendered.height), (220, 240));
     assert!(rendered.cache_key.contains("normalization-test"));
+}
+
+#[test]
+fn display_list_warmup_pins_pages_and_evicts_unpinned_entries() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("warm-window.pdf");
+    write_valid_pdf_pages(&source, &["One", "Two", "Three", "Four"]);
+
+    let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let render_sessions = create_render_sessions_with_budget(170_000);
+
+    let warm_request = store
+        .prepare_display_list_warmup_request(&record.id, vec![2, 3])
+        .unwrap();
+    render_sessions.warm_display_lists(warm_request).unwrap();
+
+    let mut warm_stats = render_sessions
+        .stats_for_fingerprint(&record.fingerprint)
+        .unwrap();
+    warm_stats.entry_pages.sort_unstable();
+    warm_stats.pinned_pages.sort_unstable();
+    assert_eq!(warm_stats.entry_pages, vec![2, 3]);
+    assert_eq!(warm_stats.pinned_pages, vec![2, 3]);
+
+    store
+        .render_pdf_page_with_sessions(
+            &record.id,
+            4,
+            1.0,
+            create_render_cache(),
+            render_sessions.clone(),
+        )
+        .unwrap();
+
+    let mut stats = render_sessions
+        .stats_for_fingerprint(&record.fingerprint)
+        .unwrap();
+    stats.entry_pages.sort_unstable();
+    assert_eq!(stats.entry_pages, vec![2, 3]);
+    assert_eq!(stats.loaded_count, 3);
 }
 
 #[test]

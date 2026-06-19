@@ -34,7 +34,8 @@
         "scope": [
           "$APPDATA/**/*",
           "$APPLOCALDATA/**/*",
-          "$LOCALAPPDATA/**/*"
+          "$LOCALAPPDATA/**/*",
+          "$DOCUMENT/Reader/**/*"
         ]
       }
     }

@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use mupdf::{Colorspace, Device, Document, IRect, Matrix, Pixmap};
+use mupdf::{Colorspace, Cookie, Device, Document, IRect, Matrix, Pixmap, Rect};
 use serde_json::json;
 
 use crate::{
@@ -17,11 +17,16 @@ use super::paths::StorePaths;
 
 mod cache;
 mod jpeg_windows;
+mod session;
 
 pub use cache::RenderCache;
 #[cfg(test)]
 pub use cache::MAX_RENDER_CACHE_ENTRIES;
 use jpeg_windows::encode_pixmap_as_jpeg;
+pub use session::{
+    DisplayListWarmupRequest, NativeOutlineRequest, NativeTextPageRequest, RenderSessionRegistry,
+    SessionDisplayListPage,
+};
 
 const RENDERER_VERSION: &str = "mupdf-v5";
 const BASE_PDF_RENDER_SCALE: f32 = 1.0;
@@ -121,6 +126,7 @@ impl PdfRenderStore {
     pub fn render_pdf_page_blocking(
         request: PageRenderRequest,
         render_cache: Arc<Mutex<RenderCache>>,
+        render_sessions: RenderSessionRegistry,
     ) -> AppResult<RenderedPagePayload> {
         let process = debug_process(
             "store.render_pdf_page_blocking",
@@ -139,6 +145,8 @@ impl PdfRenderStore {
                 process.checkpoint(
                     "cache-hit",
                     json!({
+                        "cancelled": false,
+                        "displayListSource": null,
                         "height": cached.height,
                         "width": cached.width,
                     }),
@@ -147,107 +155,101 @@ impl PdfRenderStore {
             }
             process.checkpoint("cache-miss", json!({}));
 
-            process.checkpoint("document-open-start", json!({}));
-            let document = Document::open(&request.document_path).map_err(|error| {
-                AppError::Render(format!("Unable to open PDF with MuPDF: {error}"))
-            })?;
-            process.checkpoint("document-open-finished", json!({}));
+            process.checkpoint("display-list-request-start", json!({}));
+            let display_list_page = render_sessions.get_display_list(&request)?;
+            let display_list_source = display_list_page.source.as_str();
+            process.checkpoint(
+                "display-list-request-finished",
+                json!({
+                    "displayListSource": display_list_source,
+                    "page": request.page_number,
+                }),
+            );
 
-            let page_count = document.page_count().map_err(|error| {
-                AppError::Render(format!("Unable to inspect PDF pages: {error}"))
+            let cookie = Cookie::new().map_err(|error| {
+                AppError::Render(format!("Unable to create MuPDF render cookie: {error}"))
             })?;
-            if request.page_number > page_count as u32 {
-                return Err(AppError::InvalidInput(format!(
-                    "Page {} is out of bounds for this document.",
-                    request.page_number
-                )));
-            }
+
             process.checkpoint(
                 "render-started",
                 json!({
-                    "pageCount": page_count,
+                    "displayListSource": display_list_source,
                     "scale": BASE_PDF_RENDER_SCALE * request.zoom,
                 }),
             );
 
-            process.checkpoint("page-load-start", json!({}));
-            let page = document
-                .load_page((request.page_number - 1) as i32)
-                .map_err(|error| {
-                    AppError::Render(format!(
-                        "Unable to load page {} with MuPDF: {error}",
-                        request.page_number
-                    ))
-                })?;
-            process.checkpoint("page-load-finished", json!({}));
             let render_scale =
                 BASE_PDF_RENDER_SCALE * request.zoom.clamp(MIN_RENDER_ZOOM, MAX_RENDER_ZOOM);
-            let page_bounds = page.bounds().map_err(|error| {
-                AppError::Render(format!("Unable to measure page bounds: {error}"))
-            })?;
+            let page_bounds = display_list_page.bounds;
             let normalized_entry = request
                 .normalization
                 .as_ref()
                 .and_then(|manifest| manifest.pages.get((request.page_number - 1) as usize))
                 .filter(|entry| entry.page_number == request.page_number);
-            let rendered = normalized_entry.and_then(|entry| {
-                request.normalization.as_ref().and_then(|manifest| {
-                    Self::render_normalized_page(&page, page_bounds, manifest, entry, render_scale)
-                        .map_err(|error| {
-                            crate::debug::action(
-                                "store.render_pdf_page_blocking:normalization-fallback",
-                                json!({
-                                    "documentId": request.document_id,
-                                    "error": error.to_string(),
-                                    "page": request.page_number,
-                                }),
-                            );
-                            error
-                        })
-                        .ok()
-                })
-            });
+            let rendered = if let Some((manifest, entry)) = normalized_entry.and_then(|entry| {
+                request
+                    .normalization
+                    .as_ref()
+                    .map(|manifest| (manifest, entry))
+            }) {
+                match Self::render_normalized_page(
+                    &display_list_page,
+                    page_bounds,
+                    manifest,
+                    entry,
+                    render_scale,
+                    &cookie,
+                    &request,
+                ) {
+                    Ok(rendered) => Some(rendered),
+                    Err(error) => {
+                        crate::debug::action(
+                            "store.render_pdf_page_blocking:normalization-fallback",
+                            json!({
+                                "documentId": request.document_id.as_str(),
+                                "error": error.to_string(),
+                                "page": request.page_number,
+                            }),
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let (pixmap, width, height, render_variant, normalization_token, text_layer_transform) =
                 if let Some(rendered) = rendered {
                     rendered
                 } else {
-                    process.checkpoint("rasterize-start", json!({}));
-                    let matrix = Matrix::new_scale(render_scale, render_scale);
-                    let logical_rect = page_bounds.transform(&matrix).round();
-                    let width = logical_rect.width().max(1) as u32;
-                    let height = logical_rect.height().max(1) as u32;
-                    let colorspace = Colorspace::device_rgb();
-                    let pixmap =
-                        page.to_pixmap(&matrix, &colorspace, false, true)
-                            .map_err(|error| {
-                                AppError::Render(format!(
-                                    "Unable to render page {} with MuPDF: {error}",
-                                    request.page_number
-                                ))
-                            })?;
+                    process.checkpoint(
+                        "rasterize-start",
+                        json!({
+                            "displayListSource": display_list_source,
+                        }),
+                    );
+                    let rendered = Self::render_raw_page(
+                        &display_list_page,
+                        page_bounds,
+                        render_scale,
+                        &cookie,
+                        &request,
+                    )?;
                     process.checkpoint(
                         "rasterize-finished",
                         json!({
-                            "height": height,
-                            "width": width,
+                            "cancelled": false,
+                            "displayListSource": display_list_source,
+                            "height": rendered.2,
+                            "width": rendered.1,
                         }),
                     );
-                    (
-                        pixmap,
-                        width,
-                        height,
-                        RenderVariant::Raw,
-                        None,
-                        TextLayerTransform {
-                            source_width: page_bounds.width(),
-                            source_height: page_bounds.height(),
-                            matrix: [render_scale, 0.0, 0.0, render_scale, 0.0, 0.0],
-                        },
-                    )
+                    rendered
                 };
             process.checkpoint(
                 "render-finished",
                 json!({
+                    "cancelled": false,
+                    "displayListSource": display_list_source,
                     "height": height,
                     "width": width,
                 }),
@@ -294,6 +296,7 @@ impl PdfRenderStore {
 
         match &result {
             Ok(payload) => process.finish(json!({
+                "cancelled": false,
                 "cacheKey": payload.cache_key,
                 "height": payload.height,
                 "pageNumber": payload.page_number,
@@ -305,12 +308,61 @@ impl PdfRenderStore {
         result
     }
 
+    fn render_raw_page(
+        display_list_page: &SessionDisplayListPage,
+        page_bounds: Rect,
+        render_scale: f32,
+        cookie: &Cookie,
+        request: &PageRenderRequest,
+    ) -> AppResult<(
+        Pixmap,
+        u32,
+        u32,
+        RenderVariant,
+        Option<String>,
+        TextLayerTransform,
+    )> {
+        let matrix = Matrix::new_scale(render_scale, render_scale);
+        let logical_rect = non_empty_irect(page_bounds.transform(&matrix).round());
+        let width = logical_rect.width().max(1) as u32;
+        let height = logical_rect.height().max(1) as u32;
+        let colorspace = Colorspace::device_rgb();
+        let mut pixmap = Pixmap::new_with_rect(&colorspace, logical_rect, false)
+            .map_err(|error| AppError::Render(format!("Unable to allocate page: {error}")))?;
+        pixmap
+            .clear_with(255)
+            .map_err(|error| AppError::Render(format!("Unable to clear page: {error}")))?;
+        let device = Device::from_pixmap(&pixmap).map_err(|error| {
+            AppError::Render(format!("Unable to create render device: {error}"))
+        })?;
+        display_list_page
+            .display_list
+            .run_with_cookie(&device, &matrix, Rect::INF, cookie)
+            .map_err(|error| render_run_error(error, cookie, request))?;
+        drop(device);
+
+        Ok((
+            pixmap,
+            width,
+            height,
+            RenderVariant::Raw,
+            None,
+            TextLayerTransform {
+                source_width: page_bounds.width(),
+                source_height: page_bounds.height(),
+                matrix: [render_scale, 0.0, 0.0, render_scale, 0.0, 0.0],
+            },
+        ))
+    }
+
     fn render_normalized_page(
-        page: &mupdf::Page,
+        display_list_page: &SessionDisplayListPage,
         page_bounds: mupdf::Rect,
         manifest: &DocumentNormalizationManifest,
         entry: &PageNormalizationEntry,
         render_scale: f32,
+        cookie: &Cookie,
+        request: &PageRenderRequest,
     ) -> AppResult<(
         Pixmap,
         u32,
@@ -331,11 +383,9 @@ impl PdfRenderStore {
             })?;
         // Clear normalized renders to white so the reader's configurable paper surface
         // remains the effective background in both light and dark appearance pipelines.
-        pixmap
-            .clear_with(255)
-            .map_err(|error| {
-                AppError::Render(format!("Unable to clear normalized page: {error}"))
-            })?;
+        pixmap.clear_with(255).map_err(|error| {
+            AppError::Render(format!("Unable to clear normalized page: {error}"))
+        })?;
 
         let (matrix, affine, placed_width, placed_height) =
             normalized_matrix(entry, page_bounds, render_scale);
@@ -351,9 +401,10 @@ impl PdfRenderStore {
                 "Unable to create normalized render device: {error}"
             ))
         })?;
-        page.run(&device, &matrix).map_err(|error| {
-            AppError::Render(format!("Unable to render normalized page: {error}"))
-        })?;
+        display_list_page
+            .display_list
+            .run_with_cookie(&device, &matrix, Rect::INF, cookie)
+            .map_err(|error| render_run_error(error, cookie, request))?;
         drop(device);
 
         Ok((
@@ -404,6 +455,23 @@ impl PdfRenderStore {
         );
         Ok(())
     }
+}
+
+fn non_empty_irect(rect: IRect) -> IRect {
+    let width = rect.width().max(1);
+    let height = rect.height().max(1);
+    IRect::new(rect.x0, rect.y0, rect.x0 + width, rect.y0 + height)
+}
+
+fn render_run_error(
+    error: impl std::fmt::Display,
+    _cookie: &Cookie,
+    request: &PageRenderRequest,
+) -> AppError {
+    AppError::Render(format!(
+        "Unable to render page {} with MuPDF: {error}",
+        request.page_number
+    ))
 }
 
 fn normalized_matrix(

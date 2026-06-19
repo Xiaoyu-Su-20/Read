@@ -2,10 +2,31 @@ import { invoke } from "@tauri-apps/api/core";
 
 type DebugFields = Record<string, unknown>;
 type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
+type MirroredDebugEvent = {
+  event: string;
+  fields: DebugFields;
+};
+type BrowserMemorySnapshot = {
+  jsHeapSizeLimit?: number;
+  totalJSHeapSize?: number;
+  usedJSHeapSize?: number;
+};
+
+declare global {
+  interface Window {
+    __CALM_READER_LOCAL_DEBUG_EVENTS__?: DebugFields[];
+  }
+}
 
 export const isDebugModeEnabled =
   import.meta.env.VITE_DEBUG_UI === "true";
-const shouldMirrorDebugEvents = import.meta.env.DEV || isDebugModeEnabled;
+const shouldMirrorDebugEvents =
+  (import.meta.env.DEV || isDebugModeEnabled) &&
+  import.meta.env.VITE_MIRROR_DEBUG_EVENTS !== "false";
+const MIRRORED_DEBUG_FLUSH_MS = 100;
+const MIRRORED_DEBUG_BATCH_SIZE = 50;
+const MAX_MIRRORED_DEBUG_QUEUE = 500;
+const MAX_LOCAL_DEBUG_EVENTS = 1000;
 const LOG_LEVEL_RANK: Record<LogLevel, number> = {
   error: 0,
   warn: 1,
@@ -14,6 +35,9 @@ const LOG_LEVEL_RANK: Record<LogLevel, number> = {
   trace: 4
 };
 const currentLogLevel = resolveLogLevel();
+let mirroredDebugQueue: MirroredDebugEvent[] = [];
+let mirroredDebugFlushTimer: number | null = null;
+let droppedMirroredDebugEventCount = 0;
 
 function resolveLogLevel(): LogLevel {
   const rawLevel = String(import.meta.env.VITE_READER_LOG_LEVEL ?? "").trim().toLowerCase();
@@ -44,6 +68,9 @@ function eventLevel(event: string, explicitLevel: "info" | "error"): LogLevel {
     event === "reader.initial-page:resolved" ||
     event === "reader.open:active-document-committed" ||
     event === "view.collection:click" ||
+    event === "view.collection:first-frame" ||
+    event === "view.collection:pointer-down" ||
+    event === "view.collection:presented" ||
     event === "view.collection:state-committed" ||
     event === "view.collection:first-painted" ||
     event === "view.document:click" ||
@@ -68,6 +95,32 @@ function eventLevel(event: string, explicitLevel: "info" | "error"): LogLevel {
     event === "viewer.slot-promotion-discarded" ||
     event === "reader.first-visible" ||
     event === "reader.open:summary" ||
+    event === "frontend.event-loop-gap" ||
+    event === "frontend.long-task" ||
+    event === "frontend.native-text.requested" ||
+    event === "frontend.native-text.response-received" ||
+    event === "frontend.native-text.response-discarded" ||
+    event === "frontend.native-text.state-enqueued" ||
+    event === "frontend.native-text.load-failed" ||
+    event === "frontend.native-text-layer.mounted" ||
+    event === "frontend.native-text-layer.ready" ||
+    event === "frontend.native-text-layer.missing" ||
+    event === "frontend.native-text-layer.unmounted" ||
+    event === "frontend.native-text-layer.selectable-frame" ||
+    event === "reader.outline-load-scheduled" ||
+    event === "reader.outline-load-started" ||
+    event === "reader.outline-load-completed" ||
+    event === "reader.outline-load-cancelled" ||
+    event === "reader.outline-load-failed" ||
+    event === "native-outline.loaded" ||
+    event === "command.get_pdf_native_outline:execution-started" ||
+    event === "pdf-runtime.ensure-document-start" ||
+    event === "pdf-runtime.ensure-document-cache-hit" ||
+    event === "pdf-runtime.bytes-read-start" ||
+    event === "pdf-runtime.bytes-loaded" ||
+    event === "pdf-runtime.bytes-converted" ||
+    event === "pdf-runtime.document-load-start" ||
+    event === "pdf-runtime.document-loaded" ||
     event === "pdf-runtime.ensure-document-error" ||
     event === "pdf-runtime.page-text-error"
   ) {
@@ -92,6 +145,94 @@ function normalizeError(error: unknown) {
   return {
     message: String(error)
   };
+}
+
+function browserMemorySnapshot(): BrowserMemorySnapshot {
+  const performanceWithMemory = performance as Performance & {
+    memory?: BrowserMemorySnapshot;
+  };
+  const memory = performanceWithMemory.memory;
+  return {
+    usedJSHeapSize: memory?.usedJSHeapSize,
+    totalJSHeapSize: memory?.totalJSHeapSize,
+    jsHeapSizeLimit: memory?.jsHeapSizeLimit
+  };
+}
+
+export function debugLocalAction(event: string, fields: DebugFields = {}) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const payload = {
+    scope: "frontend-local",
+    event,
+    at: new Date().toISOString(),
+    atMs: Date.now(),
+    performanceNow: Math.round(performance.now()),
+    ...fields
+  };
+  const events = window.__CALM_READER_LOCAL_DEBUG_EVENTS__ ?? [];
+  events.push(payload);
+  while (events.length > MAX_LOCAL_DEBUG_EVENTS) {
+    events.shift();
+  }
+  window.__CALM_READER_LOCAL_DEBUG_EVENTS__ = events;
+
+  if (isDebugModeEnabled) {
+    console.info(payload);
+  }
+}
+
+export function debugLocalMemory(event: string, fields: DebugFields = {}) {
+  debugLocalAction(event, {
+    ...fields,
+    ...browserMemorySnapshot()
+  });
+}
+
+function scheduleMirroredDebugFlush() {
+  if (mirroredDebugFlushTimer !== null || typeof window === "undefined") {
+    return;
+  }
+
+  mirroredDebugFlushTimer = window.setTimeout(() => {
+    mirroredDebugFlushTimer = null;
+    void flushMirroredDebugEvents();
+  }, MIRRORED_DEBUG_FLUSH_MS);
+}
+
+async function flushMirroredDebugEvents() {
+  if (mirroredDebugQueue.length === 0) {
+    return;
+  }
+
+  const batch = mirroredDebugQueue.splice(0, MIRRORED_DEBUG_BATCH_SIZE);
+  await invoke("log_note_debug_events", {
+    events: batch
+  }).catch(() => undefined);
+
+  if (mirroredDebugQueue.length > 0) {
+    scheduleMirroredDebugFlush();
+  }
+}
+
+function enqueueMirroredDebugEvent(event: string, fields: DebugFields) {
+  if (mirroredDebugQueue.length >= MAX_MIRRORED_DEBUG_QUEUE) {
+    mirroredDebugQueue.shift();
+    droppedMirroredDebugEventCount += 1;
+  }
+
+  const mirroredFields = {
+    ...fields,
+    mirroredScope: "frontend",
+    ...(droppedMirroredDebugEventCount > 0
+      ? { mirroredDroppedCount: droppedMirroredDebugEventCount }
+      : {})
+  };
+  droppedMirroredDebugEventCount = 0;
+  mirroredDebugQueue.push({ event, fields: mirroredFields });
+  scheduleMirroredDebugFlush();
 }
 
 function emit(level: "info" | "error", event: string, fields: DebugFields = {}) {
@@ -123,15 +264,7 @@ function emit(level: "info" | "error", event: string, fields: DebugFields = {}) 
   }
 
   if (shouldMirrorDebugEvents) {
-    void invoke("log_note_debug_event", {
-      event,
-      fields: {
-        ...payload,
-        mirroredScope: "frontend"
-      }
-    }).catch(() => {
-      // Keep debug mirroring non-blocking and invisible to the reader path.
-    });
+    enqueueMirroredDebugEvent(event, payload);
   }
 }
 

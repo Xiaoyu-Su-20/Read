@@ -134,6 +134,52 @@ export type PageTextLayerData = {
   rotation: 0;
 };
 
+export type NativeTextPoint = {
+  x: number;
+  y: number;
+};
+
+export type NativeTextQuad = {
+  ul: NativeTextPoint;
+  ur: NativeTextPoint;
+  ll: NativeTextPoint;
+  lr: NativeTextPoint;
+};
+
+export type NativeTextRect = {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+};
+
+export type NativeTextChar = {
+  index: number;
+  lineIndex: number;
+  text: string;
+  quad: NativeTextQuad;
+  origin: NativeTextPoint;
+  size: number;
+  flags: number;
+};
+
+export type NativeTextLine = {
+  index: number;
+  charStart: number;
+  charEnd: number;
+  bounds: NativeTextRect;
+  text: string;
+};
+
+export type NativeTextPagePayload = {
+  pageNumber: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  bounds: NativeTextRect;
+  lines: NativeTextLine[];
+  chars: NativeTextChar[];
+};
+
 export type FolderTreeNode = {
   folder: FolderRecord;
   folders: FolderTreeNode[];

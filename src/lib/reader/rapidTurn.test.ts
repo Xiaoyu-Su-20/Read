@@ -3,111 +3,102 @@ import { describe, expect, it } from "vitest";
 import {
   makeRapidTurnOverlayModel,
   shouldActivateRapidTurn,
+  type RapidTurnSample,
   shouldResetRapidTurnSession
 } from "./rapidTurn";
 
 describe("rapidTurn", () => {
-  it("does not activate on a repeated keydown without prior matching input", () => {
-    expect(
-      shouldActivateRapidTurn(
-        null,
-        {
-          source: "keyboard",
-          direction: "next",
-          activationWindowMs: 220,
-          isRepeat: true
-        },
-        1_000
-      )
-    ).toBe(false);
-  });
+  function sample(
+    at: number,
+    direction: "next" | "previous",
+    page: number,
+    source: "keyboard" | "wheel" = "keyboard"
+  ): RapidTurnSample {
+    return { at, direction, page, source };
+  }
 
-  it("does not activate on repeated keyboard taps that are not auto-repeat", () => {
+  it("activates on the second sequential turn within the activation window", () => {
     expect(
       shouldActivateRapidTurn(
-        {
-          at: 1_000,
-          source: "keyboard",
-          direction: "next"
-        },
+        [sample(1_000, "next", 2)],
         {
           source: "keyboard",
           direction: "next",
-          activationWindowMs: 220,
-          isRepeat: false
+          activationWindowMs: 220
         },
-        1_120
-      )
-    ).toBe(false);
-  });
-
-  it("activates for keyboard auto-repeat within the activation window", () => {
-    expect(
-      shouldActivateRapidTurn(
-        {
-          at: 1_000,
-          source: "keyboard",
-          direction: "next"
-        },
-        {
-          source: "keyboard",
-          direction: "next",
-          activationWindowMs: 220,
-          isRepeat: true
-        },
-        1_120
+        1_100,
+        3
       )
     ).toBe(true);
   });
 
-  it("activates when the next matching input arrives within the activation window", () => {
+  it("activates after multiple sequential page turns within the activation window", () => {
     expect(
       shouldActivateRapidTurn(
+        [sample(1_000, "next", 2), sample(1_110, "next", 3)],
         {
-          at: 1_000,
-          source: "wheel",
-          direction: "previous"
+          source: "keyboard",
+          direction: "next",
+          activationWindowMs: 220
         },
+        1_120,
+        4
+      )
+    ).toBe(true);
+  });
+
+  it("can activate across input sources when turn cadence stays consistent", () => {
+    expect(
+      shouldActivateRapidTurn(
+        [sample(1_000, "previous", 9, "wheel"), sample(1_090, "previous", 8, "keyboard")],
         {
           source: "wheel",
           direction: "previous",
           activationWindowMs: 180
         },
-        1_120
+        1_120,
+        7
       )
     ).toBe(true);
   });
 
-  it("does not activate for mismatched direction or stale input", () => {
+  it("does not activate for mismatched direction, stale turns, or non-sequential pages", () => {
     expect(
       shouldActivateRapidTurn(
-        {
-          at: 1_000,
-          source: "keyboard",
-          direction: "next"
-        },
+        [sample(1_000, "next", 2), sample(1_100, "next", 3)],
         {
           source: "keyboard",
           direction: "previous",
           activationWindowMs: 220
         },
-        1_120
+        1_120,
+        2
       )
     ).toBe(false);
 
     expect(
       shouldActivateRapidTurn(
-        {
-          at: 1_000,
-          source: "keyboard",
-          direction: "next"
-        },
+        [sample(1_000, "next", 2), sample(1_050, "next", 3)],
         {
           source: "keyboard",
           direction: "next",
           activationWindowMs: 220
         },
-        1_300
+        1_300,
+        4
+      )
+    ).toBe(false);
+
+    expect(
+      shouldActivateRapidTurn(
+        [sample(1_000, "next", 2), sample(1_090, "next", 4)],
+        {
+          source: "keyboard",
+          direction: "next",
+          activationWindowMs: 220
+        },
+        1_120,
+        6
       )
     ).toBe(false);
   });
@@ -129,7 +120,7 @@ describe("rapidTurn", () => {
     ).toBe(true);
   });
 
-  it("does not reset when repeated input stays in the same stream", () => {
+  it("does not reset when repeated input stays in the same direction", () => {
     expect(
       shouldResetRapidTurnSession(
         {
@@ -138,10 +129,9 @@ describe("rapidTurn", () => {
           direction: "next"
         },
         {
-          source: "keyboard",
+          source: "wheel",
           direction: "next",
-          activationWindowMs: 220,
-          isRepeat: true
+          activationWindowMs: 220
         }
       )
     ).toBe(false);

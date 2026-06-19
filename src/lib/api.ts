@@ -8,7 +8,9 @@ import type {
   DocumentState,
   NoteDocument,
   FolderRecord,
-  FolderTreeNode
+  FolderTreeNode,
+  NativeTextPagePayload,
+  PdfOutlineItem
 } from "./types";
 
 function invokeLogged<T>(command: string, args?: Record<string, unknown>) {
@@ -124,6 +126,37 @@ export function renderPdfPage(
     zoom,
     openSessionId: options?.openSessionId ?? null,
     requestSequence: options?.requestSequence ?? null
+  });
+}
+
+export function warmPdfDisplayLists(
+  documentId: string,
+  pageNumbers: number[],
+  options?: { openSessionId?: string }
+) {
+  return invokeLogged<void>("warm_pdf_display_lists", {
+    documentId,
+    pageNumbers,
+    openSessionId: options?.openSessionId ?? null
+  });
+}
+
+export function getPdfNativeTextPage(
+  documentId: string,
+  pageNumber: number,
+  options?: { openSessionId?: string }
+) {
+  return invokeLogged<NativeTextPagePayload>("get_pdf_native_text_page", {
+    documentId,
+    pageNumber,
+    openSessionId: options?.openSessionId ?? null
+  });
+}
+
+export function getPdfNativeOutline(documentId: string, options?: { openSessionId?: string }) {
+  return invokeLogged<PdfOutlineItem[]>("get_pdf_native_outline", {
+    documentId,
+    openSessionId: options?.openSessionId ?? null
   });
 }
 
