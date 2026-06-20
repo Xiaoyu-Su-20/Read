@@ -28,3 +28,9 @@ uuid = { version = "1.11.0", features = ["serde", "v4"] }
 tempfile = "3.13.0"
 
 [package.metadata]
+
+[patch.crates-io]
+# The published `mupdf 0.7.0` crate fails on MSVC because `max_align_t` is not
+# available in the generated source. Keep the patched local copy in-repo so
+# fresh clones build consistently on Windows.
+mupdf = { path = "../vendor/mupdf" }
