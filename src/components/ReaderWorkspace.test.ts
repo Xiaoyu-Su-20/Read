@@ -157,6 +157,7 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
     onToggleFullscreen: vi.fn(),
     readerPaneSplitRatio: 0.46,
     hidePaneResizeHandle: false,
+    autoHidePaneResizeHandle: true,
     onChangeReaderPaneSplitRatio: vi.fn(),
     ...overrides
   });
@@ -185,15 +186,21 @@ describe("ReaderWorkspace document header", () => {
     const elements = collectElements(tree);
 
     const layout = elements.find(
-      (element) => element.props.className === "reader-workspace__document-header-layout"
+      (element) =>
+        typeof element.props.className === "string" &&
+        element.props.className.includes("reader-workspace__document-header-layout")
     );
     const pageValue = elements.find(
       (element) =>
-        element.props.className === "reader-workspace__header-value" && element.props.children === "52 / 191"
+        typeof element.props.className === "string" &&
+        element.props.className.includes("reader-workspace__header-value") &&
+        element.props.children === "52 / 191"
     );
     const zoomValue = elements.find(
       (element) =>
-        element.props.className === "reader-workspace__header-value" && element.props.children === "100%"
+        typeof element.props.className === "string" &&
+        element.props.className.includes("reader-workspace__header-value") &&
+        element.props.children === "100%"
     );
 
     expect(layout).toBeDefined();
@@ -227,7 +234,8 @@ describe("ReaderWorkspace document header", () => {
     );
     const pageValue = elements.find(
       (element) =>
-        element.props.className === "reader-workspace__header-value" &&
+        typeof element.props.className === "string" &&
+        element.props.className.includes("reader-workspace__header-value") &&
         element.props.children === "No document"
     );
 

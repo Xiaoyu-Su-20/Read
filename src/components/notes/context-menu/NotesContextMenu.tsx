@@ -18,6 +18,7 @@ type NotesContextMenuProps = {
   onAddHeadingPagemark: () => void;
   onRemoveHeadingReference: () => void;
   onOpenPage: () => void;
+  onOpenHeadingReferencePage: () => void;
   onEditPageLink: () => void;
   onCopyPageReference: () => void;
   onRemovePageLink: () => void;
@@ -40,6 +41,7 @@ export default function NotesContextMenu({
   onAddHeadingPagemark,
   onRemoveHeadingReference,
   onOpenPage,
+  onOpenHeadingReferencePage,
   onEditPageLink,
   onCopyPageReference,
   onRemovePageLink,
@@ -84,6 +86,15 @@ export default function NotesContextMenu({
             </button>
             <button className="editor-context-menu__item" type="button" onClick={onRemovePageLink}>
               Remove PageLink
+            </button>
+          </>
+        ) : state.target === "heading-reference" ? (
+          <>
+            <button className="editor-context-menu__item" type="button" onClick={onOpenHeadingReferencePage}>
+              Open Page
+            </button>
+            <button className="editor-context-menu__item" type="button" onClick={onRemoveHeadingReference}>
+              Remove pagemark
             </button>
           </>
         ) : (

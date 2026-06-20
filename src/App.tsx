@@ -1330,6 +1330,7 @@ export default function App() {
                 onToggleFullscreen={toggleFullscreen}
                 readerPaneSplitRatio={readerPaneSplitRatio}
                 hidePaneResizeHandle={false}
+                autoHidePaneResizeHandle={readerPreferences.autoHidePageResizer}
                 onChangeReaderPaneSplitRatio={(nextRatio) => {
                   setSetting("readerPaneSplitRatio", nextRatio);
                 }}

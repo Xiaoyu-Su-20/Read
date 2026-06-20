@@ -32,6 +32,13 @@ export type NotesContextMenuState =
       blockId: string;
       pageLinkId: string;
       anchor: PanePoint;
+    }
+  | {
+      target: "heading-reference";
+      blockId: string;
+      blockType: NoteBlockType;
+      sourceReference: DocumentSourceReference;
+      anchor: PanePoint;
     };
 
 type UseContextMenuControllerArgs = {

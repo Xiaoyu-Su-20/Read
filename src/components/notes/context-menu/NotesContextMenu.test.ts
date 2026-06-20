@@ -42,6 +42,7 @@ describe("NotesContextMenu", () => {
         onAddHeadingPagemark: vi.fn(),
         onRemoveHeadingReference: vi.fn(),
         onOpenPage: vi.fn(),
+        onOpenHeadingReferencePage: vi.fn(),
         onEditPageLink: vi.fn(),
         onCopyPageReference: vi.fn(),
         onRemovePageLink: vi.fn(),

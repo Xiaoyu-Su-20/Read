@@ -10,6 +10,12 @@ import {
 } from "react";
 
 import { debugAction, debugLocalAction } from "../lib/debugLog";
+import {
+  buildNativeSelectedRunFragments,
+  normalizeSelectedRunFragments,
+  sanitizePdfCopiedText,
+  type NativePdfSelectionLike
+} from "../lib/reader/PdfCopyNormalizer";
 import type {
   NativeTextChar,
   NativeTextPagePayload,
@@ -194,6 +200,24 @@ function buildSelectionText(textLayer: NativeTextPagePayload, selection: Selecti
   }
 
   return selectedLines.join("\n");
+}
+
+function normalizeNativeSelectionText(
+  textLayer: NativeTextPagePayload,
+  selection: SelectionState | null
+) {
+  if (!selection) {
+    return "";
+  }
+
+  const normalizedText = normalizeSelectedRunFragments(
+    buildNativeSelectedRunFragments(textLayer, selection as NativePdfSelectionLike)
+  );
+  if (normalizedText) {
+    return normalizedText;
+  }
+
+  return sanitizePdfCopiedText(buildSelectionText(textLayer, selection));
 }
 
 function buildHighlightRects(
@@ -394,7 +418,7 @@ const NativePdfTextLayer = memo(function NativePdfTextLayer({
       if (!currentTextLayer || !selectedRange(currentSelection)) {
         return;
       }
-      const selectedText = buildSelectionText(currentTextLayer, currentSelection);
+      const selectedText = normalizeNativeSelectionText(currentTextLayer, currentSelection);
       if (!selectedText) {
         return;
       }

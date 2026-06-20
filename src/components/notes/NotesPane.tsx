@@ -662,7 +662,7 @@ const NotesPane = memo(function NotesPane({
   }
 
   function removeHeadingReference() {
-    if (contextMenuState?.target !== "body") {
+    if (contextMenuState?.target !== "body" && contextMenuState?.target !== "heading-reference") {
       return;
     }
 
@@ -681,6 +681,28 @@ const NotesPane = memo(function NotesPane({
     }
 
     onNavigateToTarget(target);
+  }
+
+  function handleHeadingReferenceContextMenu(args: {
+    blockId: string;
+    blockType: Exclude<NoteBlockType, "paragraph">;
+    clientX: number;
+    clientY: number;
+    reference: NonNullable<NoteDocument["blocks"][number]["sourceReference"]>;
+  }) {
+    const paneElement = paneRef.current;
+    if (!paneElement) {
+      return;
+    }
+
+    closeInlineOverlays();
+    openMenu({
+      target: "heading-reference",
+      blockId: args.blockId,
+      blockType: args.blockType,
+      sourceReference: args.reference,
+      anchor: toPanePoint(args.clientX, args.clientY, paneElement)
+    });
   }
 
   useEffect(() => {
@@ -1200,12 +1222,13 @@ const NotesPane = memo(function NotesPane({
               loading={loading}
               currentPage={currentPage}
               onChangeBlocks={onChangeBlocks}
-              onBlur={() => {
-                void onFlush();
-              }}
-              onOpenPageLink={handlePageLinkOpen}
-              onOpenHeadingReference={handleHeadingReferenceOpen}
-            />
+            onBlur={() => {
+              void onFlush();
+            }}
+            onOpenPageLink={handlePageLinkOpen}
+            onOpenHeadingReference={handleHeadingReferenceOpen}
+            onOpenHeadingReferenceContextMenu={handleHeadingReferenceContextMenu}
+          />
           ) : (
             <div className="notes-pane__empty">
             </div>
@@ -1398,6 +1421,14 @@ const NotesPane = memo(function NotesPane({
           if (!node) {
             return;
           }
+          editorRef.current?.clearSelectedBlock();
+          closeMenu();
+        }}
+        onOpenHeadingReferencePage={() => {
+          if (contextMenuState?.target !== "heading-reference") {
+            return;
+          }
+          handleHeadingReferenceOpen(contextMenuState.sourceReference);
           editorRef.current?.clearSelectedBlock();
           closeMenu();
         }}

@@ -31,6 +31,7 @@ export type ReaderPreferences = {
   showPageNumbers: boolean;
   twoPageView: boolean;
   verticalScrolling: boolean;
+  autoHidePageResizer: boolean;
 };
 
 export type AppSettingsSchema = {
@@ -121,7 +122,8 @@ function normalizeReaderPreferences(value: unknown): ReaderPreferences {
     fullscreenMode: normalizeBoolean(record.fullscreenMode, false),
     showPageNumbers: normalizeBoolean(record.showPageNumbers, true),
     twoPageView: normalizeBoolean(record.twoPageView, false),
-    verticalScrolling: normalizeBoolean(record.verticalScrolling, true)
+    verticalScrolling: normalizeBoolean(record.verticalScrolling, true),
+    autoHidePageResizer: normalizeBoolean(record.autoHidePageResizer, true)
   };
 }
 
@@ -454,7 +456,8 @@ export const appSettingsRegistry = {
       fullscreenMode: false,
       showPageNumbers: true,
       twoPageView: false,
-      verticalScrolling: true
+      verticalScrolling: true,
+      autoHidePageResizer: true
     },
     normalize: normalizeReaderPreferences
   },

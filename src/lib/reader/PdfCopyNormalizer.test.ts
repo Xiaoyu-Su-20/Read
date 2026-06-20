@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildNativeSelectedRunFragments,
   buildPageTextRunSnapshots,
   extractSelectedRunFragments,
   normalizeSelectedRunFragments,
+  type NativePdfSelectionLike,
   type PdfSelectedTextRunFragment,
   type PdfTextRunSnapshot
 } from "./PdfCopyNormalizer";
-import type { PageTextLayerData } from "../types";
+import type { NativeTextPagePayload, PageTextLayerData } from "../types";
 
 function createFakeSpan(text: string) {
   const textNode = {
@@ -85,6 +87,63 @@ function createRun(
     hasEOL: overrides.hasEOL ?? false,
     selectedStart: overrides.selectedStart ?? 0,
     selectedEnd: overrides.selectedEnd ?? text.length
+  };
+}
+
+function createNativeChar(
+  index: number,
+  text: string,
+  {
+    lineIndex = 0,
+    left,
+    top = 0,
+    width = 6,
+    height = 10,
+    baseline,
+    size = 10
+  }: {
+    lineIndex?: number;
+    left: number;
+    top?: number;
+    width?: number;
+    height?: number;
+    baseline?: number;
+    size?: number;
+  }
+) {
+  const resolvedBaseline = baseline ?? top + height;
+  return {
+    index,
+    lineIndex,
+    text,
+    quad: {
+      ul: { x: left, y: top },
+      ur: { x: left + width, y: top },
+      ll: { x: left, y: resolvedBaseline },
+      lr: { x: left + width, y: resolvedBaseline }
+    },
+    origin: { x: left, y: resolvedBaseline },
+    size,
+    flags: 0
+  };
+}
+
+function createNativeTextLayer(
+  chars: NativeTextPagePayload["chars"],
+  lines: NativeTextPagePayload["lines"]
+): NativeTextPagePayload {
+  return {
+    pageNumber: 1,
+    sourceWidth: 100,
+    sourceHeight: 100,
+    bounds: {
+      x0: 0,
+      y0: 0,
+      x1: 100,
+      y1: 100
+    },
+    chars,
+    lines
   };
 }
 
@@ -258,6 +317,92 @@ describe("PdfCopyNormalizer", () => {
     ]);
 
     expect(result).toBe("distinction");
+  });
+
+  it("normalizes native text-layer selections across lines", () => {
+    const chars = [
+      ...Array.from("distinc-").map((text, index) =>
+        createNativeChar(index, text, {
+          left: index * 6,
+          lineIndex: 0,
+          top: 0
+        })
+      ),
+      ...Array.from("tion").map((text, offset) =>
+        createNativeChar(offset + 8, text, {
+          left: offset * 6,
+          lineIndex: 1,
+          top: 12
+        })
+      )
+    ];
+    const textLayer = createNativeTextLayer(chars, [
+      {
+        index: 0,
+        charStart: 0,
+        charEnd: 8,
+        bounds: { x0: 0, y0: 0, x1: 48, y1: 10 },
+        text: "distinc-"
+      },
+      {
+        index: 1,
+        charStart: 8,
+        charEnd: 12,
+        bounds: { x0: 0, y0: 12, x1: 24, y1: 22 },
+        text: "tion"
+      }
+    ]);
+
+    const fragments = buildNativeSelectedRunFragments(textLayer, {
+      anchorIndex: 0,
+      focusIndex: chars.length - 1
+    } satisfies NativePdfSelectionLike);
+
+    expect(normalizeSelectedRunFragments(fragments)).toBe("distinction");
+  });
+
+  it("preserves superscript footnote normalization for native text-layer selections", () => {
+    const chars = [
+      ...Array.from("life.").map((text, index) =>
+        createNativeChar(index, text, {
+          left: index * 6,
+          lineIndex: 0,
+          top: 0,
+          size: 10
+        })
+      ),
+      createNativeChar(5, "1", {
+        left: 31,
+        lineIndex: 0,
+        top: 0.3,
+        baseline: 8.2,
+        size: 9.9
+      }),
+      createNativeChar(6, "0", {
+        left: 36,
+        lineIndex: 0,
+        top: 0.3,
+        baseline: 8.2,
+        size: 9.9
+      })
+    ];
+    const textLayer = createNativeTextLayer(chars, [
+      {
+        index: 0,
+        charStart: 0,
+        charEnd: chars.length,
+        bounds: { x0: 0, y0: 0, x1: 42, y1: 10 },
+        text: "life.10"
+      }
+    ]);
+
+    const fragments = buildNativeSelectedRunFragments(textLayer, {
+      anchorIndex: 0,
+      focusIndex: chars.length - 1
+    } satisfies NativePdfSelectionLike);
+
+    expect(fragments.map((fragment) => fragment.text)).toEqual(["life.", "10"]);
+    expect(normalizeSelectedRunFragments(fragments)).toBe("life.[10]");
   });
 
   it("joins visual prose lines inside the same paragraph", () => {

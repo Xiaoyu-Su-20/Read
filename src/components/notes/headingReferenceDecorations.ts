@@ -14,7 +14,7 @@ export type HeadingReferenceRect = {
 
 export type HeadingReferenceDecoration = {
   blockId: string;
-  blockType: NoteBlockType;
+  blockType: Exclude<NoteBlockType, "paragraph">;
   reference: DocumentSourceReference;
   left: number;
   top: number;
@@ -44,7 +44,7 @@ export function resolveHeadingReferenceAnchorRect(
 
 export function createHeadingReferenceDecoration(args: {
   blockId: string;
-  blockType: NoteBlockType;
+  blockType: Exclude<NoteBlockType, "paragraph">;
   reference: DocumentSourceReference;
   anchorRect: HeadingReferenceRect;
   containerRect: Pick<HeadingReferenceRect, "left" | "top">;

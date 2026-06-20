@@ -49,7 +49,8 @@ describe("HeadingReferenceOverlay", () => {
     const markup = renderToStaticMarkup(
       createElement(HeadingReferenceOverlay, {
         decorations,
-        onOpenReference: vi.fn()
+        onOpenReference: vi.fn(),
+        onOpenContextMenu: vi.fn()
       })
     );
 
@@ -64,9 +65,11 @@ describe("HeadingReferenceOverlay", () => {
 
   it("routes button clicks to the open-reference callback", () => {
     const onOpenReference = vi.fn();
+    const onOpenContextMenu = vi.fn();
     const tree = HeadingReferenceOverlay({
       decorations,
-      onOpenReference
+      onOpenReference,
+      onOpenContextMenu
     });
     const elements = collectElements(tree);
     const button = elements.find(
@@ -79,10 +82,11 @@ describe("HeadingReferenceOverlay", () => {
 
     const preventDefault = vi.fn();
     const stopPropagation = vi.fn();
-    const onMouseDown = button?.props.onMouseDown as ((event: unknown) => void) | undefined;
+    const onPointerDown = button?.props.onPointerDown as ((event: unknown) => void) | undefined;
     const onClick = button?.props.onClick as ((event: unknown) => void) | undefined;
 
-    onMouseDown?.({
+    onPointerDown?.({
+      button: 0,
       preventDefault,
       stopPropagation
     });
@@ -94,5 +98,41 @@ describe("HeadingReferenceOverlay", () => {
     expect(preventDefault).toHaveBeenCalledTimes(2);
     expect(stopPropagation).toHaveBeenCalledTimes(2);
     expect(onOpenReference).toHaveBeenCalledWith(decorations[0]?.reference);
+  });
+
+  it("routes context menu events to the heading-reference menu callback", () => {
+    const onOpenContextMenu = vi.fn();
+    const tree = HeadingReferenceOverlay({
+      decorations,
+      onOpenReference: vi.fn(),
+      onOpenContextMenu
+    });
+    const elements = collectElements(tree);
+    const button = elements.find(
+      (element) =>
+        element.props.className ===
+        "note-editor__heading-reference note-editor__heading-reference--heading1"
+    );
+
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+    const onContextMenu = button?.props.onContextMenuCapture as ((event: unknown) => void) | undefined;
+
+    onContextMenu?.({
+      clientX: 120,
+      clientY: 88,
+      preventDefault,
+      stopPropagation
+    });
+
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(stopPropagation).toHaveBeenCalledTimes(1);
+    expect(onOpenContextMenu).toHaveBeenCalledWith({
+      blockId: "heading-1",
+      blockType: "heading1",
+      clientX: 120,
+      clientY: 88,
+      reference: decorations[0]?.reference
+    });
   });
 });

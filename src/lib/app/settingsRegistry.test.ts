@@ -24,7 +24,8 @@ describe("settingsRegistry", () => {
           fullscreenMode: false,
           showPageNumbers: true,
           twoPageView: false,
-          verticalScrolling: true
+          verticalScrolling: true,
+          autoHidePageResizer: true
         },
         activeThemeId: "builtin-midnight",
         customThemes: []
@@ -76,7 +77,8 @@ describe("settingsRegistry", () => {
           fullscreenMode: true,
           showPageNumbers: false,
           twoPageView: true,
-          verticalScrolling: false
+          verticalScrolling: false,
+          autoHidePageResizer: true
         },
         activeThemeId: "custom-migrated",
         customThemes: [
@@ -146,7 +148,8 @@ describe("settingsRegistry", () => {
           fullscreenMode: false,
           showPageNumbers: true,
           twoPageView: false,
-          verticalScrolling: true
+          verticalScrolling: true,
+          autoHidePageResizer: true
         },
         activeThemeId: "custom-1",
         customThemes: [
@@ -215,7 +218,8 @@ describe("settingsRegistry", () => {
           fullscreenMode: false,
           showPageNumbers: true,
           twoPageView: false,
-          verticalScrolling: true
+          verticalScrolling: true,
+          autoHidePageResizer: true
         },
         activeThemeId: "custom-1",
         customThemes: [
@@ -282,7 +286,8 @@ describe("settingsRegistry", () => {
         fullscreenMode: false,
         showPageNumbers: true,
         twoPageView: false,
-        verticalScrolling: true
+        verticalScrolling: true,
+        autoHidePageResizer: true
       },
       activeThemeId: "builtin-midnight",
       customThemes: [
@@ -330,7 +335,8 @@ describe("settingsRegistry", () => {
         fullscreenMode: true,
         showPageNumbers: false,
         twoPageView: true,
-        verticalScrolling: false
+        verticalScrolling: false,
+        autoHidePageResizer: true
       },
       customThemes: [
         {

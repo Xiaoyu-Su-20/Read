@@ -1,6 +1,6 @@
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
-import type { PageTextLayerData } from "../types";
+import type { NativeTextPagePayload, PageTextLayerData } from "../types";
 
 const TEXT_NODE_TYPE = 3;
 const DEFAULT_ASCENT_RATIO = 0.8;
@@ -42,6 +42,11 @@ export type PdfRangeLike = {
 export type PdfSelectionLike = {
   getRangeAt: (index: number) => PdfRangeLike;
   rangeCount: number;
+};
+
+export type NativePdfSelectionLike = {
+  anchorIndex: number;
+  focusIndex: number;
 };
 
 type TextItem = import("pdfjs-dist/types/src/display/api").TextItem;
@@ -209,6 +214,13 @@ function median(values: number[]) {
     return (sorted[middle - 1] + sorted[middle]) / 2;
   }
   return sorted[middle] ?? 0;
+}
+
+function average(values: number[]) {
+  if (values.length === 0) {
+    return 0;
+  }
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
 function joinTextWithSeparator(left: string, right: string, separator: string) {
@@ -414,6 +426,165 @@ function normalizeLineFragments(line: LineGroup) {
 
 export function sanitizePdfCopiedText(value: string) {
   return removeNullCharacters(pdfjsLib.normalizeUnicode(value));
+}
+
+function quadBounds(quad: NativeTextPagePayload["chars"][number]["quad"]) {
+  const xs = [quad.ul.x, quad.ur.x, quad.ll.x, quad.lr.x];
+  const ys = [quad.ul.y, quad.ur.y, quad.ll.y, quad.lr.y];
+  return {
+    left: Math.min(...xs),
+    right: Math.max(...xs),
+    top: Math.min(...ys),
+    bottom: Math.max(...ys)
+  };
+}
+
+function shouldSplitNativeFragment(
+  currentText: string,
+  previousChar: NativeTextPagePayload["chars"][number] | null,
+  previousBounds: ReturnType<typeof quadBounds> | null,
+  nextChar: NativeTextPagePayload["chars"][number],
+  nextBounds: ReturnType<typeof quadBounds>
+) {
+  if (!currentText) {
+    return false;
+  }
+
+  if (/\s$/.test(currentText) || /^\s/.test(nextChar.text)) {
+    return true;
+  }
+
+  if (!previousChar || !previousBounds) {
+    return false;
+  }
+
+  if (previousChar.lineIndex !== nextChar.lineIndex) {
+    return true;
+  }
+
+  const previousBaseline = average([previousChar.quad.ll.y, previousChar.quad.lr.y]);
+  const nextBaseline = average([nextChar.quad.ll.y, nextChar.quad.lr.y]);
+  const baselineDelta = Math.abs(nextBaseline - previousBaseline);
+  const baselineThreshold = Math.max(0.5, Math.min(previousChar.size, nextChar.size) * 0.18);
+  if (baselineDelta > baselineThreshold) {
+    return true;
+  }
+
+  const sizeDelta = Math.abs(nextChar.size - previousChar.size);
+  const sizeThreshold = Math.max(0.5, Math.min(previousChar.size, nextChar.size) * 0.12);
+  if (sizeDelta > sizeThreshold) {
+    return true;
+  }
+
+  const gap = nextBounds.left - previousBounds.right;
+  const gapThreshold = Math.max(0.5, Math.min(previousChar.size, nextChar.size) * 0.18);
+  if (gap > gapThreshold) {
+    return true;
+  }
+
+  const numericTransition =
+    /^\d+$/.test(nextChar.text) !== /^\d+$/.test(previousChar.text) &&
+    gap >= -Math.max(0.5, Math.min(previousChar.size, nextChar.size) * 0.05);
+  if (numericTransition && baselineDelta > baselineThreshold * 0.75) {
+    return true;
+  }
+
+  return false;
+}
+
+export function buildNativeSelectedRunFragments(
+  textLayer: NativeTextPagePayload,
+  selection: NativePdfSelectionLike | null | undefined
+) {
+  if (!selection || textLayer.chars.length === 0) {
+    return [];
+  }
+
+  const start = Math.max(0, Math.min(selection.anchorIndex, selection.focusIndex));
+  const end = Math.min(
+    textLayer.chars.length - 1,
+    Math.max(selection.anchorIndex, selection.focusIndex)
+  );
+  if (end < start) {
+    return [];
+  }
+
+  const fragments: PdfSelectedTextRunFragment[] = [];
+  let fragmentChars: NativeTextPagePayload["chars"] = [];
+  let fragmentBounds: Array<ReturnType<typeof quadBounds>> = [];
+
+  const flushFragment = () => {
+    if (fragmentChars.length === 0) {
+      return;
+    }
+
+    const text = fragmentChars.map((char) => char.text).join("");
+    const bounds = {
+      left: Math.min(...fragmentBounds.map((bound) => bound.left)),
+      right: Math.max(...fragmentBounds.map((bound) => bound.right)),
+      top: Math.min(...fragmentBounds.map((bound) => bound.top)),
+      bottom: Math.max(...fragmentBounds.map((bound) => bound.bottom))
+    };
+    const baselines = fragmentChars.map((char) => average([char.quad.ll.y, char.quad.lr.y]));
+    const sizes = fragmentChars.map((char) => char.size);
+    const span = {
+      nodeType: 1,
+      textContent: text,
+      parentNode: null,
+      childNodes: []
+    } as unknown as Node;
+
+    fragments.push({
+      pageIndex: fragments.length,
+      text,
+      span,
+      left: bounds.left,
+      right: bounds.right,
+      top: bounds.top,
+      bottom: bounds.bottom,
+      baseline: average(baselines),
+      fontSize: average(sizes),
+      height: Math.max(...fragmentBounds.map((bound) => bound.bottom - bound.top)),
+      width: bounds.right - bounds.left,
+      isNumeric: /^\d+$/.test(text),
+      hasEOL: false,
+      selectedStart: 0,
+      selectedEnd: text.length
+    });
+
+    fragmentChars = [];
+    fragmentBounds = [];
+  };
+
+  for (let index = start; index <= end; index += 1) {
+    const char = textLayer.chars[index];
+    if (!char) {
+      flushFragment();
+      continue;
+    }
+
+    const bounds = quadBounds(char.quad);
+    const previousChar = fragmentChars[fragmentChars.length - 1] ?? null;
+    const previousBounds = fragmentBounds[fragmentBounds.length - 1] ?? null;
+    if (
+      previousChar &&
+      shouldSplitNativeFragment(
+        fragmentChars.map((item) => item.text).join(""),
+        previousChar,
+        previousBounds,
+        char,
+        bounds
+      )
+    ) {
+      flushFragment();
+    }
+
+    fragmentChars.push(char);
+    fragmentBounds.push(bounds);
+  }
+
+  flushFragment();
+  return fragments;
 }
 
 export function buildPageTextRunSnapshots(

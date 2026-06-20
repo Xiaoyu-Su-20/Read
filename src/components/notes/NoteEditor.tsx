@@ -115,6 +115,13 @@ type NoteEditorProps = {
   onBlur: () => void | Promise<void>;
   onOpenPageLink: (node: NotePageLinkNode) => void;
   onOpenHeadingReference: (reference: DocumentSourceReference) => void;
+  onOpenHeadingReferenceContextMenu: (args: {
+    blockId: string;
+    blockType: Exclude<NoteBlockType, "paragraph">;
+    clientX: number;
+    clientY: number;
+    reference: DocumentSourceReference;
+  }) => void;
 };
 
 function isHeadingBlockType(
@@ -166,7 +173,16 @@ function headingReferenceDecorationsEqual(
 }
 
 const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEditor(
-  { note, loading, currentPage, onChangeBlocks, onBlur, onOpenPageLink, onOpenHeadingReference },
+  {
+    note,
+    loading,
+    currentPage,
+    onChangeBlocks,
+    onBlur,
+    onOpenPageLink,
+    onOpenHeadingReference,
+    onOpenHeadingReferenceContextMenu
+  },
   ref
 ) {
   const editorRef = useRef<HTMLDivElement | null>(null);
@@ -1138,6 +1154,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       <HeadingReferenceOverlay
         decorations={headingReferenceDecorations}
         onOpenReference={onOpenHeadingReference}
+        onOpenContextMenu={onOpenHeadingReferenceContextMenu}
       />
     </div>
   );

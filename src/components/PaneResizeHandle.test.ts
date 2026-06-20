@@ -9,6 +9,7 @@ describe("PaneResizeHandle", () => {
     const markup = renderToStaticMarkup(
       createElement(PaneResizeHandle, {
         active: true,
+        autoHide: true,
         hidden: false,
         separatorProps: {
           role: "separator",
@@ -31,7 +32,8 @@ describe("PaneResizeHandle", () => {
     expect(markup).toContain('role="separator"');
     expect(markup).toContain('aria-orientation="vertical"');
     expect(markup).toContain('aria-valuenow="46"');
-    expect(markup).toContain('class="pane-resize-handle pane-resize-handle--active"');
+    expect(markup).toContain('class="pane-resize-handle pane-resize-handle--active pane-resize-handle--auto-hide pane-resize-handle--visible"');
+    expect(markup).toContain('class="pane-resize-handle__zone"');
     expect(markup).toContain('class="pane-resize-handle__grip"');
     expect(markup.match(/pane-resize-handle__dots/g)?.length).toBeGreaterThanOrEqual(1);
   });
@@ -40,6 +42,7 @@ describe("PaneResizeHandle", () => {
     const markup = renderToStaticMarkup(
       createElement(PaneResizeHandle, {
         active: false,
+        autoHide: false,
         hidden: true,
         separatorProps: {
           role: "separator",

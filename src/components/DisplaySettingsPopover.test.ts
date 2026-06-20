@@ -33,7 +33,8 @@ describe("DisplaySettingsPopover", () => {
           fullscreenMode: false,
           showPageNumbers: true,
           twoPageView: false,
-          verticalScrolling: true
+          verticalScrolling: true,
+          autoHidePageResizer: true
         },
         themeList: [
           {
@@ -110,7 +111,8 @@ describe("DisplaySettingsPopover", () => {
           fullscreenMode: false,
           showPageNumbers: true,
           twoPageView: false,
-          verticalScrolling: true
+          verticalScrolling: true,
+          autoHidePageResizer: true
         },
         themeList: [builtinTheme],
         onCreateTheme: vi.fn(),

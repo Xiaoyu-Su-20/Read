@@ -1,4 +1,4 @@
-import type { MouseEvent } from "react";
+import type { MouseEvent, PointerEvent } from "react";
 
 import type { DocumentSourceReference } from "../../lib/types";
 import type { HeadingReferenceDecoration } from "./headingReferenceDecorations";
@@ -6,6 +6,15 @@ import type { HeadingReferenceDecoration } from "./headingReferenceDecorations";
 type HeadingReferenceOverlayProps = {
   decorations: HeadingReferenceDecoration[];
   onOpenReference: (reference: DocumentSourceReference) => void;
+  onOpenContextMenu: (
+    args: {
+      blockId: string;
+      blockType: HeadingReferenceDecoration["blockType"];
+      clientX: number;
+      clientY: number;
+      reference: DocumentSourceReference;
+    }
+  ) => void;
 };
 
 function BookmarkIcon() {
@@ -21,9 +30,18 @@ function suppressOverlayPointerEvent(event: MouseEvent<HTMLButtonElement>) {
   event.stopPropagation();
 }
 
+function handleOverlayPointerDown(event: PointerEvent<HTMLButtonElement>) {
+  event.stopPropagation();
+
+  if (event.button === 0) {
+    event.preventDefault();
+  }
+}
+
 export default function HeadingReferenceOverlay({
   decorations,
-  onOpenReference
+  onOpenReference,
+  onOpenContextMenu
 }: HeadingReferenceOverlayProps) {
   if (decorations.length === 0) {
     return null;
@@ -46,10 +64,20 @@ export default function HeadingReferenceOverlay({
             left: decoration.left,
             top: decoration.top
           }}
-          onMouseDown={suppressOverlayPointerEvent}
+          onPointerDown={handleOverlayPointerDown}
           onClick={(event) => {
             suppressOverlayPointerEvent(event);
             onOpenReference(decoration.reference);
+          }}
+          onContextMenuCapture={(event) => {
+            suppressOverlayPointerEvent(event);
+            onOpenContextMenu({
+              blockId: decoration.blockId,
+              blockType: decoration.blockType,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              reference: decoration.reference
+            });
           }}
         >
           <BookmarkIcon />

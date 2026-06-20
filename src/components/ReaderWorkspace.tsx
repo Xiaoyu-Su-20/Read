@@ -1,4 +1,4 @@
-import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 
 import NotesViewport from "./NotesViewport";
 import PaneResizeHandle from "./PaneResizeHandle";
@@ -73,10 +73,9 @@ type ReaderWorkspaceProps = {
   onToggleFullscreen: () => void | Promise<void>;
   readerPaneSplitRatio: number;
   hidePaneResizeHandle: boolean;
+  autoHidePaneResizeHandle: boolean;
   onChangeReaderPaneSplitRatio: (nextRatio: number) => void;
 };
-
-const STATIC_HEADER_SPLIT_RATIO = 0.46;
 
 export default function ReaderWorkspace({
   activeViewTransition,
@@ -123,6 +122,7 @@ export default function ReaderWorkspace({
   onToggleFullscreen,
   readerPaneSplitRatio,
   hidePaneResizeHandle,
+  autoHidePaneResizeHandle,
   onChangeReaderPaneSplitRatio
 }: ReaderWorkspaceProps) {
   const document = readerSession?.document ?? null;
@@ -137,13 +137,6 @@ export default function ReaderWorkspace({
       onCommitRatio: onChangeReaderPaneSplitRatio,
       minDocumentWidthPx: autoMaximizeMinDocumentWidth
     });
-  const headerStyle =
-    ({
-      ["--reader-header-document-ratio" as string]: STATIC_HEADER_SPLIT_RATIO.toFixed(4),
-      ["--reader-header-notes-ratio" as string]: (1 - STATIC_HEADER_SPLIT_RATIO).toFixed(4),
-      ["--reader-header-document-width" as string]: `calc((100% - var(--reader-splitter-line-width)) * ${STATIC_HEADER_SPLIT_RATIO.toFixed(4)})`,
-      ["--reader-header-notes-width" as string]: `calc((100% - var(--reader-splitter-line-width)) * ${(1 - STATIC_HEADER_SPLIT_RATIO).toFixed(4)})`
-    }) as CSSProperties;
   const hasOpenDocument = document != null && documentHeaderPageCount > 0;
   const documentPageLabel = hasOpenDocument
     ? `${documentHeaderCurrentPage} / ${documentHeaderPageCount}`
@@ -181,143 +174,150 @@ export default function ReaderWorkspace({
       className={`reader-workspace${showHeaders ? "" : " reader-workspace--immersive"}`}
     >
       {showHeaders ? (
-        <div className="reader-workspace__header-shell" style={headerStyle}>
+        <div className="reader-workspace__header-shell">
           <header
-            className="reader-workspace__header reader-workspace__header--document"
+            className="reader-workspace__header"
             onMouseDown={onHeaderMouseDown}
           >
-            <div className="reader-workspace__document-header-layout">
-              <div className="reader-workspace__document-header-title-region">
-                <div className="reader-workspace__header-main">
-                  <div className="reader-workspace__header-copy">
-                    <strong className="reader-workspace__header-title">{documentHeaderTitle}</strong>
+            <div className="reader-workspace__toolbar">
+              <div className="reader-workspace__toolbar-side reader-workspace__toolbar-side--left">
+                <div className="reader-workspace__document-header-layout reader-workspace__header-left">
+                  <div className="reader-workspace__header-group reader-workspace__header-group--title">
+                    <div className="reader-workspace__header-main">
+                      <div className="reader-workspace__header-copy">
+                        <strong className="reader-workspace__header-title">{documentHeaderTitle}</strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="reader-workspace__header-group reader-workspace__header-group--page">
+                    <button
+                      className="reader-workspace__header-button reader-workspace__header-button--compact"
+                      type="button"
+                      aria-label="Previous page"
+                      disabled={!hasOpenDocument}
+                      data-no-window-drag
+                      onClick={() => handleHeaderPageNavigation("previous")}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                        <path d="m14.5 6.5-5 5 5 5" />
+                      </svg>
+                    </button>
+                    <span className="reader-workspace__header-value reader-workspace__header-value--page" data-no-window-drag>
+                      {documentPageLabel}
+                    </span>
+                    <button
+                      className="reader-workspace__header-button reader-workspace__header-button--compact"
+                      type="button"
+                      aria-label="Next page"
+                      disabled={!hasOpenDocument}
+                      data-no-window-drag
+                      onClick={() => handleHeaderPageNavigation("next")}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                        <path d="m9.5 6.5 5 5-5 5" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="reader-workspace__header-group reader-workspace__header-group--zoom">
+                    <button
+                      className="reader-workspace__header-button reader-workspace__header-button--compact"
+                      type="button"
+                      aria-label="Zoom out"
+                      disabled={!hasOpenDocument}
+                      data-no-window-drag
+                      onClick={() => viewerApi?.zoomOut()}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                        <path d="M6 12h12" />
+                      </svg>
+                    </button>
+                    <span className="reader-workspace__header-value reader-workspace__header-value--zoom" data-no-window-drag>
+                      {documentZoomLabel}
+                    </span>
+                    <button
+                      className="reader-workspace__header-button reader-workspace__header-button--compact"
+                      type="button"
+                      aria-label="Zoom in"
+                      disabled={zoomInDisabled}
+                      data-no-window-drag
+                      onClick={() => viewerApi?.zoomIn()}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                        <path d="M12 6v12" />
+                        <path d="M6 12h12" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="reader-workspace__header-group reader-workspace__header-group--lock">
+                    <button
+                      className="reader-workspace__header-button reader-workspace__header-button--lock"
+                      type="button"
+                      aria-label={
+                        documentFitMode === "free"
+                          ? "Switch to auto maximize"
+                          : "Switch to free zoom"
+                      }
+                      aria-pressed={documentFitMode === "auto-maximize"}
+                      disabled={!hasOpenDocument}
+                      data-no-window-drag
+                      onClick={() =>
+                        viewerApi?.setFitMode(
+                          documentFitMode === "free" ? "auto-maximize" : "free"
+                        )
+                      }
+                    >
+                      {documentFitMode === "free" ? (
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.95"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M7.35 11V7.55C7.35 5.15 8.9 3.65 12.05 3.65C14.15 3.65 15.42 4.48 16.15 5.72" />
+                          <path d="M4.85 11H19.15V20.35H4.85Z" />
+                        </svg>
+                      ) : (
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.95"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M7.35 11V7.55C7.35 5.15 8.95 3.65 12 3.65C15.05 3.65 16.65 5.15 16.65 7.55V11" />
+                          <path d="M4.85 11H19.15V20.35H4.85Z" />
+                        </svg>
+                      )}
+                    </button>
                   </div>
                 </div>
               </div>
 
-              <div className="reader-workspace__document-header-controls reader-workspace__document-header-controls--page">
-                <button
-                  className="reader-workspace__header-button reader-workspace__header-button--compact"
-                  type="button"
-                  aria-label="Previous page"
-                  disabled={!hasOpenDocument}
-                  data-no-window-drag
-                  onClick={() => handleHeaderPageNavigation("previous")}
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                    <path d="m14.5 6.5-5 5 5 5" />
-                  </svg>
-                </button>
-                <span className="reader-workspace__header-value" data-no-window-drag>
-                  {documentPageLabel}
-                </span>
-                <button
-                  className="reader-workspace__header-button reader-workspace__header-button--compact"
-                  type="button"
-                  aria-label="Next page"
-                  disabled={!hasOpenDocument}
-                  data-no-window-drag
-                  onClick={() => handleHeaderPageNavigation("next")}
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                    <path d="m9.5 6.5 5 5-5 5" />
-                  </svg>
-                </button>
+              <div className="reader-workspace__header-center" data-no-window-drag>
+                <div className="reader-workspace__notes-header-search">
+                  <WorkspaceSearchField
+                    controller={searchController}
+                    focusRequest={searchFocusRequest}
+                    onOpenDocument={onSearchOpenDocument}
+                    onGoToPage={onSearchGoToPage}
+                    onRevealNoteBlock={onSearchRevealNoteBlock}
+                  />
+                </div>
               </div>
 
-              <div className="reader-workspace__document-header-controls reader-workspace__document-header-controls--zoom">
-                <button
-                  className="reader-workspace__header-button reader-workspace__header-button--compact"
-                  type="button"
-                  aria-label="Zoom out"
-                  disabled={!hasOpenDocument}
+              <div className="reader-workspace__toolbar-side reader-workspace__toolbar-side--right">
+                <div
+                  id="reader-workspace-notes-header-tools"
+                  className="reader-workspace__notes-header-tools reader-workspace__header-right"
                   data-no-window-drag
-                  onClick={() => viewerApi?.zoomOut()}
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                    <path d="M6 12h12" />
-                  </svg>
-                </button>
-                <span className="reader-workspace__header-value" data-no-window-drag>
-                  {documentZoomLabel}
-                </span>
-                <button
-                  className="reader-workspace__header-button reader-workspace__header-button--compact"
-                  type="button"
-                  aria-label="Zoom in"
-                  disabled={zoomInDisabled}
-                  data-no-window-drag
-                  onClick={() => viewerApi?.zoomIn()}
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                    <path d="M12 6v12" />
-                    <path d="M6 12h12" />
-                  </svg>
-                </button>
-                <button
-                  className="reader-workspace__header-button reader-workspace__header-button--lock"
-                  type="button"
-                  aria-label={
-                    documentFitMode === "free"
-                      ? "Switch to auto maximize"
-                      : "Switch to free zoom"
-                  }
-                  aria-pressed={documentFitMode === "auto-maximize"}
-                  disabled={!hasOpenDocument}
-                  data-no-window-drag
-                  onClick={() =>
-                    viewerApi?.setFitMode(
-                      documentFitMode === "free" ? "auto-maximize" : "free"
-                    )
-                  }
-                >
-                  {documentFitMode === "free" ? (
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.95"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="M7.35 11V7.55C7.35 5.15 8.9 3.65 12.05 3.65C14.15 3.65 15.42 4.48 16.15 5.72" />
-                      <path d="M4.85 11H19.15V20.35H4.85Z" />
-                    </svg>
-                  ) : (
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.95"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="M7.35 11V7.55C7.35 5.15 8.95 3.65 12 3.65C15.05 3.65 16.65 5.15 16.65 7.55V11" />
-                      <path d="M4.85 11H19.15V20.35H4.85Z" />
-                    </svg>
-                  )}
-                </button>
-              </div>
-            </div>
-          </header>
-          <header
-            className="reader-workspace__header reader-workspace__header--notes"
-            onMouseDown={onHeaderMouseDown}
-          >
-            <div className="reader-workspace__notes-header-trailing" data-no-window-drag>
-              <div className="reader-workspace__notes-header-search">
-                <WorkspaceSearchField
-                  controller={searchController}
-                  focusRequest={searchFocusRequest}
-                  onOpenDocument={onSearchOpenDocument}
-                  onGoToPage={onSearchGoToPage}
-                  onRevealNoteBlock={onSearchRevealNoteBlock}
                 />
               </div>
-              <div
-                id="reader-workspace-notes-header-tools"
-                className="reader-workspace__notes-header-tools"
-              />
             </div>
           </header>
         </div>
@@ -331,6 +331,7 @@ export default function ReaderWorkspace({
         <div className="reader-workspace__splitter">
           <PaneResizeHandle
             active={isDragging}
+            autoHide={autoHidePaneResizeHandle}
             hidden={isStackedLayout || hidePaneResizeHandle}
             separatorProps={separatorProps}
           />

@@ -56,7 +56,8 @@ const readerPreferenceDefinitions: Array<{
   { key: "fullscreenMode", label: "Fullscreen Mode" },
   { key: "showPageNumbers", label: "Show Page Numbers" },
   { key: "twoPageView", label: "Two-Page View" },
-  { key: "verticalScrolling", label: "Vertical Scrolling" }
+  { key: "verticalScrolling", label: "Vertical Scrolling" },
+  { key: "autoHidePageResizer", label: "Auto-Hide Page Resizer" }
 ];
 
 function ThemePresetCard({
