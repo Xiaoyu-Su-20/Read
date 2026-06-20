@@ -53,6 +53,8 @@ const mockRenderedPage: CachedRenderedPage = {
   pageNumber: 1,
   width: 800,
   height: 1200,
+  pageBaseWidth: 800,
+  pageBaseHeight: 1200,
   cacheKey: "cache-1",
   requestKey: "request-1",
   logicalKey: "doc-1:1:1.00",

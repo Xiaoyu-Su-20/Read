@@ -188,6 +188,8 @@ pub struct RenderedPagePayload {
     pub page_number: u32,
     pub width: u32,
     pub height: u32,
+    pub page_base_width: f32,
+    pub page_base_height: f32,
     pub cache_key: String,
     pub render_variant: RenderVariant,
     pub normalization_token: Option<String>,

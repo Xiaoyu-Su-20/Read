@@ -304,6 +304,8 @@ fn render_cache_evicts_oldest_entries_beyond_the_limit() {
             &request,
             600,
             800,
+            600.0,
+            800.0,
             vec![page_number as u8; 4],
             crate::models::RenderVariant::Raw,
             None,

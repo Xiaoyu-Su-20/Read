@@ -1440,7 +1440,6 @@ export default function CollectionViewRefresh({
             <header className="collection-header">
               <div className="collection-header__details">
                 <h1>{selectedCollection.folder.name}</h1>
-                <p>{`${books.length} item${books.length === 1 ? "" : "s"}`}</p>
               </div>
               <div className="collection-header__actions">
                 <button

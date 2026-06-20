@@ -145,7 +145,6 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
     documentHeaderZoom: 1,
     viewerApi: makeViewerApi(),
     onHeaderMouseDown: vi.fn(),
-    windowControls: null,
     searchController: createUnifiedSearchController(),
     searchFocusRequest: 0,
     commandPaletteOpen: false,

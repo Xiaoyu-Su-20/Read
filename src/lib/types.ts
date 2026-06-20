@@ -107,6 +107,8 @@ export type RenderedPagePayload = {
   pageNumber: number;
   width: number;
   height: number;
+  pageBaseWidth: number;
+  pageBaseHeight: number;
   cacheKey: string;
   renderVariant: "raw" | "normalized";
   normalizationToken: string | null;

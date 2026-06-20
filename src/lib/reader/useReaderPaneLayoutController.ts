@@ -6,11 +6,14 @@ import type {
 } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { readerDiagnostic } from "../debug/readerDiagnostics";
+import { getCurrentAutoFitCycle } from "./autoFitDebug";
 import {
   clampReaderPaneSplitRatioWithMinDocumentWidth,
   deriveReaderPaneLayout,
   getReaderPaneNotesRatio,
   getReaderPaneSplitRatioFromPointer,
+  getReaderPaneUsableWidth,
   nudgeReaderPaneSplitRatio,
   READER_PANE_STACKED_MEDIA_QUERY
 } from "./paneLayout";
@@ -90,6 +93,15 @@ export function useReaderPaneLayoutController({
   const preferredRatioRef = useRef(preferredRatio);
   const previewRatioRef = useRef(preferredRatio);
   const minDocumentWidthRef = useRef<number | null>(minDocumentWidthPx ?? null);
+  const lastPaneClampLogRef = useRef<{
+    fitCycleId: string | null;
+    nextSplitRatio: number | null;
+    resultingDocumentWidth: number | null;
+  }>({
+    fitCycleId: null,
+    nextSplitRatio: null,
+    resultingDocumentWidth: null
+  });
   const [isDragging, setIsDragging] = useState(false);
   const [isStackedLayout, setIsStackedLayout] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
@@ -118,14 +130,55 @@ export function useReaderPaneLayoutController({
   }
 
   function applyPreviewRatio(nextRatio: number, containerWidth = getContainerWidth()) {
+    const previousSplitRatio = previewRatioRef.current;
     const clampedRatio = clampPreviewRatio(nextRatio, containerWidth);
     previewRatioRef.current = clampedRatio;
-    return updateWorkspaceRatio(
+    const layout = updateWorkspaceRatio(
       containerRef.current,
       separatorRef.current,
       clampedRatio,
       containerWidth
     );
+    const fitCycle = getCurrentAutoFitCycle();
+    const minDocumentWidth = minDocumentWidthRef.current;
+    const requestedDocumentWidth = Number(
+      (getReaderPaneUsableWidth(containerWidth) * nextRatio).toFixed(2)
+    );
+    const shouldLogClamp =
+      fitCycle &&
+      typeof minDocumentWidth === "number" &&
+      Number.isFinite(minDocumentWidth) &&
+      Math.abs(clampedRatio - nextRatio) >= 0.0001 &&
+      (
+        lastPaneClampLogRef.current.fitCycleId !== fitCycle.fitCycleId ||
+        lastPaneClampLogRef.current.nextSplitRatio === null ||
+        Math.abs(layout.constrainedRatio - lastPaneClampLogRef.current.nextSplitRatio) >= 0.001 ||
+        lastPaneClampLogRef.current.resultingDocumentWidth === null ||
+        Math.abs(layout.documentWidth - lastPaneClampLogRef.current.resultingDocumentWidth) >= 1
+      );
+
+    if (shouldLogClamp) {
+      lastPaneClampLogRef.current = {
+        fitCycleId: fitCycle.fitCycleId,
+        nextSplitRatio: layout.constrainedRatio,
+        resultingDocumentWidth: layout.documentWidth
+      };
+      readerDiagnostic("pane-layout", "pane-layout.width-clamped", {
+        containerWidth: Number(containerWidth.toFixed(2)),
+        effectiveDocumentWidth: layout.documentWidth,
+        fitCycleId: fitCycle.fitCycleId,
+        minDocumentWidth: Number(minDocumentWidth.toFixed(2)),
+        nextSplitRatio: layout.constrainedRatio,
+        previousDocumentWidth: Number(
+          (getReaderPaneUsableWidth(containerWidth) * previousSplitRatio).toFixed(2)
+        ),
+        previousSplitRatio,
+        requestedDocumentWidth,
+        resultingDocumentWidth: layout.documentWidth
+      });
+    }
+
+    return layout;
   }
 
   function commitPreviewRatio() {

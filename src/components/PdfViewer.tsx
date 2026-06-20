@@ -2,7 +2,9 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type C
 
 import { type ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import { debugAction, isDebugModeEnabled } from "../lib/debugLog";
+import { readerDiagnostic } from "../lib/debug/readerDiagnostics";
 import { computePageShellOffsets } from "../lib/reader/pageLayout";
+import { beginAutoFitCycle } from "../lib/reader/autoFitDebug";
 import { useReaderController, type PresentedPage } from "../lib/reader/useReaderController";
 import {
   AUTO_MAXIMIZE_HORIZONTAL_MARGIN_PX,
@@ -122,6 +124,15 @@ const PdfViewer = memo(function PdfViewer({
   const displayZoomRef = useRef(displayZoom);
   const fitTargetZoomRef = useRef<number | null>(null);
   const fitCommitTimerRef = useRef<number | null>(null);
+  const lastAutoFitLogRef = useRef<{
+    nextZoom: number | null;
+    proposedMinDocumentWidth: number | null;
+    viewportWidth: number | null;
+  }>({
+    nextZoom: null,
+    proposedMinDocumentWidth: null,
+    viewportWidth: null
+  });
   const slotCleanupFrameRef = useRef<number | null>(null);
   const incomingPromotionCommitKeyRef = useRef<string | null>(null);
   const incomingPromotionFinalizeKeyRef = useRef<string | null>(null);
@@ -227,9 +238,9 @@ const PdfViewer = memo(function PdfViewer({
     }
 
     autoMaximizeMinDocumentWidthRef.current = Number(
-      (scaledWidth + AUTO_MAXIMIZE_HORIZONTAL_MARGIN_PX * 2).toFixed(2)
+      (layoutPage.pageBaseWidth * displayZoom + AUTO_MAXIMIZE_HORIZONTAL_MARGIN_PX * 2).toFixed(2)
     );
-  }, [fitMode, layoutPage, scaledWidth]);
+  }, [displayZoom, fitMode, layoutPage]);
 
   useEffect(() => {
     displayZoomRef.current = displayZoom;
@@ -242,12 +253,23 @@ const PdfViewer = memo(function PdfViewer({
     }
   }
 
-  function scheduleFitCommit(targetZoom: number) {
+  function scheduleFitCommit(targetZoom: number, fitCycleId: string | null) {
     clearFitCommitTimer();
     fitCommitTimerRef.current = window.setTimeout(() => {
       fitCommitTimerRef.current = null;
       commitAutoMaximizeZoom(targetZoom);
     }, AUTO_MAXIMIZE_RESIZE_SETTLE_MS);
+    readerDiagnostic(
+      "auto-fit",
+      "auto-fit.commit-requested",
+      buildOpenSessionFields({
+        committedZoom,
+        displayZoom: displayZoomRef.current,
+        fitCycleId,
+        targetZoom,
+        timerActive: fitCommitTimerRef.current !== null
+      })
+    );
   }
 
   useEffect(() => {
@@ -542,11 +564,8 @@ const PdfViewer = memo(function PdfViewer({
     }
 
     const updateAutoMaximizeZoom = () => {
-      const effectiveRenderZoom = Math.max(layoutPage.renderZoom, 0.0001);
-      // Fit against the full rendered page surface, not just the raw PDF text/page box.
-      // Normalized pages can render into a larger canonical frame than textLayerTransform.source*.
-      const baseWidth = layoutPage.width / effectiveRenderZoom;
-      const baseHeight = layoutPage.height / effectiveRenderZoom;
+      const baseWidth = layoutPage.pageBaseWidth;
+      const baseHeight = layoutPage.pageBaseHeight;
       const viewportRect = scrollSurface.getBoundingClientRect();
       const nextZoom = resolveAutoMaximizeZoom(
         viewportRect.width,
@@ -559,6 +578,25 @@ const PdfViewer = memo(function PdfViewer({
         return;
       }
 
+      const proposedMinDocumentWidth = Number(
+        (baseWidth * nextZoom + AUTO_MAXIMIZE_HORIZONTAL_MARGIN_PX * 2).toFixed(2)
+      );
+      const previousAutoFitLog = lastAutoFitLogRef.current;
+      const shouldLogAutoFitCycle =
+        previousAutoFitLog.nextZoom === null ||
+        Math.abs(nextZoom - previousAutoFitLog.nextZoom) >= 0.001 ||
+        previousAutoFitLog.viewportWidth === null ||
+        Math.abs(viewportRect.width - previousAutoFitLog.viewportWidth) >= 1 ||
+        previousAutoFitLog.proposedMinDocumentWidth === null ||
+        Math.abs(proposedMinDocumentWidth - previousAutoFitLog.proposedMinDocumentWidth) >= 1;
+      const fitCycle = shouldLogAutoFitCycle
+        ? beginAutoFitCycle({
+            normalizationToken: layoutPage.normalizationToken,
+            pageNumber: layoutPage.pageNumber,
+            proposedMinDocumentWidth
+          })
+        : null;
+
       reportAutoMaximizeZoom(nextZoom);
       const targetChanged = hasMeaningfulZoomDelta(nextZoom, fitTargetZoomRef.current);
       const commitStillNeeded = hasMeaningfulZoomDelta(nextZoom, committedZoom);
@@ -568,17 +606,33 @@ const PdfViewer = memo(function PdfViewer({
         previewAutoMaximizeZoom(nextZoom);
       }
 
-      debugAction(
-        "frontend.auto-maximize.fit-state",
-        buildOpenSessionFields({
-          commitScheduled: fitCommitTimerRef.current !== null,
-          committedZoom,
-          displayZoom: displayZoomRef.current,
-          fitTargetZoom: fitTargetZoomRef.current,
+      if (fitCycle) {
+        lastAutoFitLogRef.current = {
           nextZoom,
-          targetChanged
-        })
-      );
+          proposedMinDocumentWidth,
+          viewportWidth: viewportRect.width
+        };
+        readerDiagnostic(
+          "auto-fit",
+          "auto-fit.preview-selected",
+          buildOpenSessionFields({
+            committedZoom,
+            displayZoom: displayZoomRef.current,
+            fitCycleId: fitCycle.fitCycleId,
+            nextZoom,
+            normalizationToken: layoutPage.normalizationToken,
+            pageBaseHeight: Number(baseHeight.toFixed(2)),
+            pageBaseWidth: Number(baseWidth.toFixed(2)),
+            pageNumber: layoutPage.pageNumber,
+            previousDisplayZoom: displayZoomRef.current,
+            proposedMinDocumentWidth,
+            scaledWidth: Number(scaledWidth.toFixed(2)),
+            targetChanged,
+            viewportHeight: Number(viewportRect.height.toFixed(2)),
+            viewportWidth: Number(viewportRect.width.toFixed(2))
+          })
+        );
+      }
 
       if (!commitStillNeeded) {
         clearFitCommitTimer();
@@ -586,16 +640,7 @@ const PdfViewer = memo(function PdfViewer({
       }
 
       if (fitCommitTimerRef.current === null) {
-        debugAction(
-          "frontend.auto-maximize.commit-scheduled",
-          buildOpenSessionFields({
-            committedZoom,
-            displayZoom: displayZoomRef.current,
-            fitTargetZoom: fitTargetZoomRef.current,
-            nextZoom
-          })
-        );
-        scheduleFitCommit(nextZoom);
+        scheduleFitCommit(nextZoom, fitCycle?.fitCycleId ?? null);
       }
     };
 

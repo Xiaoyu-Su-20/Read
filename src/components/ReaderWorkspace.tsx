@@ -1,4 +1,4 @@
-import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 
 import NotesViewport from "./NotesViewport";
 import PaneResizeHandle from "./PaneResizeHandle";
@@ -60,7 +60,6 @@ type ReaderWorkspaceProps = {
   documentHeaderZoom: number;
   viewerApi: ViewerApi | null;
   onHeaderMouseDown: (event: ReactMouseEvent<HTMLElement>) => void;
-  windowControls: ReactNode;
   searchController: UnifiedSearchController;
   searchFocusRequest: number;
   commandPaletteOpen: boolean;
@@ -111,7 +110,6 @@ export default function ReaderWorkspace({
   documentHeaderZoom,
   viewerApi,
   onHeaderMouseDown,
-  windowControls,
   searchController,
   searchFocusRequest,
   commandPaletteOpen,
@@ -330,7 +328,6 @@ export default function ReaderWorkspace({
                 id="reader-workspace-notes-header-tools"
                 className="reader-workspace__notes-header-tools"
               />
-              <div className="reader-workspace__header-actions">{windowControls}</div>
             </div>
           </header>
         </div>

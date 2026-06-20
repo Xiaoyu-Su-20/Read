@@ -9,6 +9,7 @@ import {
   warmPdfDisplayLists
 } from "../api";
 import { dedupeBookmarks } from "../commands";
+import { readerDiagnostic } from "../debug/readerDiagnostics";
 import { debugAction, startDebugProcess } from "../debugLog";
 import { dedupeOutlineItems, mergeOutlineItems } from "../documentReferences";
 import type {
@@ -25,6 +26,7 @@ import type {
   ViewerSnapshot
 } from "../types";
 import { createPageCache, makePageCacheKey, type CachedRenderedPage } from "./PageCache";
+import { getCurrentAutoFitCycle } from "./autoFitDebug";
 import {
   getCompletedRenderedPage,
   getInFlightRenderedPage,
@@ -380,6 +382,17 @@ export function useReaderController({
   const postVisibleIdleHandleRef = useRef<IdleCallbackHandle | null>(null);
   const displayListWarmupKeyRef = useRef<string | null>(null);
   const initializedReaderSessionKeyRef = useRef<string | null>(null);
+  const lastRenderIdentityLogRef = useRef<{
+    currentLogicalKey: string | null;
+    matchedExistingPage: boolean | null;
+    renderRequested: boolean | null;
+    requestedLogicalKey: string | null;
+  }>({
+    currentLogicalKey: null,
+    matchedExistingPage: null,
+    renderRequested: null,
+    requestedLogicalKey: null
+  });
   const finalizeRapidTurnListenerRef = useRef<(reason: string) => void>(() => undefined);
   const flushReaderStateListenerRef = useRef<(reason: string) => void>(() => undefined);
   const openMetricsRef = useRef<ReaderOpenMetrics>({
@@ -697,6 +710,45 @@ export function useReaderController({
         requestSequence: requestId
       })
     };
+  }
+
+  function logRenderIdentity(fields: {
+    currentLogicalKey: string | null;
+    matchedExistingPage: boolean;
+    normalizationToken: string | null;
+    pageNumber: number;
+    renderRequested: boolean;
+    requestedLogicalKey: string;
+    zoom: number;
+  }) {
+    const previousLog = lastRenderIdentityLogRef.current;
+    if (
+      previousLog.currentLogicalKey === fields.currentLogicalKey &&
+      previousLog.matchedExistingPage === fields.matchedExistingPage &&
+      previousLog.renderRequested === fields.renderRequested &&
+      previousLog.requestedLogicalKey === fields.requestedLogicalKey
+    ) {
+      return;
+    }
+
+    lastRenderIdentityLogRef.current = {
+      currentLogicalKey: fields.currentLogicalKey,
+      matchedExistingPage: fields.matchedExistingPage,
+      renderRequested: fields.renderRequested,
+      requestedLogicalKey: fields.requestedLogicalKey
+    };
+
+    readerDiagnostic("render-identity", "render-identity.evaluated", {
+      currentLogicalKey: fields.currentLogicalKey,
+      documentId: currentDocumentRef.current?.document.id ?? null,
+      fitCycleId: getCurrentAutoFitCycle()?.fitCycleId ?? null,
+      matchedExistingPage: fields.matchedExistingPage,
+      normalizationToken: fields.normalizationToken,
+      pageNumber: fields.pageNumber,
+      renderRequested: fields.renderRequested,
+      requestedLogicalKey: fields.requestedLogicalKey,
+      zoom: fields.zoom
+    });
   }
 
   function resetWheelGesture(options?: { clearRapidTurnInput?: boolean }) {
@@ -2000,8 +2052,23 @@ export function useReaderController({
     const logicalKey = makePageCacheKey(document.document.id, renderPage, renderZoom);
     const currentDisplayedPage = displayedPageRef.current;
     const currentIncomingPage = incomingPageRef.current;
+    const currentLogicalKey = currentDisplayedPage?.logicalKey ?? currentIncomingPage?.logicalKey ?? null;
+    const currentNormalizationToken =
+      currentDisplayedPage?.normalizationToken ?? currentIncomingPage?.normalizationToken ?? null;
+    const matchedExistingPage =
+      currentDisplayedPage?.logicalKey === logicalKey ||
+      currentIncomingPage?.logicalKey === logicalKey;
 
     if (currentDisplayedPage?.logicalKey === logicalKey) {
+      logRenderIdentity({
+        currentLogicalKey,
+        matchedExistingPage,
+        normalizationToken: currentNormalizationToken,
+        pageNumber: renderPage,
+        renderRequested: false,
+        requestedLogicalKey: logicalKey,
+        zoom: renderZoom
+      });
       if (currentIncomingPage && currentIncomingPage.logicalKey !== logicalKey) {
         setIncomingPage(null);
         incomingPageKeyRef.current = null;
@@ -2014,11 +2081,29 @@ export function useReaderController({
     }
 
     if (currentIncomingPage?.logicalKey === logicalKey) {
+      logRenderIdentity({
+        currentLogicalKey,
+        matchedExistingPage,
+        normalizationToken: currentNormalizationToken,
+        pageNumber: renderPage,
+        renderRequested: false,
+        requestedLogicalKey: logicalKey,
+        zoom: renderZoom
+      });
       setRenderError(null);
       return;
     }
 
     if (activeForegroundRenderRef.current?.logicalKey === logicalKey) {
+      logRenderIdentity({
+        currentLogicalKey,
+        matchedExistingPage,
+        normalizationToken: currentNormalizationToken,
+        pageNumber: renderPage,
+        renderRequested: false,
+        requestedLogicalKey: logicalKey,
+        zoom: renderZoom
+      });
       debugAction("reader.render-deduped", {
         documentId: document.document.id,
         openSessionId,
@@ -2036,6 +2121,15 @@ export function useReaderController({
       logicalKey,
       requestId
     };
+    logRenderIdentity({
+      currentLogicalKey,
+      matchedExistingPage,
+      normalizationToken: currentNormalizationToken,
+      pageNumber: renderPage,
+      renderRequested: true,
+      requestedLogicalKey: logicalKey,
+      zoom: renderZoom
+    });
 
     const acquisition = acquireForegroundPage(renderPage, renderZoom, navigationGeneration, requestId);
     if (!acquisition) {
@@ -2934,6 +3028,12 @@ export function useReaderController({
         return;
       }
 
+      readerDiagnostic("auto-fit", "auto-fit.commit-applied", {
+        fitCycleId: getCurrentAutoFitCycle()?.fitCycleId ?? null,
+        fitMode: readerStateRef.current?.preferences.fitMode ?? "auto-maximize",
+        nextZoom,
+        previousCommittedZoom: committedZoom
+      });
       updateZoom(nextZoom, "auto-maximize", {
         fitMode: "auto-maximize",
         commitImmediately: true

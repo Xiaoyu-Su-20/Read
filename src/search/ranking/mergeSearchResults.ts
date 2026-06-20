@@ -12,13 +12,13 @@ export const SEARCH_GROUP_DEFINITIONS = [
   { id: "notes" as const, label: "Notes", matches: (r: SearchResult) => r.kind === "note" },
   {
     id: "nearby-page" as const,
-    label: "Document · Nearby Page",
+    label: "Doc · Near",
     matches: (r: SearchResult) =>
       r.kind === "pdf" && (r.location === "current" || r.location === "nearby")
   },
   {
     id: "across-document" as const,
-    label: "Document · Across document",
+    label: "Doc · Far",
     matches: (r: SearchResult) => r.kind === "pdf" && r.location === "across"
   },
   {

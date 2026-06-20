@@ -217,7 +217,16 @@ impl PdfRenderStore {
             } else {
                 None
             };
-            let (pixmap, width, height, render_variant, normalization_token, text_layer_transform) =
+            let (
+                pixmap,
+                width,
+                height,
+                page_base_width,
+                page_base_height,
+                render_variant,
+                normalization_token,
+                text_layer_transform,
+            ) =
                 if let Some(rendered) = rendered {
                     rendered
                 } else {
@@ -276,6 +285,8 @@ impl PdfRenderStore {
                 &request,
                 width,
                 height,
+                page_base_width,
+                page_base_height,
                 image_bytes.clone(),
                 render_variant,
                 normalization_token.clone(),
@@ -287,6 +298,8 @@ impl PdfRenderStore {
                 page_number: request.page_number,
                 width,
                 height,
+                page_base_width,
+                page_base_height,
                 cache_key: request.cache_key.clone(),
                 render_variant,
                 normalization_token,
@@ -318,6 +331,8 @@ impl PdfRenderStore {
         Pixmap,
         u32,
         u32,
+        f32,
+        f32,
         RenderVariant,
         Option<String>,
         TextLayerTransform,
@@ -345,6 +360,8 @@ impl PdfRenderStore {
             pixmap,
             width,
             height,
+            page_bounds.width(),
+            page_bounds.height(),
             RenderVariant::Raw,
             None,
             TextLayerTransform {
@@ -367,6 +384,8 @@ impl PdfRenderStore {
         Pixmap,
         u32,
         u32,
+        f32,
+        f32,
         RenderVariant,
         Option<String>,
         TextLayerTransform,
@@ -411,6 +430,8 @@ impl PdfRenderStore {
             pixmap,
             width,
             height,
+            frame.width,
+            frame.height,
             RenderVariant::Normalized,
             manifest.cache_token.clone(),
             TextLayerTransform {
@@ -436,6 +457,8 @@ impl PdfRenderStore {
         request: &PageRenderRequest,
         width: u32,
         height: u32,
+        page_base_width: f32,
+        page_base_height: f32,
         image_bytes: Vec<u8>,
         render_variant: RenderVariant,
         normalization_token: Option<String>,
@@ -448,6 +471,8 @@ impl PdfRenderStore {
             request,
             width,
             height,
+            page_base_width,
+            page_base_height,
             image_bytes,
             render_variant,
             normalization_token,

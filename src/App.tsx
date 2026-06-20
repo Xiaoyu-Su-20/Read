@@ -13,6 +13,7 @@ import {
   useState,
   useSyncExternalStore
 } from "react";
+import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import CollectionViewRefresh from "./components/CollectionViewRefresh";
@@ -20,7 +21,6 @@ import DisplaySettingsPopover from "./components/DisplaySettingsPopover";
 import CollectionLibraryGlyph from "./components/icons/CollectionLibraryGlyph";
 import { createUnifiedSearchController } from "./search";
 import { openLibraryFolder } from "./lib/api";
-import { isPassiveStatusMessage } from "./lib/app/helpers";
 import {
   createNewCustomTheme,
   createViewerDisplayConfig,
@@ -84,6 +84,13 @@ type ActiveViewTransition = Pick<
   PendingViewNavigationTrace,
   "clickStartedAtMs" | "fromView" | "source" | "toView" | "viewTransitionId"
 >;
+
+type SavedWindowState = {
+  maximized: boolean;
+  fullscreen: boolean;
+  position: { x: number; y: number } | null;
+  size: { width: number; height: number } | null;
+};
 
 function toViewEventName(view: ViewMode) {
   return view === "reader" ? "document" : "collection";
@@ -151,7 +158,7 @@ export default function App() {
   const [fullscreenState, setFullscreenState] = useState<FullscreenState>("windowed");
   const [showFullscreenHint, setShowFullscreenHint] = useState(false);
   const fullscreenTransitionRef = useRef(false);
-  const fullscreenWindowStateRef = useRef<{ wasMaximized: boolean } | null>(null);
+  const fullscreenWindowStateRef = useRef<SavedWindowState | null>(null);
   const pendingViewNavigationRef = useRef<PendingViewNavigationTrace | null>(null);
   const committedViewNavigationRef = useRef<PendingViewNavigationTrace | null>(null);
   const activeViewTransitionRef = useRef<ActiveViewTransition | null>(null);
@@ -426,6 +433,65 @@ export default function App() {
     }
   }, []);
 
+  const waitForWindowTransitionFrame = useCallback(
+    () =>
+      new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      }),
+    []
+  );
+
+  const captureWindowState = useCallback(async (): Promise<SavedWindowState> => {
+    const [maximized, fullscreen, position, size] = await Promise.all([
+      appWindow.isMaximized(),
+      appWindow.isFullscreen(),
+      appWindow.outerPosition().catch(() => null),
+      appWindow.outerSize().catch(() => null)
+    ]);
+
+    return {
+      maximized,
+      fullscreen,
+      position: position ? { x: position.x, y: position.y } : null,
+      size: size ? { width: size.width, height: size.height } : null
+    };
+  }, []);
+
+  const restoreWindowState = useCallback(
+    async (savedWindowState: SavedWindowState | null) => {
+      if (!savedWindowState) {
+        return;
+      }
+
+      const maximized = await appWindow.isMaximized();
+      if (maximized && !savedWindowState.maximized) {
+        await appWindow.unmaximize();
+        await waitForWindowTransitionFrame();
+      }
+
+      if (savedWindowState.size) {
+        await appWindow.setSize(
+          new PhysicalSize(savedWindowState.size.width, savedWindowState.size.height)
+        );
+      }
+
+      if (savedWindowState.position) {
+        await appWindow.setPosition(
+          new PhysicalPosition(savedWindowState.position.x, savedWindowState.position.y)
+        );
+      }
+
+      if (savedWindowState.maximized) {
+        await appWindow.maximize();
+      }
+
+      if (savedWindowState.fullscreen) {
+        await appWindow.setFullscreen(true);
+      }
+    },
+    [waitForWindowTransitionFrame]
+  );
+
   const enterFullscreen = useCallback(async () => {
     if (workspace.workspaceMode !== "reader") {
       workspace.setStatusMessage("Open the reader to enter fullscreen.");
@@ -440,11 +506,8 @@ export default function App() {
     setFullscreenState("entering");
 
     try {
-      const wasMaximized = await appWindow.isMaximized();
-      fullscreenWindowStateRef.current = { wasMaximized };
-      if (!wasMaximized) {
-        await appWindow.maximize();
-      }
+      fullscreenWindowStateRef.current = await captureWindowState();
+      await appWindow.setFullscreen(true);
       setSettingsOpen(false);
       setFullscreenState("fullscreen");
     } catch (error) {
@@ -458,7 +521,13 @@ export default function App() {
         void syncFullscreenState();
       }, 300);
     }
-  }, [fullscreenState, syncFullscreenState, workspace.setStatusMessage, workspace.workspaceMode]);
+  }, [
+    captureWindowState,
+    fullscreenState,
+    syncFullscreenState,
+    workspace.setStatusMessage,
+    workspace.workspaceMode
+  ]);
 
   const exitFullscreen = useCallback(async () => {
     if (fullscreenTransitionRef.current || fullscreenState === "windowed" || fullscreenState === "exiting") {
@@ -474,10 +543,9 @@ export default function App() {
       fullscreenWindowStateRef.current = null;
       if (nativeFullscreen) {
         await appWindow.setFullscreen(false);
+        await waitForWindowTransitionFrame();
       }
-      if (previousWindowState && !previousWindowState.wasMaximized) {
-        await appWindow.unmaximize();
-      }
+      await restoreWindowState(previousWindowState);
       setFullscreenState("windowed");
     } catch (error) {
       setFullscreenState("fullscreen");
@@ -488,7 +556,7 @@ export default function App() {
         void syncFullscreenState();
       }, 300);
     }
-  }, [fullscreenState, syncFullscreenState]);
+  }, [fullscreenState, restoreWindowState, syncFullscreenState, waitForWindowTransitionFrame]);
 
   const toggleFullscreen = useCallback(async () => {
     if (fullscreenState === "fullscreen") {
@@ -824,12 +892,8 @@ export default function App() {
     searchController.dismiss();
   }, [searchController, workspace.activeDocumentId]);
 
-  const topbarTitle =
-    workspace.selectedCollection?.folder.name ?? "Library";
-  const topbarStatus =
-    workspace.selectedCollection
-      ? `${workspace.selectedCollection.documents.length} books`
-      : "No collection selected";
+  const collectionModeActive =
+    workspace.workspaceMode === "collection" && !readerFullscreenActive;
 
   function handleTopbarMouseDown(event: ReactMouseEvent<HTMLElement>) {
     if (event.button !== 0) {
@@ -948,7 +1012,9 @@ export default function App() {
 
   return (
     <main
-      className={`app-shell${readerFullscreenActive ? " app-shell--reader-fullscreen" : ""}`}
+      className={`app-shell${readerFullscreenActive ? " app-shell--reader-fullscreen" : ""}${
+        collectionModeActive ? " app-shell--collection" : ""
+      }`}
       data-fullscreen={readerFullscreenActive ? "true" : "false"}
     >
       {!readerFullscreenActive ? (
@@ -960,7 +1026,6 @@ export default function App() {
           className="sidebar__icon-button sidebar__icon-button--top"
           type="button"
           aria-label="Open commands"
-          onClick={() => palette.openCommands(commandRegistry)}
         >
           <ChromeIcon label="Menu">
             <path d="M5 7.5h14" />
@@ -1113,25 +1178,23 @@ export default function App() {
       </nav>
       ) : null}
 
-      {workspace.workspaceMode === "collection" && !readerFullscreenActive ? (
-        <header className="topbar" onMouseDown={handleTopbarMouseDown}>
-          <div className="topbar__drag">
-            <div className="topbar__brand">
-              <strong>{topbarTitle}</strong>
-            </div>
-            <div className="topbar__status">
-              <span>{topbarStatus}</span>
-              {!isPassiveStatusMessage(workspace.statusMessage) ? (
-                <span>{workspace.statusMessage}</span>
-              ) : null}
-            </div>
+      {!readerFullscreenActive ? (
+        <div className="app-window-chrome">
+          <div
+            className="app-window-chrome__drag"
+            aria-hidden="true"
+            onMouseDown={handleTopbarMouseDown}
+          />
+          <div className="app-window-chrome__controls">
+            {renderWindowControls()}
           </div>
-          {renderWindowControls()}
-        </header>
+        </div>
       ) : null}
 
       <section
         className={`workspace${workspace.workspaceMode === "reader" ? " workspace--reader" : ""}${
+          collectionModeActive ? " workspace--collection" : ""
+        }${
           shouldStackWorkspacePanels ? " workspace--stacked" : ""
         }`}
       >
@@ -1223,7 +1286,6 @@ export default function App() {
                 documentHeaderZoom={workspace.viewerSnapshot.zoom}
                 viewerApi={workspace.viewerApi}
                 onHeaderMouseDown={handleTopbarMouseDown}
-                windowControls={renderWindowControls()}
                 searchController={searchController}
                 searchFocusRequest={searchFocusRequest}
                 commandPaletteOpen={palette.paletteOpen}
