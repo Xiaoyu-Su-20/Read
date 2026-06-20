@@ -190,12 +190,6 @@ export default function ReaderWorkspace({
             <div className="reader-workspace__document-header-layout">
               <div className="reader-workspace__document-header-title-region">
                 <div className="reader-workspace__header-main">
-                  <span className="reader-workspace__header-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                      <path d="M7 4.5h6.8L18.5 9v10.5A1.5 1.5 0 0 1 17 21H7A1.5 1.5 0 0 1 5.5 19.5v-13A1.5 1.5 0 0 1 7 5Z" />
-                      <path d="M13.5 4.8V9h4.2" />
-                    </svg>
-                  </span>
                   <div className="reader-workspace__header-copy">
                     <strong className="reader-workspace__header-title">{documentHeaderTitle}</strong>
                   </div>
@@ -288,8 +282,7 @@ export default function ReaderWorkspace({
                       strokeLinejoin="round"
                     >
                       <path d="M7.35 11V7.55C7.35 5.15 8.9 3.65 12.05 3.65C14.15 3.65 15.42 4.48 16.15 5.72" />
-                      <path d="M7.35 11H4.85V20.35H12.6" />
-                      <path d="M7.35 11H19.15V20.35H16.65" />
+                      <path d="M4.85 11H19.15V20.35H4.85Z" />
                     </svg>
                   ) : (
                     <svg
@@ -301,9 +294,7 @@ export default function ReaderWorkspace({
                       strokeLinejoin="round"
                     >
                       <path d="M7.35 11V7.55C7.35 5.15 8.95 3.65 12 3.65C15.05 3.65 16.65 5.15 16.65 7.55V11" />
-                      <path d="M7.35 11H4.85V20.35H12.6" />
-                      <path d="M7.35 11H16.65" />
-                      <path d="M16.65 11H19.15V20.35H16.65" />
+                      <path d="M4.85 11H19.15V20.35H4.85Z" />
                     </svg>
                   )}
                 </button>

@@ -274,6 +274,7 @@ const NotesPane = memo(function NotesPane({
     startClientY: number;
     startScrollTop: number;
   } | null>(null);
+  const scrollbarHideTimerRef = useRef<number | null>(null);
   const lastContextMenuPointerRef = useRef<{
     x: number;
     y: number;
@@ -281,6 +282,7 @@ const NotesPane = memo(function NotesPane({
   } | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const [navigationOpen, setNavigationOpen] = useState(false);
+  const [scrollbarVisible, setScrollbarVisible] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
@@ -455,6 +457,26 @@ const NotesPane = memo(function NotesPane({
     });
   }
 
+  function clearScrollbarHideTimer() {
+    if (scrollbarHideTimerRef.current !== null) {
+      window.clearTimeout(scrollbarHideTimerRef.current);
+      scrollbarHideTimerRef.current = null;
+    }
+  }
+
+  function scheduleScrollbarHide(delayMs = 900) {
+    clearScrollbarHideTimer();
+    scrollbarHideTimerRef.current = window.setTimeout(() => {
+      setScrollbarVisible(false);
+      scrollbarHideTimerRef.current = null;
+    }, delayMs);
+  }
+
+  function revealScrollbar(delayMs = 900) {
+    setScrollbarVisible(true);
+    scheduleScrollbarHide(delayMs);
+  }
+
   function updateNotesScrollbar() {
     const paneElement = paneRef.current;
     const scrollElement = scrollRef.current;
@@ -475,7 +497,6 @@ const NotesPane = memo(function NotesPane({
       };
       paneElement.style.setProperty("--notes-scroll-thumb-height", "0px");
       paneElement.style.setProperty("--notes-scroll-thumb-top", "0px");
-      paneElement.style.setProperty("--notes-scrollbar-opacity", "0");
       return;
     }
 
@@ -492,7 +513,6 @@ const NotesPane = memo(function NotesPane({
     };
     paneElement.style.setProperty("--notes-scroll-thumb-height", `${thumbHeight}px`);
     paneElement.style.setProperty("--notes-scroll-thumb-top", `${thumbTop}px`);
-    paneElement.style.setProperty("--notes-scrollbar-opacity", "1");
   }
 
   function scrollNotesToThumbTop(nextThumbTop: number) {
@@ -744,6 +764,7 @@ const NotesPane = memo(function NotesPane({
 
     const handleScroll = () => {
       updateNotesScrollbar();
+      revealScrollbar();
     };
 
     scrollElement.addEventListener("scroll", handleScroll, { passive: true });
@@ -787,6 +808,7 @@ const NotesPane = memo(function NotesPane({
 
   useEffect(() => {
     return () => {
+      clearScrollbarHideTimer();
       if (toastTimerRef.current !== null) {
         window.clearTimeout(toastTimerRef.current);
       }
@@ -1112,7 +1134,9 @@ const NotesPane = memo(function NotesPane({
   return (
     <aside
       ref={paneRef}
-      className={`notes-pane${fullscreen ? " notes-pane--fullscreen" : ""}`}
+      className={`notes-pane${fullscreen ? " notes-pane--fullscreen" : ""}${
+        scrollbarVisible ? " notes-pane--scrollbar-visible" : ""
+      }`}
       aria-label="Notes"
       onKeyDownCapture={(event) => {
         const key = event.key.toLowerCase();
@@ -1214,7 +1238,13 @@ const NotesPane = memo(function NotesPane({
         </div>
       ) : null}
 
-      <div ref={scrollRef} className="notes-pane__scroll-surface">
+      <div
+        ref={scrollRef}
+        className="notes-pane__scroll-surface"
+        onWheel={() => {
+          revealScrollbar();
+        }}
+      >
         <div ref={contentRef} className="notes-pane__content">
           {note ? (
             <NoteEditor
@@ -1237,15 +1267,36 @@ const NotesPane = memo(function NotesPane({
       </div>
 
       <div
+        className="notes-pane__scrollbar-zone"
+        aria-hidden="true"
+        onPointerEnter={() => {
+          clearScrollbarHideTimer();
+          setScrollbarVisible(true);
+        }}
+        onPointerLeave={() => {
+          scheduleScrollbarHide(180);
+        }}
+      />
+
+      <div
         ref={scrollbarRef}
         className="notes-pane__scrollbar"
         aria-hidden="true"
+        onPointerEnter={() => {
+          clearScrollbarHideTimer();
+          setScrollbarVisible(true);
+        }}
+        onPointerLeave={() => {
+          scheduleScrollbarHide(180);
+        }}
         onPointerDown={(event) => {
           if (event.target === thumbRef.current) {
             return;
           }
 
           event.preventDefault();
+          clearScrollbarHideTimer();
+          setScrollbarVisible(true);
           const scrollbarElement = scrollbarRef.current;
           const { thumbHeight } = scrollbarMetricsRef.current;
           if (!scrollbarElement) {

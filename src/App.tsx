@@ -153,6 +153,7 @@ export default function App() {
   const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const [noteRevealRequest, setNoteRevealRequest] = useState<import("./lib/types").NoteRevealRequest | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [outlineAnchorElement, setOutlineAnchorElement] = useState<HTMLButtonElement | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteAnchorElement, setPaletteAnchorElement] = useState<HTMLButtonElement | null>(null);
   const [fullscreenState, setFullscreenState] = useState<FullscreenState>("windowed");
@@ -206,9 +207,11 @@ export default function App() {
     ? createViewerDisplayConfig(themePreview)
     : selectors.viewerDisplayConfig(settings);
   const readerPaneSplitRatio = selectors.readerPaneSplitRatio(settings);
-  const readerOverlayOpen = palette.paletteOpen || searchUiOpen || outlineOpen;
   const readerFullscreenActive =
-    workspace.workspaceMode === "reader" && fullscreenState === "fullscreen";
+    workspace.workspaceMode === "reader" &&
+    (fullscreenState === "entering" ||
+      fullscreenState === "fullscreen" ||
+      fullscreenState === "exiting");
   const shouldRenderReaderWorkspace =
     workspace.workspaceMode === "reader" || workspace.activeReaderSession !== null;
   const shouldRenderCollectionWorkspace = workspace.workspaceMode === "collection";
@@ -508,6 +511,7 @@ export default function App() {
     try {
       fullscreenWindowStateRef.current = await captureWindowState();
       await appWindow.setFullscreen(true);
+      await waitForWindowTransitionFrame();
       setSettingsOpen(false);
       setFullscreenState("fullscreen");
     } catch (error) {
@@ -516,15 +520,14 @@ export default function App() {
       workspace.setStatusMessage("Unable to enter fullscreen.");
       console.error("enter fullscreen failed:", error);
     } finally {
-      window.setTimeout(() => {
-        fullscreenTransitionRef.current = false;
-        void syncFullscreenState();
-      }, 300);
+      fullscreenTransitionRef.current = false;
+      void syncFullscreenState();
     }
   }, [
     captureWindowState,
     fullscreenState,
     syncFullscreenState,
+    waitForWindowTransitionFrame,
     workspace.setStatusMessage,
     workspace.workspaceMode
   ]);
@@ -551,10 +554,8 @@ export default function App() {
       setFullscreenState("fullscreen");
       console.error("exit fullscreen failed:", error);
     } finally {
-      window.setTimeout(() => {
-        fullscreenTransitionRef.current = false;
-        void syncFullscreenState();
-      }, 300);
+      fullscreenTransitionRef.current = false;
+      void syncFullscreenState();
     }
   }, [fullscreenState, restoreWindowState, syncFullscreenState, waitForWindowTransitionFrame]);
 
@@ -1016,23 +1017,24 @@ export default function App() {
         collectionModeActive ? " app-shell--collection" : ""
       }`}
       data-fullscreen={readerFullscreenActive ? "true" : "false"}
+      data-window-controls={readerFullscreenActive ? "hidden" : "visible"}
     >
       {!readerFullscreenActive ? (
         <nav
         className={`sidebar${workspace.workspaceMode === "reader" ? " sidebar--reader" : ""}`}
         aria-label="Navigation"
       >
-        <button
-          className="sidebar__icon-button sidebar__icon-button--top"
-          type="button"
-          aria-label="Open commands"
+        <div
+          className="sidebar__icon-button sidebar__icon-button--top sidebar__drag-handle"
+          data-tauri-drag-region
+          aria-hidden="true"
         >
           <ChromeIcon label="Menu">
             <path d="M5 7.5h14" />
             <path d="M5 12h14" />
             <path d="M5 16.5h14" />
           </ChromeIcon>
-        </button>
+        </div>
 
         <div className="sidebar__stack">
           <button
@@ -1086,6 +1088,7 @@ export default function App() {
             </ChromeIcon>
           </button>
           <button
+            ref={setOutlineAnchorElement}
             className={`sidebar__icon-button${outlineOpen ? " sidebar__icon-button--active" : ""}`}
             type="button"
             aria-label="Marks"
@@ -1176,6 +1179,14 @@ export default function App() {
           </button>
         </div>
       </nav>
+      ) : null}
+
+      {!readerFullscreenActive && collectionModeActive ? (
+        <div
+          className="collection-window-drag-region"
+          data-tauri-drag-region
+          aria-hidden="true"
+        />
       ) : null}
 
       {!readerFullscreenActive ? (
@@ -1309,7 +1320,7 @@ export default function App() {
                 fullscreen={readerFullscreenActive}
                 onToggleFullscreen={toggleFullscreen}
                 readerPaneSplitRatio={readerPaneSplitRatio}
-                hidePaneResizeHandle={readerOverlayOpen}
+                hidePaneResizeHandle={false}
                 onChangeReaderPaneSplitRatio={(nextRatio) => {
                   setSetting("readerPaneSplitRatio", nextRatio);
                 }}
@@ -1334,10 +1345,22 @@ export default function App() {
       {outlineOpen ? (
         <Suspense fallback={null}>
           <LazyOutlineOverlay
+            anchorElement={outlineAnchorElement}
+            currentPage={workspace.viewerSnapshot.currentPage}
             open={outlineOpen}
             items={workspace.outlineItems}
             bookmarks={workspace.readerState?.bookmarks ?? []}
             onClose={() => setOutlineOpen(false)}
+            onDeleteBookmark={(bookmark) => {
+              const currentState = workspace.viewerApiRef.current?.getReaderState();
+              if (!currentState) {
+                return;
+              }
+
+              workspace.viewerApiRef.current?.setBookmarks(
+                currentState.bookmarks.filter((existingBookmark) => existingBookmark.id !== bookmark.id)
+              );
+            }}
             onSelect={(item) => {
               workspace.viewerApiRef.current?.jumpToOutline(item);
               setOutlineOpen(false);

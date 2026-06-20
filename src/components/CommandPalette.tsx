@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { PaletteSession } from "../lib/app/palette";
 import { filterPaletteItems } from "../lib/commands";
@@ -11,6 +11,7 @@ const PALETTE_GROUP_ORDER: PaletteGroup[] = [
   "view"
 ];
 const PALETTE_OPEN_SHORTCUT = "Ctrl P";
+const useClientLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 function SearchGlyph() {
   return (
@@ -209,18 +210,16 @@ export default function CommandPalette({
   const [popoverStyle, setPopoverStyle] = useState<{
     left: number;
     top: number;
-  }>({
-    left: 0,
-    top: 0
-  });
+  } | null>(null);
   const [scrollbarState, setScrollbarState] = useState({
     thumbHeight: 0,
     thumbTop: 0,
     visible: false
   });
 
-  useEffect(() => {
+  useClientLayoutEffect(() => {
     if (!open) {
+      setPopoverStyle(null);
       return;
     }
 
@@ -501,9 +500,10 @@ export default function CommandPalette({
       <div
         ref={paletteRef}
         className="palette palette--workspace"
+        data-positioned={popoverStyle !== null}
         role="dialog"
         aria-label={session.title}
-        style={popoverStyle}
+        style={popoverStyle ?? undefined}
       >
         <div className="palette__search">
           <span className="palette__search-icon" aria-hidden="true">

@@ -1,119 +1,485 @@
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+
 import type { Bookmark, OutlineItem } from "../lib/types";
 import { dedupeBookmarks } from "../lib/commands";
 import { dedupeOutlineItems } from "../lib/documentReferences";
 
+export type MarksPopoverTab = "outline" | "bookmarks";
+const useClientLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 type OutlineOverlayProps = {
+  anchorElement?: HTMLElement | null;
+  currentPage: number;
   open: boolean;
   items: OutlineItem[];
   bookmarks: Bookmark[];
   onClose: () => void;
+  onDeleteBookmark: (bookmark: Bookmark) => void;
   onSelect: (item: OutlineItem) => void;
   onSelectBookmark: (bookmark: Bookmark) => void;
 };
 
-function outlineSourceLabel(item: OutlineItem) {
-  return item.source === "user" ? "Note" : "PDF";
+type FlatOutlineNode = {
+  ancestorIds: string[];
+  item: OutlineItem;
+};
+
+function BookmarkGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" />
+    </svg>
+  );
 }
 
-function outlineMeta(item: OutlineItem) {
-  const location = item.page ? `Page ${item.page}` : item.externalUrl ? "External" : "No target";
-  return `${location} - ${outlineSourceLabel(item)}`;
+function OverflowGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true">
+      <circle cx="12" cy="5.5" r="1.6" />
+      <circle cx="12" cy="12" r="1.6" />
+      <circle cx="12" cy="18.5" r="1.6" />
+    </svg>
+  );
 }
 
-function BookmarkMarks({
-  bookmarks,
-  onSelectBookmark
+function flattenOutlineNodes(items: OutlineItem[], ancestorIds: string[] = []): FlatOutlineNode[] {
+  return items.flatMap((item) => [
+    {
+      ancestorIds,
+      item
+    },
+    ...flattenOutlineNodes(item.items ?? [], [...ancestorIds, item.id])
+  ]);
+}
+
+export function defaultMarksPopoverTab(items: OutlineItem[], bookmarks: Bookmark[]): MarksPopoverTab {
+  const hasOutline = dedupeOutlineItems(items).length > 0;
+  const hasBookmarks = dedupeBookmarks(bookmarks).length > 0;
+  return hasOutline && !hasBookmarks ? "outline" : "bookmarks";
+}
+
+export function initialExpandedOutlineIds(items: OutlineItem[], currentPage: number | null): string[] {
+  const firstExpandableRoot = items.find((item) => item.items.length > 0);
+  if (!currentPage) {
+    return firstExpandableRoot ? [firstExpandableRoot.id] : [];
+  }
+
+  const flatItems = flattenOutlineNodes(items).filter(({ item }) => item.page !== null);
+  const closest = flatItems.sort((left, right) => {
+    const leftPage = left.item.page ?? 0;
+    const rightPage = right.item.page ?? 0;
+    const leftBefore = leftPage <= currentPage;
+    const rightBefore = rightPage <= currentPage;
+
+    if (leftBefore !== rightBefore) {
+      return leftBefore ? -1 : 1;
+    }
+
+    const distance = Math.abs(leftPage - currentPage) - Math.abs(rightPage - currentPage);
+    if (distance !== 0) {
+      return distance;
+    }
+
+    return leftBefore ? rightPage - leftPage : leftPage - rightPage;
+  })[0];
+
+  if (!closest) {
+    return firstExpandableRoot ? [firstExpandableRoot.id] : [];
+  }
+
+  const expandedIds = [...closest.ancestorIds];
+  if (closest.item.items.length > 0) {
+    expandedIds.push(closest.item.id);
+  }
+
+  return expandedIds.length > 0
+    ? expandedIds
+    : firstExpandableRoot
+      ? [firstExpandableRoot.id]
+      : [];
+}
+
+function OutlineBranch({
+  depth,
+  expandedIds,
+  items,
+  onSelect,
+  onToggle
 }: {
-  bookmarks: Bookmark[];
-  onSelectBookmark: (bookmark: Bookmark) => void;
+  depth: number;
+  expandedIds: Set<string>;
+  items: OutlineItem[];
+  onSelect: (item: OutlineItem) => void;
+  onToggle: (itemId: string) => void;
 }) {
-  if (bookmarks.length === 0) {
+  if (items.length === 0) {
     return null;
   }
 
   return (
-    <ul className="outline-list">
-      {bookmarks.map((bookmark) => (
-        <li key={bookmark.id}>
-          <button className="outline-button" type="button" onClick={() => onSelectBookmark(bookmark)}>
-            <span>{bookmark.label}</span>
-            <small>Page {bookmark.page} - Saved</small>
-          </button>
-        </li>
-      ))}
-    </ul>
+    <div className="marks-popover__outline-branch" role="group">
+      {items.map((item) => {
+        const hasChildren = item.items.length > 0;
+        const isExpanded = expandedIds.has(item.id);
+
+        return (
+          <div
+            key={item.id}
+            className="marks-popover__outline-node"
+            style={{ ["--marks-outline-depth" as string]: String(depth) }}
+          >
+            <div className="marks-popover__outline-row-shell">
+              {hasChildren ? (
+                <button
+                  className={`marks-popover__outline-toggle${
+                    isExpanded ? " marks-popover__outline-toggle--expanded" : ""
+                  }`}
+                  type="button"
+                  aria-label={isExpanded ? "Collapse section" : "Expand section"}
+                  aria-expanded={isExpanded}
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onToggle(item.id);
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                    <path d={isExpanded ? "m8 10 4 4 4-4" : "m10 8 4 4-4 4"} />
+                  </svg>
+                </button>
+              ) : (
+                <span className="marks-popover__outline-toggle-spacer" aria-hidden="true" />
+              )}
+
+              <button
+                className={`marks-popover__outline-row${depth === 0 ? " marks-popover__outline-row--chapter" : ""}`}
+                type="button"
+                onClick={() => onSelect(item)}
+              >
+                <span className="marks-popover__outline-title">{item.title}</span>
+                {item.page ? (
+                  <span className="marks-popover__outline-page">{item.page}</span>
+                ) : (
+                  <span className="marks-popover__outline-page marks-popover__outline-page--empty" />
+                )}
+              </button>
+            </div>
+
+            {hasChildren && isExpanded ? (
+              <OutlineBranch
+                depth={depth + 1}
+                expandedIds={expandedIds}
+                items={item.items}
+                onSelect={onSelect}
+                onToggle={onToggle}
+              />
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
-function OutlineBranch({
-  items,
-  onSelect
+function BookmarksTab({
+  bookmarks,
+  menuOpenId,
+  onDeleteBookmark,
+  onSelectBookmark,
+  onToggleBookmarkMenu
 }: {
-  items: OutlineItem[];
-  onSelect: (item: OutlineItem) => void;
+  bookmarks: Bookmark[];
+  menuOpenId: string | null;
+  onDeleteBookmark: (bookmark: Bookmark) => void;
+  onSelectBookmark: (bookmark: Bookmark) => void;
+  onToggleBookmarkMenu: (bookmarkId: string) => void;
 }) {
+  if (bookmarks.length === 0) {
+    return (
+      <div className="marks-popover__empty-state">
+        <p>No bookmarks in this document yet.</p>
+      </div>
+    );
+  }
+
   return (
-    <ul className="outline-list">
-      {items.map((item) => (
-        <li key={item.id}>
-          <button className="outline-button" type="button" onClick={() => onSelect(item)}>
-            <span>{item.title}</span>
-            <small>{outlineMeta(item)}</small>
-          </button>
-          {item.items.length > 0 ? (
-            <OutlineBranch items={item.items} onSelect={onSelect} />
-          ) : null}
-        </li>
-      ))}
-    </ul>
+    <div className="marks-popover__bookmark-list" role="list">
+      {bookmarks.map((bookmark) => {
+        const menuOpen = menuOpenId === bookmark.id;
+
+        return (
+          <div key={bookmark.id} className="marks-popover__bookmark-item" role="listitem">
+            <button
+              className="marks-popover__bookmark-row"
+              type="button"
+              onClick={() => onSelectBookmark(bookmark)}
+            >
+              <span className="marks-popover__bookmark-icon" aria-hidden="true">
+                <BookmarkGlyph />
+              </span>
+              <span className="marks-popover__bookmark-label">{bookmark.label}</span>
+              <span className="marks-popover__bookmark-page">{bookmark.page}</span>
+            </button>
+
+            <div className="marks-popover__bookmark-actions">
+              <button
+                className={`marks-popover__bookmark-menu-trigger${
+                  menuOpen ? " marks-popover__bookmark-menu-trigger--active" : ""
+                }`}
+                type="button"
+                aria-label={`Bookmark actions for ${bookmark.label}`}
+                aria-expanded={menuOpen}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                }}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onToggleBookmarkMenu(bookmark.id);
+                }}
+              >
+                <OverflowGlyph />
+              </button>
+
+              {menuOpen ? (
+                <div className="marks-popover__bookmark-menu" role="menu">
+                  <button
+                    className="marks-popover__bookmark-menu-item marks-popover__bookmark-menu-item--danger"
+                    type="button"
+                    role="menuitem"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onDeleteBookmark(bookmark);
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
 export default function OutlineOverlay({
+  anchorElement,
+  currentPage,
   open,
   items,
   bookmarks,
   onClose,
+  onDeleteBookmark,
   onSelect,
   onSelectBookmark
 }: OutlineOverlayProps) {
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const sectionMarks = useMemo(() => dedupeOutlineItems(items), [items]);
+  const savedMarks = useMemo(() => dedupeBookmarks(bookmarks), [bookmarks]);
+  const [activeTab, setActiveTab] = useState<MarksPopoverTab>(() => defaultMarksPopoverTab(items, bookmarks));
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(
+    () => new Set(initialExpandedOutlineIds(sectionMarks, currentPage))
+  );
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [popoverStyle, setPopoverStyle] = useState<{
+    height: number;
+    left: number;
+    maxHeight: number;
+    top: number;
+    width: number;
+  } | null>(null);
+
+  useClientLayoutEffect(() => {
+    if (!open) {
+      setPopoverStyle(null);
+      return;
+    }
+
+    setActiveTab(defaultMarksPopoverTab(sectionMarks, savedMarks));
+    setExpandedIds(new Set(initialExpandedOutlineIds(sectionMarks, currentPage)));
+    setMenuOpenId(null);
+  }, [currentPage, open, savedMarks, sectionMarks]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    function updatePopoverPosition() {
+      const maxViewportWidth = window.innerWidth;
+      const maxViewportHeight = window.innerHeight;
+      const nextWidth = Math.min(320, Math.max(240, maxViewportWidth - 16));
+      const nextMaxHeight = Math.min(640, Math.max(280, maxViewportHeight - 16));
+      const anchorRect = anchorElement?.getBoundingClientRect();
+      const nextLeft = anchorRect
+        ? Math.max(8, Math.min(anchorRect.right + 12, maxViewportWidth - nextWidth - 8))
+        : 76;
+      const nextTop = anchorRect
+        ? Math.max(8, Math.min(anchorRect.top - 8, maxViewportHeight - nextMaxHeight - 8))
+        : 84;
+
+      setPopoverStyle({
+        height: nextMaxHeight,
+        left: nextLeft,
+        maxHeight: nextMaxHeight,
+        top: nextTop,
+        width: nextWidth
+      });
+    }
+
+    updatePopoverPosition();
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" || !anchorElement
+        ? null
+        : new ResizeObserver(() => {
+            updatePopoverPosition();
+          });
+
+    if (resizeObserver && anchorElement) {
+      resizeObserver.observe(anchorElement);
+    }
+
+    window.addEventListener("resize", updatePopoverPosition);
+    window.addEventListener("scroll", updatePopoverPosition, true);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updatePopoverPosition);
+      window.removeEventListener("scroll", updatePopoverPosition, true);
+    };
+  }, [anchorElement, open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (popoverRef.current?.contains(target) || anchorElement?.contains(target)) {
+        return;
+      }
+
+      onClose();
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("keydown", handleKeyDown, true);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [anchorElement, onClose, open]);
+
   if (!open) {
     return null;
   }
 
-  const savedMarks = dedupeBookmarks(bookmarks);
-  const sectionMarks = dedupeOutlineItems(items);
-  const hasMarks = savedMarks.length > 0 || sectionMarks.length > 0;
+  const hasOutline = sectionMarks.length > 0;
 
   return (
-    <div className="overlay-shell overlay-shell--edge" role="presentation" onClick={onClose}>
-      <section
-        className="panel panel--narrow"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Marks"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className="panel__header">
-          <div>
-            <span className="eyebrow">Marks</span>
-            <h2>Saved places</h2>
-          </div>
-          <button className="panel__close" type="button" onClick={onClose}>
-            Close
-          </button>
-        </header>
-        {!hasMarks ? (
-          <div className="empty-state empty-state--panel">
-            <p>No marks in this document yet.</p>
-          </div>
+    <section
+      ref={popoverRef}
+      className="marks-popover"
+      data-positioned={popoverStyle !== null}
+      role="dialog"
+      aria-label="Document marks"
+      style={popoverStyle ?? undefined}
+      onClick={() => {
+        setMenuOpenId(null);
+      }}
+    >
+      <div className="marks-popover__tabs" role="tablist" aria-label="Document marks">
+        <button
+          className={`marks-popover__tab${activeTab === "outline" ? " marks-popover__tab--active" : ""}`}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "outline"}
+          onClick={() => {
+            setActiveTab("outline");
+            setMenuOpenId(null);
+          }}
+        >
+          Outline
+        </button>
+        <button
+          className={`marks-popover__tab${activeTab === "bookmarks" ? " marks-popover__tab--active" : ""}`}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "bookmarks"}
+          onClick={() => {
+            setActiveTab("bookmarks");
+            setMenuOpenId(null);
+          }}
+        >
+          Bookmarks
+        </button>
+      </div>
+
+      <div className="marks-popover__body" role="tabpanel">
+        {activeTab === "outline" ? (
+          hasOutline ? (
+            <OutlineBranch
+              depth={0}
+              expandedIds={expandedIds}
+              items={sectionMarks}
+              onSelect={(item) => {
+                setMenuOpenId(null);
+                onSelect(item);
+              }}
+              onToggle={(itemId) => {
+                setExpandedIds((current) => {
+                  const next = new Set(current);
+                  if (next.has(itemId)) {
+                    next.delete(itemId);
+                  } else {
+                    next.add(itemId);
+                  }
+                  return next;
+                });
+              }}
+            />
+          ) : (
+            <div className="marks-popover__empty-state">
+              <p>No outline available for this document.</p>
+            </div>
+          )
         ) : (
-          <>
-            <BookmarkMarks bookmarks={savedMarks} onSelectBookmark={onSelectBookmark} />
-            <OutlineBranch items={sectionMarks} onSelect={onSelect} />
-          </>
+          <BookmarksTab
+            bookmarks={savedMarks}
+            menuOpenId={menuOpenId}
+            onDeleteBookmark={(bookmark) => {
+              setMenuOpenId(null);
+              onDeleteBookmark(bookmark);
+            }}
+            onSelectBookmark={(bookmark) => {
+              setMenuOpenId(null);
+              onSelectBookmark(bookmark);
+            }}
+            onToggleBookmarkMenu={(bookmarkId) => {
+              setMenuOpenId((current) => (current === bookmarkId ? null : bookmarkId));
+            }}
+          />
         )}
-      </section>
-    </div>
+      </div>
+    </section>
   );
 }
