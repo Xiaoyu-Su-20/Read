@@ -1,4 +1,4 @@
-mod debug;
+pub mod debug;
 mod error;
 mod models;
 mod normalization;
@@ -21,7 +21,7 @@ use normalization::{new_manifest_cache, ManifestCache, NormalizationWorker};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use store::{LibraryStore, RenderCache, RenderSessionRegistry};
-use tauri::{webview::PageLoadEvent, AppHandle, Manager, State};
+use tauri::{webview::PageLoadEvent, AppHandle, Manager, State, WindowEvent};
 
 struct AppState {
     lock: Arc<Mutex<()>>,
@@ -332,6 +332,50 @@ fn move_document(
             with_store(&app, state, |store| {
                 store
                     .move_document(&document_id, &destination_folder_id)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
+}
+
+#[tauri::command]
+fn reorder_collections(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    collection_ids: Vec<String>,
+) -> Result<FolderTreeNode, String> {
+    run_logged_command(
+        "reorder_collections",
+        json!({
+            "collectionIds": collection_ids,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .reorder_collections(&collection_ids)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
+}
+
+#[tauri::command]
+fn reorder_collection_documents(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    collection_id: String,
+    document_ids: Vec<String>,
+) -> Result<FolderTreeNode, String> {
+    run_logged_command(
+        "reorder_collection_documents",
+        json!({
+            "collectionId": collection_id,
+            "documentIds": document_ids,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .reorder_collection_documents(&collection_id, &document_ids)
                     .map_err(|error| error.to_string())
             })
         },
@@ -947,6 +991,12 @@ async fn get_pdf_native_outline(
 }
 
 pub fn run() {
+    crate::debug::startup(
+        "run.enter",
+        json!({
+            "epochMs": epoch_ms(),
+        }),
+    );
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .on_page_load(|_webview, payload| {
@@ -955,6 +1005,13 @@ pub fn run() {
                 PageLoadEvent::Finished => "finished",
             };
 
+            crate::debug::startup(
+                &format!("webview.page-load:{event}"),
+                json!({
+                    "epochMs": epoch_ms(),
+                    "url": payload.url(),
+                }),
+            );
             crate::debug::action(
                 &format!("webview.page-load:{event}"),
                 json!({
@@ -965,6 +1022,12 @@ pub fn run() {
         })
         .setup(|app| {
             let startup_started_at = Instant::now();
+            crate::debug::startup(
+                "app.setup:start",
+                json!({
+                    "elapsedMs": 0,
+                }),
+            );
             crate::debug::action(
                 "app.setup:start",
                 json!({
@@ -973,6 +1036,13 @@ pub fn run() {
             );
 
             let app_dir = app.path().app_data_dir()?;
+            crate::debug::startup(
+                "app.setup:app-data-dir",
+                json!({
+                    "appDir": app_dir.to_string_lossy().to_string(),
+                    "elapsedMs": startup_started_at.elapsed().as_millis(),
+                }),
+            );
             crate::debug::action(
                 "app.setup:app-data-dir",
                 json!({
@@ -982,6 +1052,13 @@ pub fn run() {
             );
 
             let document_dir = app.path().document_dir()?.join("Reader");
+            crate::debug::startup(
+                "app.setup:document-dir",
+                json!({
+                    "documentDir": document_dir.to_string_lossy().to_string(),
+                    "elapsedMs": startup_started_at.elapsed().as_millis(),
+                }),
+            );
             crate::debug::action(
                 "app.setup:document-dir",
                 json!({
@@ -992,6 +1069,12 @@ pub fn run() {
 
             let paths = store::paths::StorePaths::new(app_dir, document_dir);
             paths.ensure_storage_dirs()?;
+            crate::debug::startup(
+                "app.setup:storage-ready",
+                json!({
+                    "elapsedMs": startup_started_at.elapsed().as_millis(),
+                }),
+            );
             crate::debug::action(
                 "app.setup:storage-ready",
                 json!({
@@ -1004,6 +1087,12 @@ pub fn run() {
                 app.handle().clone(),
                 paths,
                 normalization_cache.clone(),
+            );
+            crate::debug::startup(
+                "app.setup:normalization-worker-ready",
+                json!({
+                    "elapsedMs": startup_started_at.elapsed().as_millis(),
+                }),
             );
             crate::debug::action(
                 "app.setup:normalization-worker-ready",
@@ -1021,12 +1110,105 @@ pub fn run() {
                 normalization_worker,
                 normalization_cache,
             });
+            crate::debug::startup(
+                "app.setup:finish",
+                json!({
+                    "elapsedMs": startup_started_at.elapsed().as_millis(),
+                }),
+            );
             crate::debug::action(
                 "app.setup:finish",
                 json!({
                     "elapsedMs": startup_started_at.elapsed().as_millis(),
                 }),
             );
+
+            let main_window_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+                .cloned()
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "missing main window config")
+                })?;
+            let window_build_started_at = Instant::now();
+            crate::debug::startup("webview-window-build:start", json!({}));
+            let window =
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &main_window_config)?
+                    .build()?;
+            crate::debug::startup(
+                "webview-window-build:finish",
+                json!({
+                    "elapsedMs": window_build_started_at.elapsed().as_millis(),
+                }),
+            );
+            let post_build_started_at = Instant::now();
+            crate::debug::startup(
+                "webview-window-post-build:start",
+                json!({
+                    "label": window.label(),
+                }),
+            );
+            window.on_window_event(move |event| {
+                let (event_name, fields) = match event {
+                    WindowEvent::Resized(size) => (
+                        "window.event:resized",
+                        json!({
+                            "width": size.width,
+                            "height": size.height,
+                        }),
+                    ),
+                    WindowEvent::Moved(position) => (
+                        "window.event:moved",
+                        json!({
+                            "x": position.x,
+                            "y": position.y,
+                        }),
+                    ),
+                    WindowEvent::Focused(focused) => (
+                        "window.event:focused",
+                        json!({
+                            "focused": focused,
+                        }),
+                    ),
+                    WindowEvent::ScaleFactorChanged { scale_factor, .. } => (
+                        "window.event:scale-factor-changed",
+                        json!({
+                            "scaleFactor": scale_factor,
+                        }),
+                    ),
+                    WindowEvent::ThemeChanged(theme) => (
+                        "window.event:theme-changed",
+                        json!({
+                            "theme": format!("{theme:?}"),
+                        }),
+                    ),
+                    WindowEvent::CloseRequested { .. } => {
+                        ("window.event:close-requested", json!({}))
+                    }
+                    WindowEvent::Destroyed => ("window.event:destroyed", json!({})),
+                    _ => ("window.event:other", json!({})),
+                };
+
+                crate::debug::startup(
+                    event_name,
+                    json!({
+                        "elapsedSinceBuildMs": post_build_started_at.elapsed().as_millis(),
+                        "label": "main",
+                        "eventFields": fields,
+                    }),
+                );
+            });
+            crate::debug::startup(
+                "webview-window-post-build:listener-attached",
+                json!({
+                    "elapsedMs": post_build_started_at.elapsed().as_millis(),
+                    "label": window.label(),
+                }),
+            );
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1036,6 +1218,8 @@ pub fn run() {
             rescan_library,
             create_folder,
             move_document,
+            reorder_collections,
+            reorder_collection_documents,
             rename_document,
             rename_folder,
             delete_folder,
@@ -1056,6 +1240,20 @@ pub fn run() {
             get_pdf_native_outline,
             render_pdf_page
         ])
-        .run(tauri::generate_context!())
+        .run({
+            crate::debug::startup(
+                "run.before-tauri-run",
+                json!({
+                    "epochMs": epoch_ms(),
+                }),
+            );
+            tauri::generate_context!()
+        })
         .expect("error while running calm reader");
+    crate::debug::startup(
+        "run.exit",
+        json!({
+            "epochMs": epoch_ms(),
+        }),
+    );
 }

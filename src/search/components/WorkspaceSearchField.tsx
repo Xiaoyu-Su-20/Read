@@ -89,7 +89,80 @@ export default function WorkspaceSearchField({
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const scrollbarRef = useRef<HTMLDivElement | null>(null);
+  const scrollbarMetricsRef = useRef({
+    thumbHeight: 0,
+    maxScroll: 0,
+    maxThumbTop: 0
+  });
+  const scrollbarDragRef = useRef<{
+    pointerId: number;
+    startClientY: number;
+    startScrollTop: number;
+  } | null>(null);
   const [focusPulse, setFocusPulse] = useState(false);
+  const [scrollbarState, setScrollbarState] = useState({
+    thumbHeight: 0,
+    thumbTop: 0,
+    visible: false
+  });
+  const view = state.committedView;
+
+  function updateScrollbar() {
+    const bodyElement = bodyRef.current;
+    const scrollbarElement = scrollbarRef.current;
+    if (!bodyElement || !scrollbarElement) {
+      return;
+    }
+
+    const trackHeight = Math.max(scrollbarElement.clientHeight, 0);
+    const maxScroll = Math.max(bodyElement.scrollHeight - bodyElement.clientHeight, 0);
+
+    if (trackHeight <= 0 || maxScroll <= 0) {
+      scrollbarMetricsRef.current = {
+        thumbHeight: 0,
+        maxScroll: 0,
+        maxThumbTop: 0
+      };
+      setScrollbarState({
+        thumbHeight: 0,
+        thumbTop: 0,
+        visible: false
+      });
+      return;
+    }
+
+    const thumbHeight = Math.max(
+      32,
+      trackHeight * (bodyElement.clientHeight / bodyElement.scrollHeight)
+    );
+    const maxThumbTop = Math.max(trackHeight - thumbHeight, 0);
+    const thumbTop =
+      maxScroll === 0 ? 0 : (bodyElement.scrollTop / maxScroll) * maxThumbTop;
+
+    scrollbarMetricsRef.current = {
+      thumbHeight,
+      maxScroll,
+      maxThumbTop
+    };
+    setScrollbarState({
+      thumbHeight,
+      thumbTop,
+      visible: true
+    });
+  }
+
+  function scrollBodyToThumbTop(nextThumbTop: number) {
+    const bodyElement = bodyRef.current;
+    const { maxScroll, maxThumbTop } = scrollbarMetricsRef.current;
+    if (!bodyElement || maxScroll <= 0 || maxThumbTop <= 0) {
+      return;
+    }
+
+    const clampedThumbTop = Math.max(0, Math.min(nextThumbTop, maxThumbTop));
+    bodyElement.scrollTop = (clampedThumbTop / maxThumbTop) * maxScroll;
+  }
 
   useEffect(() => {
     if (focusRequest <= 0) {
@@ -148,6 +221,77 @@ export default function WorkspaceSearchField({
       ?.scrollIntoView({ block: "nearest" });
   }, [state.activeResultId, state.open]);
 
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      updateScrollbar();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [state.open, view.groups.length, view.warnings.length, view.stale, state.expandedGroups]);
+
+  useEffect(() => {
+    const bodyElement = bodyRef.current;
+    if (!bodyElement) {
+      return;
+    }
+
+    const handleResize = () => {
+      updateScrollbar();
+    };
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => {
+            updateScrollbar();
+          });
+
+    resizeObserver?.observe(bodyElement);
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [state.open]);
+
+  useEffect(() => {
+    function handlePointerMove(event: PointerEvent) {
+      const activeDrag = scrollbarDragRef.current;
+      const bodyElement = bodyRef.current;
+      const { maxScroll, maxThumbTop } = scrollbarMetricsRef.current;
+      if (!activeDrag || !bodyElement || maxScroll <= 0 || maxThumbTop <= 0) {
+        return;
+      }
+
+      event.preventDefault();
+      const deltaY = event.clientY - activeDrag.startClientY;
+      const scrollDelta = (deltaY / maxThumbTop) * maxScroll;
+      bodyElement.scrollTop = activeDrag.startScrollTop + scrollDelta;
+      updateScrollbar();
+    }
+
+    function handlePointerUp(event: PointerEvent) {
+      if (scrollbarDragRef.current?.pointerId !== event.pointerId) {
+        return;
+      }
+
+      scrollbarDragRef.current = null;
+    }
+
+    window.addEventListener("pointermove", handlePointerMove, { passive: false });
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+  }, []);
+
   async function activate(result: SearchResult) {
     controller.dismiss();
     if (result.kind === "pdf") {
@@ -163,7 +307,6 @@ export default function WorkspaceSearchField({
     }
   }
 
-  const view = state.committedView;
   const hasQuery = state.inputQuery.trim().length > 0;
   const hasVisibleDropdownContent = view.groups.length > 0 || view.warnings.length > 0;
 
@@ -238,9 +381,27 @@ export default function WorkspaceSearchField({
 
       {state.open && hasQuery && hasVisibleDropdownContent ? (
         <section className="workspace-search__dropdown" role="dialog" aria-label="Search">
-          <div className={`unified-search__body${view.stale ? " unified-search__body--stale" : ""}`}>
+          <div className="unified-search__body-shell">
+            <div
+              ref={bodyRef}
+              className={`unified-search__body${view.stale ? " unified-search__body--stale" : ""}`}
+              onScroll={() => {
+                updateScrollbar();
+              }}
+            >
             {view.groups.map((group) => {
               const expanded = state.expandedGroups.has(group.id);
+              const displayedGroupLabel =
+                group.id === "pdf-names" ? "PDFs" : group.label;
+              const displayedGroupLabelNode =
+                group.id === "pdf-names" ? (
+                  <strong className="search-group__title">
+                    <span>PDF</span>
+                    <span className="search-group__title-suffix">s</span>
+                  </strong>
+                ) : (
+                  renderGroupLabel(displayedGroupLabel)
+                );
               const visible = group.results.slice(
                 0,
                 expanded ? group.results.length : INITIAL_LIMITS[group.id]
@@ -250,7 +411,7 @@ export default function WorkspaceSearchField({
                   className="search-group"
                   data-group={group.id}
                   key={group.id}
-                  aria-label={group.label}
+                  aria-label={displayedGroupLabel}
                 >
                   <header className="search-group__header">
                     <div className="search-group__heading">
@@ -258,7 +419,7 @@ export default function WorkspaceSearchField({
                         <GroupIcon groupId={group.id} />
                       </span>
                       <span className="search-group__decorator" aria-hidden="true">|</span>
-                      {renderGroupLabel(group.label)}
+                      {displayedGroupLabelNode}
                       <span className="search-group__count">
                         {group.countIsFinal ? group.total : `${group.total}+`}
                       </span>
@@ -307,6 +468,51 @@ export default function WorkspaceSearchField({
                 </section>
               );
             })}
+            </div>
+            <div
+              ref={scrollbarRef}
+              className={
+                scrollbarState.visible
+                  ? "unified-search__scrollbar unified-search__scrollbar--visible"
+                  : "unified-search__scrollbar"
+              }
+              aria-hidden="true"
+              onPointerDown={(event) => {
+                const scrollbarElement = scrollbarRef.current;
+                if (!scrollbarElement || event.target !== event.currentTarget) {
+                  return;
+                }
+
+                event.preventDefault();
+                const trackRect = scrollbarElement.getBoundingClientRect();
+                scrollBodyToThumbTop(
+                  event.clientY - trackRect.top - scrollbarState.thumbHeight / 2
+                );
+                updateScrollbar();
+              }}
+            >
+              <div
+                className="unified-search__scrollbar-thumb"
+                style={{
+                  height: `${scrollbarState.thumbHeight}px`,
+                  transform: `translateY(${scrollbarState.thumbTop}px)`
+                }}
+                onPointerDown={(event) => {
+                  const bodyElement = bodyRef.current;
+                  if (!bodyElement) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                  scrollbarDragRef.current = {
+                    pointerId: event.pointerId,
+                    startClientY: event.clientY,
+                    startScrollTop: bodyElement.scrollTop
+                  };
+                }}
+              />
+            </div>
           </div>
 
           {view.warnings.length > 0 ? (

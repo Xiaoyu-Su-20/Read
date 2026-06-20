@@ -42,6 +42,114 @@ struct ExistingDocumentMatch {
 }
 
 impl CatalogStore {
+    fn ensure_collection_order(
+        &self,
+        index: &mut LibraryIndex,
+        collection_ids: &[String],
+    ) {
+        let collection_id_set = collection_ids.iter().cloned().collect::<HashSet<_>>();
+        index
+            .collection_order
+            .retain(|collection_id| collection_id_set.contains(collection_id));
+        for collection_id in collection_ids {
+            if !index.collection_order.contains(collection_id) {
+                index.collection_order.push(collection_id.clone());
+            }
+        }
+        index
+            .document_order_by_collection
+            .retain(|collection_id, _| collection_id_set.contains(collection_id));
+    }
+
+    fn ensure_document_order_for_collection(
+        &self,
+        index: &mut LibraryIndex,
+        collection_id: &str,
+        document_ids: &[String],
+    ) {
+        let document_id_set = document_ids.iter().cloned().collect::<HashSet<_>>();
+        let mut order = index
+            .document_order_by_collection
+            .remove(collection_id)
+            .unwrap_or_default();
+        order.retain(|document_id| document_id_set.contains(document_id));
+        for document_id in document_ids {
+            if !order.contains(document_id) {
+                order.push(document_id.clone());
+            }
+        }
+        index
+            .document_order_by_collection
+            .insert(collection_id.to_string(), order);
+    }
+
+    fn reconcile_manual_order(
+        &self,
+        index: &mut LibraryIndex,
+        collection_ids: &[String],
+    ) {
+        self.ensure_collection_order(index, collection_ids);
+
+        for collection_id in collection_ids {
+            let mut document_ids = index
+                .documents
+                .iter()
+                .filter(|document| {
+                    document.availability == DocumentAvailability::Available
+                        && document.folder_id == collection_id.as_str()
+                })
+                .map(|document| document.id.clone())
+                .collect::<Vec<_>>();
+            document_ids.sort_by(|left, right| {
+                let left_title = index
+                    .documents
+                    .iter()
+                    .find(|document| document.id == *left)
+                    .map(|document| document.title.as_str())
+                    .unwrap_or("");
+                let right_title = index
+                    .documents
+                    .iter()
+                    .find(|document| document.id == *right)
+                    .map(|document| document.title.as_str())
+                    .unwrap_or("");
+                left_title.cmp(right_title)
+            });
+            self.ensure_document_order_for_collection(index, collection_id, &document_ids);
+        }
+    }
+
+    fn remove_document_from_collection_order(index: &mut LibraryIndex, collection_id: &str, document_id: &str) {
+        if let Some(order) = index.document_order_by_collection.get_mut(collection_id) {
+            order.retain(|current_id| current_id != document_id);
+        }
+    }
+
+    fn append_document_to_collection_order(index: &mut LibraryIndex, collection_id: &str, document_id: &str) {
+        let order = index
+            .document_order_by_collection
+            .entry(collection_id.to_string())
+            .or_default();
+        order.retain(|current_id| current_id != document_id);
+        order.push(document_id.to_string());
+    }
+
+    fn rename_collection_order(index: &mut LibraryIndex, previous_collection_id: &str, next_collection_id: &str) {
+        for collection_id in &mut index.collection_order {
+            if collection_id == previous_collection_id {
+                *collection_id = next_collection_id.to_string();
+            }
+        }
+        if let Some(document_order) = index
+            .document_order_by_collection
+            .remove(previous_collection_id)
+        {
+            index
+                .document_order_by_collection
+                .insert(next_collection_id.to_string(), document_order);
+        }
+    }
+
     pub fn reconcile_library(
         &self,
         paths: &StorePaths,
@@ -314,6 +422,11 @@ impl CatalogStore {
             );
 
             index.documents = next_documents;
+            let collection_ids = collection_paths
+                .iter()
+                .map(|collection_path| paths.relative_to_root(&root, collection_path))
+                .collect::<AppResult<Vec<_>>>()?;
+            self.reconcile_manual_order(&mut index, &collection_ids);
             process.checkpoint(
                 "final-catalog-stats",
                 json!({
@@ -416,6 +529,12 @@ impl CatalogStore {
             paths.folder_id_from_relative_path(&relative_path);
         index.documents[document_index].relative_path = relative_path;
         index.documents[document_index].availability = DocumentAvailability::Available;
+        Self::remove_document_from_collection_order(&mut index, &document.folder_id, document_id);
+        Self::append_document_to_collection_order(
+            &mut index,
+            destination_folder_id,
+            document_id,
+        );
         self.save_index(paths, &index)?;
         Ok(index.documents[document_index].clone())
     }
@@ -495,6 +614,7 @@ impl CatalogStore {
         let relative_path = paths.relative_to_root(&root, &destination_path)?;
         let mut index = self.load_index(paths)?;
         self.rename_folder_documents(&mut index, folder_id, &relative_path);
+        Self::rename_collection_order(&mut index, folder_id, &relative_path);
         self.save_index(paths, &index)?;
         Ok(self.folder_record_for_relative(&relative_path))
     }
@@ -529,7 +649,85 @@ impl CatalogStore {
             }
         })?;
 
+        let mut index = self.load_index(paths)?;
+        index
+            .collection_order
+            .retain(|collection_id| collection_id != folder_id);
+        index.document_order_by_collection.remove(folder_id);
+        self.save_index(paths, &index)?;
+
         Ok(deleted)
+    }
+
+    pub fn reorder_collections(
+        &self,
+        paths: &StorePaths,
+        collection_ids: &[String],
+    ) -> AppResult<()> {
+        let root = paths.library_root_path();
+        let existing_collection_ids = self
+            .collection_paths(&root)?
+            .into_iter()
+            .map(|collection_path| paths.relative_to_root(&root, &collection_path))
+            .collect::<AppResult<Vec<_>>>()?;
+        let existing_id_set = existing_collection_ids.iter().cloned().collect::<HashSet<_>>();
+        let provided_id_set = collection_ids.iter().cloned().collect::<HashSet<_>>();
+
+        if existing_collection_ids.len() != collection_ids.len()
+            || existing_id_set.len() != collection_ids.len()
+            || provided_id_set != existing_id_set
+        {
+            return Err(AppError::InvalidInput(
+                "Collection reorder ids must match the current collection set exactly."
+                    .to_string(),
+            ));
+        }
+
+        let mut index = self.load_index(paths)?;
+        self.ensure_collection_order(&mut index, &existing_collection_ids);
+        index.collection_order = collection_ids.to_vec();
+        self.save_index(paths, &index)?;
+        Ok(())
+    }
+
+    pub fn reorder_collection_documents(
+        &self,
+        paths: &StorePaths,
+        collection_id: &str,
+        document_ids: &[String],
+    ) -> AppResult<()> {
+        let root = paths.library_root_path();
+        paths.resolve_collection_path(&root, collection_id)?;
+
+        let index = self.load_index(paths)?;
+        let existing_document_ids = index
+            .documents
+            .iter()
+            .filter(|document| {
+                document.availability == DocumentAvailability::Available
+                    && document.folder_id == collection_id
+            })
+            .map(|document| document.id.clone())
+            .collect::<Vec<_>>();
+        let existing_id_set = existing_document_ids.iter().cloned().collect::<HashSet<_>>();
+        let provided_id_set = document_ids.iter().cloned().collect::<HashSet<_>>();
+
+        if existing_document_ids.len() != document_ids.len()
+            || existing_id_set.len() != document_ids.len()
+            || provided_id_set != existing_id_set
+        {
+            return Err(AppError::InvalidInput(
+                "Document reorder ids must match the current collection document set exactly."
+                    .to_string(),
+            ));
+        }
+
+        let mut next_index = index;
+        next_index
+            .document_order_by_collection
+            .insert(collection_id.to_string(), document_ids.to_vec());
+        self.save_index(paths, &next_index)?;
+        Ok(())
     }
 
     pub fn move_document_out_of_library(
@@ -631,13 +829,30 @@ impl CatalogStore {
         index: &LibraryIndex,
     ) -> AppResult<FolderTreeNode> {
         let root = paths.library_root_path();
+        let collection_paths = self.collection_paths(&root)?;
+        let collection_id_by_path = collection_paths
+            .iter()
+            .map(|collection_path| {
+                let relative_path = paths.relative_to_root(&root, collection_path)?;
+                Ok((relative_path, collection_path.clone()))
+            })
+            .collect::<AppResult<HashMap<_, _>>>()?;
         let mut folders = Vec::new();
-        for collection_path in self.collection_paths(&root)? {
-            let relative_path = paths.relative_to_root(&root, &collection_path)?;
-            folders.push(self.build_collection_node(&relative_path, index));
+        for collection_id in &index.collection_order {
+            if let Some(collection_path) = collection_id_by_path.get(collection_id) {
+                let relative_path = paths.relative_to_root(&root, collection_path)?;
+                folders.push(self.build_collection_node(&relative_path, index));
+            }
         }
-
-        folders.sort_by(|left, right| left.folder.name.cmp(&right.folder.name));
+        for (collection_id, collection_path) in collection_id_by_path {
+            if !folders
+                .iter()
+                .any(|collection| collection.folder.id == collection_id)
+            {
+                let relative_path = paths.relative_to_root(&root, &collection_path)?;
+                folders.push(self.build_collection_node(&relative_path, index));
+            }
+        }
 
         Ok(FolderTreeNode {
             folder: self.folder_record_for_relative(""),
@@ -824,11 +1039,23 @@ impl CatalogStore {
             }
         }
 
+        let mut index = self.load_index(paths)?;
+        let collection_ids = self
+            .collection_paths(&paths.library_dir)?
+            .into_iter()
+            .map(|collection_path| paths.relative_to_root(&paths.library_dir, &collection_path))
+            .collect::<AppResult<Vec<_>>>()?;
+        let previous_index = index.clone();
+        self.reconcile_manual_order(&mut index, &collection_ids);
+        if index != previous_index {
+          self.save_index(paths, &index)?;
+        }
+
         Ok(())
     }
 
     fn build_collection_node(&self, relative_path: &str, index: &LibraryIndex) -> FolderTreeNode {
-        let mut documents = index
+        let documents_by_id = index
             .documents
             .iter()
             .filter(|document| {
@@ -836,8 +1063,21 @@ impl CatalogStore {
                     && document.folder_id == relative_path
             })
             .cloned()
-            .collect::<Vec<_>>();
-        documents.sort_by(|left, right| left.title.cmp(&right.title));
+            .map(|document| (document.id.clone(), document))
+            .collect::<HashMap<_, _>>();
+        let mut documents = Vec::with_capacity(documents_by_id.len());
+        if let Some(order) = index.document_order_by_collection.get(relative_path) {
+            for document_id in order {
+                if let Some(document) = documents_by_id.get(document_id) {
+                    documents.push(document.clone());
+                }
+            }
+        }
+        for document in documents_by_id.values() {
+            if !documents.iter().any(|current| current.id == document.id) {
+                documents.push(document.clone());
+            }
+        }
 
         FolderTreeNode {
             folder: self.folder_record_for_relative(relative_path),

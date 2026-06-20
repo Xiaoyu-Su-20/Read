@@ -24,6 +24,7 @@ type UseLibraryFlowsArgs = {
   setStatusMessage: (message: string) => void;
   createCollection: (name: string) => Promise<unknown>;
   importDocumentToCollection: (sourcePath: string, destinationFolderId: string) => Promise<unknown>;
+  importDocumentsToCollection: (sourcePaths: string[], destinationFolderId: string) => Promise<unknown>;
   moveActiveDocument: (destinationFolderId: string) => Promise<unknown>;
   renameActiveDocument: (newName: string) => Promise<unknown>;
   renameCollection: (collectionId: string, newName: string) => Promise<unknown>;
@@ -42,6 +43,7 @@ export function useLibraryFlows({
   setStatusMessage,
   createCollection,
   importDocumentToCollection,
+  importDocumentsToCollection,
   moveActiveDocument,
   renameActiveDocument,
   renameCollection,
@@ -93,6 +95,42 @@ export function useLibraryFlows({
     process.finish({
       selected: true,
       deferredSelection: true
+    });
+  }
+
+  async function promptImportIntoCollectionFlow(collectionId: string) {
+    const process = startDebugProcess("app.prompt-import-into-collection-flow", {
+      collectionId
+    });
+    const selection = await open({
+      multiple: true,
+      filters: [
+        {
+          name: "PDF",
+          extensions: ["pdf"]
+        }
+      ]
+    });
+
+    const sourcePaths =
+      typeof selection === "string"
+        ? [selection]
+        : Array.isArray(selection)
+          ? selection.filter((entry): entry is string => typeof entry === "string")
+          : [];
+
+    if (sourcePaths.length === 0) {
+      process.finish({
+        selected: false
+      });
+      return;
+    }
+
+    await importDocumentsToCollection(sourcePaths, collectionId);
+    closePalette();
+    process.finish({
+      importedCount: sourcePaths.length,
+      selected: true
     });
   }
 
@@ -194,6 +232,7 @@ export function useLibraryFlows({
 
   return {
     promptImportFlow,
+    promptImportIntoCollectionFlow,
     createCollectionFlow,
     moveDocumentFlow,
     renameDocumentFlow,

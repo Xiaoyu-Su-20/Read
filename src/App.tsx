@@ -3,14 +3,20 @@ import type {
   PointerEvent as ReactPointerEvent,
   ReactNode
 } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore
+} from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import CommandPalette from "./components/CommandPalette";
-import CollectionView from "./components/CollectionView";
+import CollectionViewRefresh from "./components/CollectionViewRefresh";
 import DisplaySettingsPopover from "./components/DisplaySettingsPopover";
-import OutlineOverlay from "./components/OutlineOverlay";
-import ReaderWorkspace from "./components/ReaderWorkspace";
 import CollectionLibraryGlyph from "./components/icons/CollectionLibraryGlyph";
 import { createUnifiedSearchController } from "./search";
 import { openLibraryFolder } from "./lib/api";
@@ -31,14 +37,30 @@ import { useLibraryFlows } from "./lib/app/useLibraryFlows";
 import { useNotesController } from "./lib/app/useNotesController";
 import { usePaletteController } from "./lib/app/usePaletteController";
 import { useWorkspaceController } from "./lib/app/useWorkspaceController";
-import { debugAction } from "./lib/debugLog";
+import { debugAction, debugLocalAction } from "./lib/debugLog";
 import { collectDocuments } from "./lib/tree";
 
+function startupTrace(step: string, fields: Record<string, unknown> = {}) {
+  const payload = {
+    step,
+    epochMs: Date.now(),
+    navigationMs: Math.round(performance.now()),
+    ...fields
+  };
+  console.info(`[CR-STARTUP][app] ${step}`, payload);
+  debugLocalAction(`frontend.startup.app.${step}`, payload);
+  debugAction(`frontend.startup.app.${step}`, payload);
+}
+
+startupTrace("module-loaded");
 const appWindow = getCurrentWindow();
 const COLLECTION_CLICK_MARK = "collection-click";
 const COLLECTION_FIRST_FRAME_MARK = "collection-first-frame";
 const COLLECTION_CLICK_TO_FRAME_MEASURE = "collection-click-to-frame";
 const COLLECTION_SIDEBAR_CONTROL_ID = "sidebar-collection";
+const LazyCommandPalette = lazy(() => import("./components/CommandPalette"));
+const LazyOutlineOverlay = lazy(() => import("./components/OutlineOverlay"));
+const LazyReaderWorkspace = lazy(() => import("./components/ReaderWorkspace"));
 
 type FullscreenState =
   | "windowed"
@@ -107,6 +129,7 @@ function ChromeIcon({
 }
 
 export default function App() {
+  startupTrace("component-render-start");
   const workspace = useWorkspaceController();
   const notes = useNotesController({
     activeDocument: workspace.activeDocument,
@@ -148,6 +171,29 @@ export default function App() {
   const [themePreview, setThemePreview] = useState<ThemeDefinition | null>(null);
   const activeTheme = selectors.activeTheme(settings);
   const themeList = selectors.themeList(settings);
+
+  useEffect(() => {
+    startupTrace("component-mounted");
+    return () => {
+      startupTrace("component-unmounted");
+    };
+  }, []);
+
+  useEffect(() => {
+    startupTrace("workspace-snapshot", {
+      activeDocumentId: workspace.activeDocument?.document.id ?? null,
+      activeReaderSessionId: workspace.activeReaderSession?.openSessionId ?? null,
+      libraryLoaded: workspace.libraryTree !== null,
+      selectedCollectionId: workspace.selectedCollection?.folder.id ?? null,
+      workspaceMode: workspace.workspaceMode
+    });
+  }, [
+    workspace.activeDocument?.document.id,
+    workspace.activeReaderSession?.openSessionId,
+    workspace.libraryTree,
+    workspace.selectedCollection?.folder.id,
+    workspace.workspaceMode
+  ]);
   const readerPreferences = selectors.readerPreferences(settings);
   const viewerDisplayConfig = themePreview
     ? createViewerDisplayConfig(themePreview)
@@ -547,6 +593,7 @@ export default function App() {
     setStatusMessage: workspace.setStatusMessage,
     createCollection: workspace.createCollection,
     importDocumentToCollection: workspace.importDocumentToCollection,
+    importDocumentsToCollection: workspace.importDocumentsToCollection,
     moveActiveDocument: workspace.moveActiveDocument,
     renameActiveDocument: workspace.renameActiveDocument,
     renameCollection: workspace.renameCollection,
@@ -1095,7 +1142,7 @@ export default function App() {
             }`}
             aria-hidden={workspace.workspaceMode !== "collection"}
           >
-            <CollectionView
+            <CollectionViewRefresh
               tree={workspace.libraryTree}
               selectedCollectionId={workspace.selectedCollection?.folder.id ?? null}
               onSelectCollection={workspace.setSelectedCollectionId}
@@ -1114,6 +1161,22 @@ export default function App() {
               onRenameDocument={async (documentId, nextName) => {
                 await workspace.renameDocumentInLibrary(documentId, nextName);
               }}
+              onPromptImportCollection={async (collectionId) => {
+                await flows.promptImportIntoCollectionFlow(collectionId);
+              }}
+              onImportDocuments={async (collectionId, sourcePaths) => {
+                await workspace.importDocumentsToCollection(sourcePaths, collectionId);
+              }}
+              onMoveDocumentToCollection={async (documentId, destinationCollectionId) => {
+                await workspace.moveDocumentInLibrary(documentId, destinationCollectionId);
+              }}
+              onReorderCollections={async (collectionIds) => {
+                await workspace.reorderLibraryCollections(collectionIds);
+              }}
+              onReorderDocuments={async (collectionId, documentIds) => {
+                await workspace.reorderDocumentsInCollection(collectionId, documentIds);
+              }}
+              onShowStatus={workspace.setStatusMessage}
             />
           </div>
         ) : null}
@@ -1124,96 +1187,106 @@ export default function App() {
             }`}
             aria-hidden={workspace.workspaceMode !== "reader"}
           >
-            <ReaderWorkspace
-              activeViewTransition={activeViewTransitionRef.current}
-              readerSession={workspace.activeReaderSession}
-              readerActive={workspace.workspaceMode === "reader"}
-              pendingReaderOpenSessionId={workspace.pendingReaderOpenSessionId}
-              note={notes.note}
-              notesLoading={notes.loading}
-              noteNavigationItems={notes.navigationItems}
-              onChangeNoteTitle={notes.updateTitle}
-              onChangeNoteBlocks={notes.updateBlocks}
-              onFlushNote={() => notes.flushNow("editor-blur")}
-              onCopyAllNoteText={notes.copyAllText}
-              onGoToNotePage={workspace.goToReaderPage}
-              currentReaderPage={workspace.viewerSnapshot.currentPage}
-              noteRevealRequest={noteRevealRequest}
-              outlineItems={workspace.outlineItems}
-              readerState={workspace.readerState}
-              onNavigateToTarget={(target) => {
-                workspace.viewerApiRef.current?.navigateToTarget(target);
-              }}
-              onSetUserOutlineItems={(items) => {
-                workspace.viewerApiRef.current?.setUserOutlineItems(items);
-              }}
-              onSnapshotChange={workspace.handleViewerSnapshotChange}
-              onOutlineChange={workspace.handleViewerOutlineChange}
-              onStateChange={workspace.handleViewerStateChange}
-              onStatusChange={workspace.handleViewerStatusChange}
-              registerApi={workspace.registerViewerApi}
-              viewerDisplayConfig={viewerDisplayConfig}
-              documentHeaderTitle={workspace.activeDocument?.document.title ?? "Reader"}
-              documentHeaderCurrentPage={workspace.viewerSnapshot.currentPage}
-              documentHeaderPageCount={workspace.viewerSnapshot.pageCount}
-              documentHeaderZoom={workspace.viewerSnapshot.zoom}
-              viewerApi={workspace.viewerApi}
-              onHeaderMouseDown={handleTopbarMouseDown}
-              windowControls={renderWindowControls()}
-              searchController={searchController}
-              searchFocusRequest={searchFocusRequest}
-              commandPaletteOpen={palette.paletteOpen}
-              onToggleCommandPalette={() => {
-                if (palette.paletteOpen) {
-                  palette.closePalette();
-                  return;
+            <Suspense fallback={null}>
+              <LazyReaderWorkspace
+                activeViewTransition={activeViewTransitionRef.current}
+                readerSession={workspace.activeReaderSession}
+                readerActive={workspace.workspaceMode === "reader"}
+                pendingReaderOpenSessionId={workspace.pendingReaderOpenSessionId}
+                note={notes.note}
+                notesLoading={notes.loading}
+                noteNavigationItems={notes.navigationItems}
+                onChangeNoteTitle={notes.updateTitle}
+                onChangeNoteBlocks={notes.updateBlocks}
+                onFlushNote={() => notes.flushNow("editor-blur")}
+                onCopyAllNoteText={notes.copyAllText}
+                onGoToNotePage={workspace.goToReaderPage}
+                currentReaderPage={workspace.viewerSnapshot.currentPage}
+                noteRevealRequest={noteRevealRequest}
+                outlineItems={workspace.outlineItems}
+                readerState={workspace.readerState}
+                onNavigateToTarget={(target) => {
+                  workspace.viewerApiRef.current?.navigateToTarget(target);
+                }}
+                onSetUserOutlineItems={(items) => {
+                  workspace.viewerApiRef.current?.setUserOutlineItems(items);
+                }}
+                onSnapshotChange={workspace.handleViewerSnapshotChange}
+                onOutlineChange={workspace.handleViewerOutlineChange}
+                onStateChange={workspace.handleViewerStateChange}
+                onStatusChange={workspace.handleViewerStatusChange}
+                registerApi={workspace.registerViewerApi}
+                viewerDisplayConfig={viewerDisplayConfig}
+                documentHeaderTitle={workspace.activeDocument?.document.title ?? "Reader"}
+                documentHeaderCurrentPage={workspace.viewerSnapshot.currentPage}
+                documentHeaderPageCount={workspace.viewerSnapshot.pageCount}
+                documentHeaderZoom={workspace.viewerSnapshot.zoom}
+                viewerApi={workspace.viewerApi}
+                onHeaderMouseDown={handleTopbarMouseDown}
+                windowControls={renderWindowControls()}
+                searchController={searchController}
+                searchFocusRequest={searchFocusRequest}
+                commandPaletteOpen={palette.paletteOpen}
+                onToggleCommandPalette={() => {
+                  if (palette.paletteOpen) {
+                    palette.closePalette();
+                    return;
+                  }
+                  palette.openCommands(commandRegistry);
+                }}
+                registerCommandPaletteAnchor={setPaletteAnchorElement}
+                onSearchOpenDocument={(documentId) =>
+                  workspace.handleOpenDocument(documentId, { source: "search-result" })
                 }
-                palette.openCommands(commandRegistry);
-              }}
-              registerCommandPaletteAnchor={setPaletteAnchorElement}
-              onSearchOpenDocument={(documentId) =>
-                workspace.handleOpenDocument(documentId, { source: "search-result" })
-              }
-              onSearchGoToPage={workspace.goToReaderPage}
-              onSearchRevealNoteBlock={(blockId) => {
-                setNoteRevealRequest((current) => ({ blockId, sequence: (current?.sequence ?? 0) + 1 }));
-              }}
-              showHeaders={!readerFullscreenActive}
-              showFullscreenHint={showFullscreenHint}
-              fullscreen={readerFullscreenActive}
-              onToggleFullscreen={toggleFullscreen}
-              readerPaneSplitRatio={readerPaneSplitRatio}
-              hidePaneResizeHandle={readerOverlayOpen}
-              onChangeReaderPaneSplitRatio={(nextRatio) => {
-                setSetting("readerPaneSplitRatio", nextRatio);
-              }}
-            />
+                onSearchGoToPage={workspace.goToReaderPage}
+                onSearchRevealNoteBlock={(blockId) => {
+                  setNoteRevealRequest((current) => ({ blockId, sequence: (current?.sequence ?? 0) + 1 }));
+                }}
+                showHeaders={!readerFullscreenActive}
+                showFullscreenHint={showFullscreenHint}
+                fullscreen={readerFullscreenActive}
+                onToggleFullscreen={toggleFullscreen}
+                readerPaneSplitRatio={readerPaneSplitRatio}
+                hidePaneResizeHandle={readerOverlayOpen}
+                onChangeReaderPaneSplitRatio={(nextRatio) => {
+                  setSetting("readerPaneSplitRatio", nextRatio);
+                }}
+              />
+            </Suspense>
           </div>
         ) : null}
       </section>
 
-      <CommandPalette
-        open={palette.paletteOpen}
-        session={palette.paletteSession}
-        onClose={palette.closePalette}
-        onChangeQuery={palette.changeQuery}
-        anchorElement={paletteAnchorElement}
-      />
+      {palette.paletteOpen ? (
+        <Suspense fallback={null}>
+          <LazyCommandPalette
+            open={palette.paletteOpen}
+            session={palette.paletteSession}
+            onClose={palette.closePalette}
+            onChangeQuery={palette.changeQuery}
+            anchorElement={paletteAnchorElement}
+          />
+        </Suspense>
+      ) : null}
 
-      <OutlineOverlay
-        open={outlineOpen}
-        items={workspace.outlineItems}
-        bookmarks={workspace.readerState?.bookmarks ?? []}
-        onClose={() => setOutlineOpen(false)}
-        onSelect={(item) => {
-          workspace.viewerApiRef.current?.jumpToOutline(item);
-          setOutlineOpen(false);
-        }}
-        onSelectBookmark={(bookmark) => {
-          workspace.viewerApiRef.current?.goToPage(bookmark.page);
-          setOutlineOpen(false);
-        }}
-      />
+      {outlineOpen ? (
+        <Suspense fallback={null}>
+          <LazyOutlineOverlay
+            open={outlineOpen}
+            items={workspace.outlineItems}
+            bookmarks={workspace.readerState?.bookmarks ?? []}
+            onClose={() => setOutlineOpen(false)}
+            onSelect={(item) => {
+              workspace.viewerApiRef.current?.jumpToOutline(item);
+              setOutlineOpen(false);
+            }}
+            onSelectBookmark={(bookmark) => {
+              workspace.viewerApiRef.current?.goToPage(bookmark.page);
+              setOutlineOpen(false);
+            }}
+          />
+        </Suspense>
+      ) : null}
 
     </main>
   );

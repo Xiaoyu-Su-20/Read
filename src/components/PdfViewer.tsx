@@ -235,12 +235,24 @@ const PdfViewer = memo(function PdfViewer({
     displayZoomRef.current = displayZoom;
   }, [displayZoom]);
 
-  useEffect(() => {
-    fitTargetZoomRef.current = null;
+  function clearFitCommitTimer() {
     if (fitCommitTimerRef.current !== null) {
       window.clearTimeout(fitCommitTimerRef.current);
       fitCommitTimerRef.current = null;
     }
+  }
+
+  function scheduleFitCommit(targetZoom: number) {
+    clearFitCommitTimer();
+    fitCommitTimerRef.current = window.setTimeout(() => {
+      fitCommitTimerRef.current = null;
+      commitAutoMaximizeZoom(targetZoom);
+    }, AUTO_MAXIMIZE_RESIZE_SETTLE_MS);
+  }
+
+  useEffect(() => {
+    fitTargetZoomRef.current = null;
+    clearFitCommitTimer();
   }, [fitMode, openSessionId]);
 
   useEffect(() => {
@@ -525,19 +537,9 @@ const PdfViewer = memo(function PdfViewer({
       !shouldAutoFitReaderPage(fitMode) ||
       suspendAutoFitDuringPaneResize
     ) {
-      if (fitCommitTimerRef.current !== null) {
-        window.clearTimeout(fitCommitTimerRef.current);
-        fitCommitTimerRef.current = null;
-      }
+      clearFitCommitTimer();
       return;
     }
-
-    const clearFitCommitTimer = () => {
-      if (fitCommitTimerRef.current !== null) {
-        window.clearTimeout(fitCommitTimerRef.current);
-        fitCommitTimerRef.current = null;
-      }
-    };
 
     const updateAutoMaximizeZoom = () => {
       const effectiveRenderZoom = Math.max(layoutPage.renderZoom, 0.0001);
@@ -558,26 +560,43 @@ const PdfViewer = memo(function PdfViewer({
       }
 
       reportAutoMaximizeZoom(nextZoom);
-      if (!hasMeaningfulZoomDelta(nextZoom, fitTargetZoomRef.current)) {
+      const targetChanged = hasMeaningfulZoomDelta(nextZoom, fitTargetZoomRef.current);
+      const commitStillNeeded = hasMeaningfulZoomDelta(nextZoom, committedZoom);
+
+      if (targetChanged) {
+        fitTargetZoomRef.current = nextZoom;
+        previewAutoMaximizeZoom(nextZoom);
+      }
+
+      debugAction(
+        "frontend.auto-maximize.fit-state",
+        buildOpenSessionFields({
+          commitScheduled: fitCommitTimerRef.current !== null,
+          committedZoom,
+          displayZoom: displayZoomRef.current,
+          fitTargetZoom: fitTargetZoomRef.current,
+          nextZoom,
+          targetChanged
+        })
+      );
+
+      if (!commitStillNeeded) {
+        clearFitCommitTimer();
         return;
       }
 
-      fitTargetZoomRef.current = nextZoom;
-      previewAutoMaximizeZoom(nextZoom);
-      clearFitCommitTimer();
-      fitCommitTimerRef.current = window.setTimeout(() => {
-        fitCommitTimerRef.current = null;
-        if (!shouldAutoFitReaderPage(fitMode)) {
-          return;
-        }
-
-        const settledTargetZoom = fitTargetZoomRef.current;
-        if (settledTargetZoom === null || !hasMeaningfulZoomDelta(settledTargetZoom, committedZoom)) {
-          return;
-        }
-
-        commitAutoMaximizeZoom(settledTargetZoom);
-      }, AUTO_MAXIMIZE_RESIZE_SETTLE_MS);
+      if (fitCommitTimerRef.current === null) {
+        debugAction(
+          "frontend.auto-maximize.commit-scheduled",
+          buildOpenSessionFields({
+            committedZoom,
+            displayZoom: displayZoomRef.current,
+            fitTargetZoom: fitTargetZoomRef.current,
+            nextZoom
+          })
+        );
+        scheduleFitCommit(nextZoom);
+      }
     };
 
     updateAutoMaximizeZoom();

@@ -13,6 +13,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Reader",
         "width": 1440,
         "height": 960,
@@ -24,7 +25,7 @@
         "backgroundColor": "#1e2126",
         "theme": "Dark",
         "decorations": false,
-        "shadow": true
+        "shadow": false
       }
     ],
     "security": {

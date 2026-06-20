@@ -9,6 +9,8 @@ import {
   listRecentDocuments,
   moveDocument,
   openDocument,
+  reorderCollectionDocuments,
+  reorderCollections,
   removeFromLibrary,
   renameDocument,
   renameFolder,
@@ -323,6 +325,56 @@ export function useWorkspaceController() {
     [activeDocument, handleOpenDocument]
   );
 
+  const moveDocumentInLibrary = useCallback(
+    async (documentId: string, destinationFolderId: string) => {
+      const moved = await moveDocument(documentId, destinationFolderId);
+      await refreshLibraryState();
+      setSelectedCollectionId(destinationFolderId);
+      setWorkspaceMode("collection");
+      if (activeDocumentId === documentId) {
+        await syncActiveDocument();
+      }
+      setStatusMessage(`Moved ${moved.title}.`);
+      return moved;
+    },
+    [activeDocumentId, refreshLibraryState, syncActiveDocument]
+  );
+
+  const importDocumentsToCollection = useCallback(
+    async (sourcePaths: string[], destinationFolderId: string) => {
+      const uniqueSourcePaths = Array.from(new Set(sourcePaths));
+      const imported = [] as DocumentRecord[];
+      for (const sourcePath of uniqueSourcePaths) {
+        imported.push(await importPdf(sourcePath, destinationFolderId));
+      }
+      await refreshLibraryState();
+      setSelectedCollectionId(destinationFolderId);
+      setWorkspaceMode("collection");
+      if (imported.length === 1) {
+        setStatusMessage(`Imported ${imported[0].title}.`);
+      } else if (imported.length > 1) {
+        setStatusMessage(`Imported ${imported.length} PDFs.`);
+      }
+      return imported;
+    },
+    [refreshLibraryState]
+  );
+
+  const reorderLibraryCollections = useCallback(async (collectionIds: string[]) => {
+    const tree = await reorderCollections(collectionIds);
+    setLibraryTree(tree);
+    return tree;
+  }, []);
+
+  const reorderDocumentsInCollection = useCallback(
+    async (collectionId: string, documentIds: string[]) => {
+      const tree = await reorderCollectionDocuments(collectionId, documentIds);
+      setLibraryTree(tree);
+      return tree;
+    },
+    []
+  );
+
   const renameActiveDocument = useCallback(
     async (newName: string) => {
       if (!activeDocument) {
@@ -466,9 +518,13 @@ export function useWorkspaceController() {
     syncActiveDocument,
     createCollection,
     importDocumentToCollection,
+    importDocumentsToCollection,
     moveActiveDocument,
+    moveDocumentInLibrary,
     renameActiveDocument,
     renameCollection,
+    reorderLibraryCollections,
+    reorderDocumentsInCollection,
     deleteCollection,
     renameDocumentInLibrary,
     removeActiveDocument,

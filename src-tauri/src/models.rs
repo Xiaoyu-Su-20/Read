@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const ROOT_FOLDER_ID: &str = "root";
@@ -281,6 +283,10 @@ pub struct LibraryIndex {
     #[serde(default)]
     pub documents: Vec<DocumentRecord>,
     #[serde(default)]
+    pub collection_order: Vec<String>,
+    #[serde(default)]
+    pub document_order_by_collection: HashMap<String, Vec<String>>,
+    #[serde(default)]
     pub last_opened_document_id: Option<String>,
 }
 
@@ -289,13 +295,15 @@ impl Default for LibraryIndex {
         Self {
             version: default_index_version(),
             documents: Vec::new(),
+            collection_order: Vec::new(),
+            document_order_by_collection: HashMap::new(),
             last_opened_document_id: None,
         }
     }
 }
 
 fn default_index_version() -> u32 {
-    2
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

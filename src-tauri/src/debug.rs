@@ -1,5 +1,8 @@
 use std::{
     env,
+    fs::OpenOptions,
+    io::Write,
+    path::PathBuf,
     sync::OnceLock,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -29,6 +32,12 @@ fn configured_log_level() -> LogLevel {
         },
         Err(_) => LogLevel::Info,
     })
+}
+
+fn startup_log_path() -> PathBuf {
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| env::temp_dir().join("calm-reader-startup.log"))
+        .clone()
 }
 
 pub fn enabled() -> bool {
@@ -154,6 +163,30 @@ fn emit(event: &str, fields: Value) {
 
 pub fn action(event: &str, fields: Value) {
     emit(event, fields);
+}
+
+pub fn startup(event: &str, fields: Value) {
+    let at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+
+    let payload = json!({
+        "scope": "backend-startup",
+        "event": event,
+        "atMs": at_ms,
+        "fields": fields,
+    });
+
+    eprintln!("{payload}");
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(startup_log_path())
+    {
+        let _ = writeln!(file, "{payload}");
+    }
 }
 
 pub struct DebugProcess {

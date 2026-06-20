@@ -33,6 +33,65 @@ fn imports_pdf_without_creating_sidecar_files() {
 }
 
 #[test]
+fn importing_the_same_pdf_twice_reuses_the_existing_document() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source.pdf");
+    write_sample_pdf(&source, "hello");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let first = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let second = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+
+    assert_eq!(first.id, second.id);
+
+    let library = store.list_library().unwrap();
+    let documents = &library
+        .folders
+        .iter()
+        .find(|collection| collection.folder.id == DEFAULT_COLLECTION_ID)
+        .unwrap()
+        .documents;
+    assert_eq!(documents.len(), 1);
+}
+
+#[test]
+fn importing_the_same_pdf_into_another_collection_moves_the_existing_document() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("source.pdf");
+    write_sample_pdf(&source, "hello");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let first = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let moved = store.import_pdf(&source, Some("Collection 2")).unwrap();
+
+    assert_eq!(first.id, moved.id);
+    assert_eq!(moved.folder_id, "Collection 2");
+
+    let library = store.list_library().unwrap();
+    let collection_one = library
+        .folders
+        .iter()
+        .find(|collection| collection.folder.id == DEFAULT_COLLECTION_ID)
+        .unwrap();
+    let collection_two = library
+        .folders
+        .iter()
+        .find(|collection| collection.folder.id == "Collection 2")
+        .unwrap();
+    assert!(collection_one.documents.is_empty());
+    assert_eq!(collection_two.documents.len(), 1);
+    assert_eq!(collection_two.documents[0].id, first.id);
+}
+
+#[test]
 fn rescans_preserve_state_after_manual_rename() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("rename-me.pdf");
@@ -362,4 +421,119 @@ fn delete_folder_rejects_library_root() {
 
     let error = store.delete_folder(ROOT_FOLDER_ID).unwrap_err();
     assert!(error.to_string().contains("library root cannot be deleted"));
+}
+
+#[test]
+fn reorder_collections_persists_custom_order() {
+    let temp = tempdir().unwrap();
+    let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+    let created = store.create_folder("Archive", Some(ROOT_FOLDER_ID)).unwrap();
+
+    let reordered = store
+        .reorder_collections(&[
+            created.id.clone(),
+            "Collection 1".to_string(),
+            "Collection 2".to_string(),
+            "Collection 3".to_string(),
+        ])
+        .unwrap();
+
+    let reordered_ids = reordered
+        .folders
+        .iter()
+        .map(|collection| collection.folder.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reordered_ids,
+        vec![
+            "Archive".to_string(),
+            "Collection 1".to_string(),
+            "Collection 2".to_string(),
+            "Collection 3".to_string(),
+        ]
+    );
+
+    let reopened = store.list_library().unwrap();
+    let reopened_ids = reopened
+        .folders
+        .iter()
+        .map(|collection| collection.folder.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(reordered_ids, reopened_ids);
+}
+
+#[test]
+fn reorder_collection_documents_persists_custom_book_order() {
+    let temp = tempdir().unwrap();
+    let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+    let first = temp.path().join("one.pdf");
+    let second = temp.path().join("two.pdf");
+    write_sample_pdf(&first, "one");
+    write_sample_pdf(&second, "two");
+
+    let first_record = store.import_pdf(&first, Some(DEFAULT_COLLECTION_ID)).unwrap();
+    let second_record = store.import_pdf(&second, Some(DEFAULT_COLLECTION_ID)).unwrap();
+
+    let reordered = store
+        .reorder_collection_documents(
+            DEFAULT_COLLECTION_ID,
+            &[second_record.id.clone(), first_record.id.clone()],
+        )
+        .unwrap();
+    let reordered_titles = reordered
+        .folders
+        .iter()
+        .find(|collection| collection.folder.id == DEFAULT_COLLECTION_ID)
+        .unwrap()
+        .documents
+        .iter()
+        .map(|document| document.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reordered_titles,
+        vec![second_record.id.clone(), first_record.id.clone()]
+    );
+
+    let reopened = store.list_library().unwrap();
+    let reopened_ids = reopened
+        .folders
+        .iter()
+        .find(|collection| collection.folder.id == DEFAULT_COLLECTION_ID)
+        .unwrap()
+        .documents
+        .iter()
+        .map(|document| document.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(reordered_titles, reopened_ids);
+}
+
+#[test]
+fn move_document_updates_collection_order_membership() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("move-me.pdf");
+    write_sample_pdf(&source, "move-me");
+
+    let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+    let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+
+    let moved = store.move_document(&record.id, "Collection 2").unwrap();
+    assert_eq!(moved.folder_id, "Collection 2");
+
+    let library = store.list_library().unwrap();
+    let source_collection = library
+        .folders
+        .iter()
+        .find(|collection| collection.folder.id == DEFAULT_COLLECTION_ID)
+        .unwrap();
+    let destination_collection = library
+        .folders
+        .iter()
+        .find(|collection| collection.folder.id == "Collection 2")
+        .unwrap();
+
+    assert!(source_collection
+        .documents
+        .iter()
+        .all(|document| document.id != record.id));
+    assert_eq!(destination_collection.documents[0].id, record.id);
 }

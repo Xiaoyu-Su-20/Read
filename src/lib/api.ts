@@ -74,6 +74,19 @@ export function moveDocument(documentId: string, destinationFolderId: string) {
   });
 }
 
+export function reorderCollections(collectionIds: string[]) {
+  return invokeLogged<FolderTreeNode>("reorder_collections", {
+    collectionIds
+  });
+}
+
+export function reorderCollectionDocuments(collectionId: string, documentIds: string[]) {
+  return invokeLogged<FolderTreeNode>("reorder_collection_documents", {
+    collectionId,
+    documentIds
+  });
+}
+
 export function renameDocument(documentId: string, newName: string) {
   return invokeLogged<DocumentRecord>("rename_document", {
     documentId,

@@ -105,7 +105,12 @@ impl LibraryStore {
 
     pub fn create_folder(&self, name: &str, parent_id: Option<&str>) -> AppResult<FolderRecord> {
         self.ensure_ready()?;
-        self.catalog.create_folder(&self.paths, name, parent_id)
+        let folder = self.catalog.create_folder(&self.paths, name, parent_id)?;
+        let mut index = self.catalog.load_index(&self.paths)?;
+        index.collection_order.retain(|collection_id| collection_id != &folder.id);
+        index.collection_order.push(folder.id.clone());
+        self.catalog.save_index(&self.paths, &index)?;
+        Ok(folder)
     }
 
     pub fn import_pdf(
@@ -142,6 +147,21 @@ impl LibraryStore {
             .resolve_collection_path(&root, destination_folder_id)?;
         fs::create_dir_all(&destination_folder_path)?;
 
+        let source_fingerprint = self.catalog.hash_file(source_path)?;
+        let index = self.catalog.load_index(&self.paths)?;
+        if let Some(existing) = index.documents.iter().find(|document| {
+            document.availability == DocumentAvailability::Available
+                && document.fingerprint == source_fingerprint
+        }) {
+            if existing.folder_id == destination_folder_id {
+                return Ok(existing.clone());
+            }
+
+            return self
+                .catalog
+                .move_document(&self.paths, &existing.id, destination_folder_id);
+        }
+
         let file_name = source_path
             .file_name()
             .and_then(|value| value.to_str())
@@ -152,7 +172,6 @@ impl LibraryStore {
 
         fs::copy(source_path, &destination_path)?;
         let relative_path = self.paths.relative_to_root(&root, &destination_path)?;
-        let fingerprint = self.catalog.hash_file(&destination_path)?;
         let (file_size_bytes, file_modified_ms) =
             self.catalog.file_metadata_signature(&destination_path)?;
         let document = DocumentRecord {
@@ -169,7 +188,7 @@ impl LibraryStore {
                 .to_string(),
             folder_id: self.paths.folder_id_from_relative_path(&relative_path),
             relative_path,
-            fingerprint: fingerprint.clone(),
+            fingerprint: source_fingerprint.clone(),
             file_size_bytes: Some(file_size_bytes),
             file_modified_ms: Some(file_modified_ms),
             imported_at: timestamp(),
@@ -177,11 +196,16 @@ impl LibraryStore {
             availability: DocumentAvailability::Available,
         };
 
-        let state = DocumentState::new(document.id.clone(), fingerprint);
+        let state = DocumentState::new(document.id.clone(), source_fingerprint);
         self.states.write_state(&self.paths, &state)?;
 
         let mut index = self.catalog.load_index(&self.paths)?;
         index.documents.push(document.clone());
+        index
+            .document_order_by_collection
+            .entry(destination_folder_id.to_string())
+            .or_default()
+            .push(document.id.clone());
         self.catalog.save_index(&self.paths, &index)?;
         Ok(document)
     }
@@ -194,6 +218,25 @@ impl LibraryStore {
         self.ensure_ready()?;
         self.catalog
             .move_document(&self.paths, document_id, destination_folder_id)
+    }
+
+    pub fn reorder_collections(&self, collection_ids: &[String]) -> AppResult<FolderTreeNode> {
+        self.ensure_ready()?;
+        self.catalog.reorder_collections(&self.paths, collection_ids)?;
+        let index = self.catalog.load_index(&self.paths)?;
+        self.catalog.build_tree(&self.paths, &index)
+    }
+
+    pub fn reorder_collection_documents(
+        &self,
+        collection_id: &str,
+        document_ids: &[String],
+    ) -> AppResult<FolderTreeNode> {
+        self.ensure_ready()?;
+        self.catalog
+            .reorder_collection_documents(&self.paths, collection_id, document_ids)?;
+        let index = self.catalog.load_index(&self.paths)?;
+        self.catalog.build_tree(&self.paths, &index)
     }
 
     pub fn rename_document(&self, document_id: &str, new_name: &str) -> AppResult<DocumentRecord> {
