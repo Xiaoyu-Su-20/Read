@@ -1244,6 +1244,15 @@ export default function App() {
               onMoveDocumentToCollection={async (documentId, destinationCollectionId) => {
                 await workspace.moveDocumentInLibrary(documentId, destinationCollectionId);
               }}
+              onDeleteDocument={async (documentId) => {
+                await workspace.deleteDocumentInLibrary(documentId);
+              }}
+              onShowDocumentInFolder={async (documentId) => {
+                await workspace.showDocumentInFolder(documentId);
+              }}
+              onGetDocumentDeleteState={async (documentId) => {
+                return workspace.getLibraryDocumentDeleteState(documentId);
+              }}
               onReorderCollections={async (collectionIds) => {
                 await workspace.reorderLibraryCollections(collectionIds);
               }}
@@ -1282,8 +1291,8 @@ export default function App() {
                 onNavigateToTarget={(target) => {
                   workspace.viewerApiRef.current?.navigateToTarget(target);
                 }}
-                onSetUserOutlineItems={(items) => {
-                  workspace.viewerApiRef.current?.setUserOutlineItems(items);
+                onSetBookmarks={(bookmarks) => {
+                  workspace.viewerApiRef.current?.setBookmarks(bookmarks);
                 }}
                 onSnapshotChange={workspace.handleViewerSnapshotChange}
                 onOutlineChange={workspace.handleViewerOutlineChange}
@@ -1351,6 +1360,17 @@ export default function App() {
             items={workspace.outlineItems}
             bookmarks={workspace.readerState?.bookmarks ?? []}
             onClose={() => setOutlineOpen(false)}
+            onAddBookmark={(bookmark) => {
+              const currentState = workspace.viewerApiRef.current?.getReaderState();
+              if (!currentState) {
+                return;
+              }
+
+              workspace.viewerApiRef.current?.setBookmarks([
+                ...currentState.bookmarks,
+                bookmark
+              ]);
+            }}
             onDeleteBookmark={(bookmark) => {
               const currentState = workspace.viewerApiRef.current?.getReaderState();
               if (!currentState) {
@@ -1359,6 +1379,23 @@ export default function App() {
 
               workspace.viewerApiRef.current?.setBookmarks(
                 currentState.bookmarks.filter((existingBookmark) => existingBookmark.id !== bookmark.id)
+              );
+            }}
+            onRenameBookmark={(bookmark, nextLabel) => {
+              const currentState = workspace.viewerApiRef.current?.getReaderState();
+              if (!currentState) {
+                return;
+              }
+
+              workspace.viewerApiRef.current?.setBookmarks(
+                currentState.bookmarks.map((existingBookmark) =>
+                  existingBookmark.id === bookmark.id
+                    ? {
+                        ...existingBookmark,
+                        label: nextLabel
+                      }
+                    : existingBookmark
+                )
               );
             }}
             onSelect={(item) => {

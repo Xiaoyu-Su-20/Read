@@ -10,11 +10,11 @@ export function now() {
   return new Date().toISOString();
 }
 
-export function makeBookmark(page: number): DocumentState["bookmarks"][number] {
+export function makeBookmark(page: number, label?: string): DocumentState["bookmarks"][number] {
   return {
     id: `bookmark-${page}-${Date.now()}`,
     page,
-    label: `Page ${page}`,
+    label: label?.trim() || `Page ${page}`,
     createdAt: now()
   };
 }

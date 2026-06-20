@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { Bookmark, OutlineItem } from "../lib/types";
 import { dedupeBookmarks } from "../lib/commands";
-import { dedupeOutlineItems } from "../lib/documentReferences";
+import { makeBookmark } from "../lib/app/helpers";
 
 export type MarksPopoverTab = "outline" | "bookmarks";
 const useClientLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
@@ -14,7 +14,9 @@ type OutlineOverlayProps = {
   items: OutlineItem[];
   bookmarks: Bookmark[];
   onClose: () => void;
+  onAddBookmark: (bookmark: Bookmark) => void;
   onDeleteBookmark: (bookmark: Bookmark) => void;
+  onRenameBookmark: (bookmark: Bookmark, nextLabel: string) => void;
   onSelect: (item: OutlineItem) => void;
   onSelectBookmark: (bookmark: Bookmark) => void;
 };
@@ -52,8 +54,17 @@ function flattenOutlineNodes(items: OutlineItem[], ancestorIds: string[] = []): 
   ]);
 }
 
+function sortBookmarksByPage(bookmarks: Bookmark[]) {
+  return [...bookmarks].sort((left, right) => {
+    if (left.page !== right.page) {
+      return left.page - right.page;
+    }
+    return left.createdAt.localeCompare(right.createdAt);
+  });
+}
+
 export function defaultMarksPopoverTab(items: OutlineItem[], bookmarks: Bookmark[]): MarksPopoverTab {
-  const hasOutline = dedupeOutlineItems(items).length > 0;
+  const hasOutline = items.length > 0;
   const hasBookmarks = dedupeBookmarks(bookmarks).length > 0;
   return hasOutline && !hasBookmarks ? "outline" : "bookmarks";
 }
@@ -186,14 +197,26 @@ function OutlineBranch({
 
 function BookmarksTab({
   bookmarks,
+  editingBookmarkId,
+  editingValue,
   menuOpenId,
   onDeleteBookmark,
+  onChangeEditingValue,
+  onRenameBookmark,
+  onStartRenameBookmark,
+  onStopRenameBookmark,
   onSelectBookmark,
   onToggleBookmarkMenu
 }: {
   bookmarks: Bookmark[];
+  editingBookmarkId: string | null;
+  editingValue: string;
   menuOpenId: string | null;
   onDeleteBookmark: (bookmark: Bookmark) => void;
+  onChangeEditingValue: (value: string) => void;
+  onRenameBookmark: (bookmark: Bookmark) => void;
+  onStartRenameBookmark: (bookmark: Bookmark) => void;
+  onStopRenameBookmark: () => void;
   onSelectBookmark: (bookmark: Bookmark) => void;
   onToggleBookmarkMenu: (bookmarkId: string) => void;
 }) {
@@ -209,20 +232,54 @@ function BookmarksTab({
     <div className="marks-popover__bookmark-list" role="list">
       {bookmarks.map((bookmark) => {
         const menuOpen = menuOpenId === bookmark.id;
+        const isEditing = editingBookmarkId === bookmark.id;
 
         return (
           <div key={bookmark.id} className="marks-popover__bookmark-item" role="listitem">
-            <button
-              className="marks-popover__bookmark-row"
-              type="button"
-              onClick={() => onSelectBookmark(bookmark)}
-            >
-              <span className="marks-popover__bookmark-icon" aria-hidden="true">
-                <BookmarkGlyph />
-              </span>
-              <span className="marks-popover__bookmark-label">{bookmark.label}</span>
-              <span className="marks-popover__bookmark-page">{bookmark.page}</span>
-            </button>
+            {isEditing ? (
+              <form
+                className="marks-popover__bookmark-row marks-popover__bookmark-row--editing"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onRenameBookmark(bookmark);
+                }}
+              >
+                <span className="marks-popover__bookmark-icon" aria-hidden="true">
+                  <BookmarkGlyph />
+                </span>
+                <input
+                  className="marks-popover__bookmark-input"
+                  type="text"
+                  value={editingValue}
+                  spellCheck={false}
+                  autoFocus
+                  onChange={(event) => {
+                    onChangeEditingValue(event.target.value);
+                  }}
+                  onKeyDown={(event) => {
+                    event.stopPropagation();
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      onStopRenameBookmark();
+                    }
+                  }}
+                />
+                <span className="marks-popover__bookmark-page">{bookmark.page}</span>
+              </form>
+            ) : (
+              <button
+                className="marks-popover__bookmark-row"
+                type="button"
+                onClick={() => onSelectBookmark(bookmark)}
+              >
+                <span className="marks-popover__bookmark-icon" aria-hidden="true">
+                  <BookmarkGlyph />
+                </span>
+                <span className="marks-popover__bookmark-label">{bookmark.label}</span>
+                <span className="marks-popover__bookmark-page">{bookmark.page}</span>
+              </button>
+            )}
 
             <div className="marks-popover__bookmark-actions">
               <button
@@ -246,6 +303,18 @@ function BookmarksTab({
 
               {menuOpen ? (
                 <div className="marks-popover__bookmark-menu" role="menu">
+                  <button
+                    className="marks-popover__bookmark-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onStartRenameBookmark(bookmark);
+                    }}
+                  >
+                    Rename
+                  </button>
                   <button
                     className="marks-popover__bookmark-menu-item marks-popover__bookmark-menu-item--danger"
                     type="button"
@@ -275,18 +344,22 @@ export default function OutlineOverlay({
   items,
   bookmarks,
   onClose,
+  onAddBookmark,
   onDeleteBookmark,
+  onRenameBookmark,
   onSelect,
   onSelectBookmark
 }: OutlineOverlayProps) {
   const popoverRef = useRef<HTMLDivElement | null>(null);
-  const sectionMarks = useMemo(() => dedupeOutlineItems(items), [items]);
-  const savedMarks = useMemo(() => dedupeBookmarks(bookmarks), [bookmarks]);
+  const sectionMarks = useMemo(() => items, [items]);
+  const savedMarks = useMemo(() => sortBookmarksByPage(dedupeBookmarks(bookmarks)), [bookmarks]);
   const [activeTab, setActiveTab] = useState<MarksPopoverTab>(() => defaultMarksPopoverTab(items, bookmarks));
   const [expandedIds, setExpandedIds] = useState<Set<string>>(
     () => new Set(initialExpandedOutlineIds(sectionMarks, currentPage))
   );
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState("");
   const [popoverStyle, setPopoverStyle] = useState<{
     height: number;
     left: number;
@@ -304,6 +377,8 @@ export default function OutlineOverlay({
     setActiveTab(defaultMarksPopoverTab(sectionMarks, savedMarks));
     setExpandedIds(new Set(initialExpandedOutlineIds(sectionMarks, currentPage)));
     setMenuOpenId(null);
+    setEditingBookmarkId(null);
+    setEditingValue("");
   }, [currentPage, open, savedMarks, sectionMarks]);
 
   useEffect(() => {
@@ -405,32 +480,47 @@ export default function OutlineOverlay({
       style={popoverStyle ?? undefined}
       onClick={() => {
         setMenuOpenId(null);
+        setEditingBookmarkId(null);
       }}
     >
-      <div className="marks-popover__tabs" role="tablist" aria-label="Document marks">
+      <div className="marks-popover__header">
+        <div className="marks-popover__tabs" role="tablist" aria-label="Document marks">
+          <button
+            className={`marks-popover__tab${activeTab === "outline" ? " marks-popover__tab--active" : ""}`}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "outline"}
+            onClick={() => {
+              setActiveTab("outline");
+              setMenuOpenId(null);
+            }}
+          >
+            Outline
+          </button>
+          <button
+            className={`marks-popover__tab${activeTab === "bookmarks" ? " marks-popover__tab--active" : ""}`}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "bookmarks"}
+            onClick={() => {
+              setActiveTab("bookmarks");
+              setMenuOpenId(null);
+            }}
+          >
+            Bookmarks
+          </button>
+        </div>
         <button
-          className={`marks-popover__tab${activeTab === "outline" ? " marks-popover__tab--active" : ""}`}
+          className="marks-popover__add-bookmark"
           type="button"
-          role="tab"
-          aria-selected={activeTab === "outline"}
+          aria-label="Add bookmark for current page"
           onClick={() => {
-            setActiveTab("outline");
             setMenuOpenId(null);
+            setEditingBookmarkId(null);
+            onAddBookmark(makeBookmark(currentPage));
           }}
         >
-          Outline
-        </button>
-        <button
-          className={`marks-popover__tab${activeTab === "bookmarks" ? " marks-popover__tab--active" : ""}`}
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "bookmarks"}
-          onClick={() => {
-            setActiveTab("bookmarks");
-            setMenuOpenId(null);
-          }}
-        >
-          Bookmarks
+          +
         </button>
       </div>
 
@@ -465,16 +555,42 @@ export default function OutlineOverlay({
         ) : (
           <BookmarksTab
             bookmarks={savedMarks}
+            editingBookmarkId={editingBookmarkId}
+            editingValue={editingValue}
             menuOpenId={menuOpenId}
+            onChangeEditingValue={setEditingValue}
             onDeleteBookmark={(bookmark) => {
               setMenuOpenId(null);
+              setEditingBookmarkId(null);
               onDeleteBookmark(bookmark);
+            }}
+            onRenameBookmark={(bookmark) => {
+              const nextLabel = editingValue.trim();
+              if (!nextLabel) {
+                setEditingBookmarkId(null);
+                setEditingValue("");
+                return;
+              }
+              setMenuOpenId(null);
+              setEditingBookmarkId(null);
+              setEditingValue("");
+              onRenameBookmark(bookmark, nextLabel);
             }}
             onSelectBookmark={(bookmark) => {
               setMenuOpenId(null);
               onSelectBookmark(bookmark);
             }}
+            onStartRenameBookmark={(bookmark) => {
+              setMenuOpenId(null);
+              setEditingBookmarkId(bookmark.id);
+              setEditingValue(bookmark.label);
+            }}
+            onStopRenameBookmark={() => {
+              setEditingBookmarkId(null);
+              setEditingValue("");
+            }}
             onToggleBookmarkMenu={(bookmarkId) => {
+              setEditingBookmarkId(null);
               setMenuOpenId((current) => (current === bookmarkId ? null : bookmarkId));
             }}
           />

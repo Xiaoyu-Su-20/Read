@@ -21,6 +21,11 @@ export type DocumentRecord = {
   availability: DocumentAvailability;
 };
 
+export type DocumentDeleteState = {
+  canDelete: boolean;
+  reason: string | null;
+};
+
 export type Bookmark = {
   id: string;
   page: number;
@@ -82,7 +87,6 @@ export type DocumentState = {
   zoom: number;
   bookmarks: Bookmark[];
   preferences: ReaderPreferences;
-  userOutlineItems: PdfOutlineItem[];
 };
 
 export type DocumentPayload = {
@@ -296,7 +300,6 @@ export type ViewerApi = {
   getPageCount: () => number;
   getReaderState: () => DocumentState | null;
   setBookmarks: (bookmarks: Bookmark[]) => void;
-  setUserOutlineItems: (items: PdfOutlineItem[]) => void;
 };
 
 export type NoteRevealRequest = {

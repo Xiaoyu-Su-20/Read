@@ -1213,7 +1213,7 @@ button {
   right: 1rem;
   bottom: 0;
   height: 1px;
-  background: var(--panel-border);
+  background: color-mix(in srgb, var(--overlay-border) 88%, transparent);
 }
 
 .collection-sidebar__add {
@@ -1515,6 +1515,12 @@ button {
   background: var(--collection-danger-hover);
 }
 
+.collection-row__menu-divider {
+  height: 1px;
+  margin: 0.35rem 0;
+  background: var(--collection-row-separator);
+}
+
 .collection-row__menu-disabled {
   position: relative;
 }
@@ -1557,6 +1563,8 @@ button {
   font-size: 0.78rem;
   line-height: 1.45;
   color: var(--collection-tooltip-help);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .collection-row__menu-footer {
@@ -1600,6 +1608,23 @@ button {
   outline: none;
   background: transparent;
   color: var(--text);
+}
+
+.book-row__rename {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+}
+
+.book-row__input {
+  min-width: 0;
+  flex: 1;
+}
+
+.book-row__extension {
+  flex: 0 0 auto;
+  color: var(--muted);
 }
 
 .collection-main {
@@ -1941,9 +1966,9 @@ button {
 
 .reader-workspace__document-header-layout {
   display: grid;
-  grid-template-columns: minmax(0, 20.9rem) 9.75rem 10.9rem;
+  grid-template-columns: minmax(0, 10.45rem) 9.75rem 10.9rem;
   align-items: center;
-  width: min(100%, 41.55rem);
+  width: min(100%, 31.1rem);
   min-width: 0;
   height: 100%;
   justify-self: start;
@@ -2645,17 +2670,40 @@ body.reader-pane-resizing .notes-pane img {
   -webkit-backdrop-filter: blur(18px);
 }
 
-.notes-popover--navigation .eyebrow {
-  display: block;
-  padding: 0 0.35rem 0.8rem;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  color: color-mix(in srgb, var(--accent-primary) 88%, var(--text-primary));
+.notes-popover__header--navigation {
+  display: grid;
+  grid-template-columns: 1.4rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.40rem;
+  margin: 0 0.15rem 0.8rem;
+  padding: 0 0 0.65rem 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--overlay-border) 92%, transparent);
+}
+
+.notes-popover__header-icon {
+  display: grid;
+  place-items: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  color: color-mix(in srgb, var(--icon-color) 88%, var(--text-primary));
+}
+
+.notes-popover__header-icon svg {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+
+.notes-popover__header-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-primary);
+  transform: translateY(0.08rem);
 }
 
 .notes-popover__empty {
-  margin: 0.55rem 0 0;
+  margin: 0.2rem 0 0;
   color: var(--text-secondary);
   font-size: 0.88rem;
   line-height: 1.45;
@@ -2708,7 +2756,8 @@ body.reader-pane-resizing .notes-pane img {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: end;
-  padding: 0.5rem 0.7rem 0;
+  min-width: 0;
+  padding: 0.5rem 0 0;
 }
 
 .marks-popover__tabs::after {
@@ -2720,6 +2769,32 @@ body.reader-pane-resizing .notes-pane img {
   z-index: 0;
   height: 1px;
   background: color-mix(in srgb, var(--overlay-border) 62%, transparent);
+}
+
+.marks-popover__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  padding: 0 0.3rem 0 0.7rem;
+}
+
+.marks-popover__add-bookmark {
+  align-self: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  margin-top: 0.32rem;
+  border: 0;
+  border-radius: 0.55rem;
+  background: transparent;
+  color: color-mix(in srgb, var(--icon-color) 88%, transparent);
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.marks-popover__add-bookmark:hover,
+.marks-popover__add-bookmark:focus-visible {
+  background: color-mix(in srgb, var(--overlay-surface-hover) 82%, transparent);
+  color: var(--text-primary);
 }
 
 .marks-popover__tab {
@@ -2923,9 +2998,18 @@ body.reader-pane-resizing .notes-pane img {
   transition: background-color 140ms ease, color 140ms ease;
 }
 
+.marks-popover__bookmark-row--editing {
+  cursor: default;
+}
+
 .marks-popover__bookmark-row:hover {
   background: color-mix(in srgb, var(--overlay-surface-hover) 70%, transparent);
   color: var(--text-primary);
+}
+
+.marks-popover__bookmark-row--editing:hover {
+  background: transparent;
+  color: color-mix(in srgb, var(--text-primary) 88%, transparent);
 }
 
 .marks-popover__bookmark-icon {
@@ -2944,6 +3028,16 @@ body.reader-pane-resizing .notes-pane img {
 .marks-popover__bookmark-label {
   font-size: 0.88rem;
   line-height: 1.25;
+}
+
+.marks-popover__bookmark-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
 }
 
 .marks-popover__bookmark-actions {
@@ -3256,6 +3350,7 @@ body.reader-pane-resizing .notes-pane img {
 }
 
 .note-editor {
+  position: relative;
   display: block;
   width: 100%;
 }
@@ -3384,64 +3479,106 @@ body.reader-pane-resizing .notes-pane img {
 }
 
 .note-editor__body > h1 {
+  --heading-pagemark-height: 1.24ex;
+  --heading-pagemark-width: calc(var(--heading-pagemark-height) * 0.84);
+  --heading-pagemark-nudge: -0.06ex;
   font-family: var(--font-ui);
   font-size: 1.48rem;
   font-weight: 620;
   letter-spacing: -0.03em;
   line-height: 1.18;
   color: var(--note-text-muted);
+  box-sizing: border-box;
   padding-top: 1rem;
 }
 
 .note-editor__body > h2 {
+  --heading-pagemark-height: 1.18ex;
+  --heading-pagemark-width: calc(var(--heading-pagemark-height) * 0.84);
+  --heading-pagemark-nudge: -0.055ex;
   font-family: var(--font-ui);
   font-size: 1.18rem;
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.26;
   color: var(--note-text-muted);
+  box-sizing: border-box;
   padding-top: 0.8rem;
 }
 
 .note-editor__body > h3 {
+  --heading-pagemark-height: 1.12ex;
+  --heading-pagemark-width: calc(var(--heading-pagemark-height) * 0.84);
+  --heading-pagemark-nudge: -0.045ex;
   font-family: var(--font-ui);
   font-size: 1rem;
   font-weight: 580;
   letter-spacing: -0.01em;
   line-height: 1.3;
   color: var(--note-text-muted);
+  box-sizing: border-box;
   padding-top: 0.65rem;
 }
 
-.heading-source-link {
+.note-editor__heading-reference-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 1;
+}
+
+.note-editor__heading-reference {
+  position: absolute;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-left: 0.55rem;
-  width: 1.18rem;
-  height: 1.18rem;
+  width: var(--heading-pagemark-width, 1ex);
+  height: var(--heading-pagemark-height, 1.2ex);
   padding: 0;
-  border: 0;
-  border-radius: 0.28rem;
+  line-height: 0;
+  border: none;
+  outline: none;
+  box-shadow: none;
   background: transparent;
   color: var(--icon-color);
-  vertical-align: -0.1em;
   cursor: pointer;
+  pointer-events: auto;
+  transform: translateY(calc(-100% + var(--heading-pagemark-nudge, 0px)));
 }
 
-.heading-source-link:hover,
-.heading-source-link:focus-visible {
+.note-editor__heading-reference--heading1 {
+  --heading-pagemark-height: 1.24ex;
+  --heading-pagemark-width: calc(var(--heading-pagemark-height) * 0.84);
+  --heading-pagemark-nudge: -0.06ex;
+}
+
+.note-editor__heading-reference--heading2 {
+  --heading-pagemark-height: 1.18ex;
+  --heading-pagemark-width: calc(var(--heading-pagemark-height) * 0.84);
+  --heading-pagemark-nudge: -0.055ex;
+}
+
+.note-editor__heading-reference--heading3 {
+  --heading-pagemark-height: 1.12ex;
+  --heading-pagemark-width: calc(var(--heading-pagemark-height) * 0.84);
+  --heading-pagemark-nudge: -0.045ex;
+}
+
+.note-editor__heading-reference:hover,
+.note-editor__heading-reference:focus-visible {
   background: var(--interactive-hover);
   color: var(--text-primary);
   outline: none;
 }
 
-.heading-source-link svg {
-  width: 0.95rem;
-  height: 0.95rem;
+.note-editor__heading-reference svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 2;
 }
 
 .note-editor__body:empty::before {

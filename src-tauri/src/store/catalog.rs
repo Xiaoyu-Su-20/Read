@@ -581,6 +581,37 @@ impl CatalogStore {
         Ok(index.documents[document_index].clone())
     }
 
+    pub fn delete_document(
+        &self,
+        paths: &StorePaths,
+        document_id: &str,
+    ) -> AppResult<DocumentRecord> {
+        let mut index = self.load_index(paths)?;
+        let root = paths.library_root_path();
+        let document_index = Self::find_document_index(&index, document_id)?;
+        let document = index.documents[document_index].clone();
+        self.ensure_document_available(&document)?;
+
+        let document_path = paths.absolute_document_path(&root, &document);
+        if document_path.exists() {
+            fs::remove_file(&document_path)?;
+        }
+
+        let state_path = paths.state_path(document_id);
+        if state_path.exists() {
+            fs::remove_file(state_path)?;
+        }
+
+        Self::remove_document_from_collection_order(&mut index, &document.folder_id, document_id);
+        if index.last_opened_document_id.as_deref() == Some(document_id) {
+            index.last_opened_document_id = None;
+        }
+        index.documents.remove(document_index);
+        self.save_index(paths, &index)?;
+
+        Ok(document)
+    }
+
     pub fn rename_folder(
         &self,
         paths: &StorePaths,
@@ -1164,9 +1195,13 @@ impl CatalogStore {
         paths: &StorePaths,
         root: &Path,
     ) -> AppResult<usize> {
+        let pdf_paths = self.collect_immediate_pdf_paths(paths, root)?;
+        if pdf_paths.is_empty() {
+            return Ok(0);
+        }
+
         let destination_directory = root.join(DEFAULT_COLLECTION_ID);
         fs::create_dir_all(&destination_directory)?;
-        let pdf_paths = self.collect_immediate_pdf_paths(paths, root)?;
         let mut migrated = 0;
 
         for pdf_path in pdf_paths {

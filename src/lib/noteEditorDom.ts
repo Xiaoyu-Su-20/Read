@@ -79,10 +79,6 @@ function encodeDataJson(value: unknown) {
   return encodeURIComponent(JSON.stringify(value));
 }
 
-function bookmarkIconHtml() {
-  return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" /></svg>`;
-}
-
 function decodeSourceReference(value: string | undefined, fallbackDocumentId?: string | null) {
   if (!value) {
     return null;
@@ -167,19 +163,6 @@ function renderPageLinkNodeHtml(node: NotePageLinkNode) {
   )}</span><span class="page-link__paren" aria-hidden="true">)</span></span>`;
 }
 
-function createHeadingReferenceIndicator(ownerDocument: Document, reference: DocumentSourceReference) {
-  const indicator = ownerDocument.createElement("button");
-  indicator.className = "heading-source-link";
-  indicator.type = "button";
-  indicator.dataset.headingReferenceIndicator = "true";
-  indicator.contentEditable = "false";
-  indicator.tabIndex = -1;
-  indicator.title = reference.title;
-  indicator.setAttribute("aria-label", reference.title);
-  indicator.innerHTML = bookmarkIconHtml();
-  return indicator;
-}
-
 export function renderNoteInlineNodesHtml(children: NoteInlineNode[]) {
   return normalizeNoteInlineNodes(children)
     .map((node) => (node.type === "page-link" ? renderPageLinkNodeHtml(node) : renderTextNodeHtml(node)))
@@ -193,14 +176,9 @@ export function renderNoteBlocksHtml(blocks: NoteBlock[]) {
       const sourceReference = block.sourceReference
         ? ` data-source-reference="${escapeHtml(encodeDataJson(block.sourceReference))}"`
         : "";
-      const indicator = block.sourceReference
-        ? `<button class="heading-source-link" type="button" data-heading-reference-indicator="true" contenteditable="false" tabindex="-1" title="${escapeHtml(
-            block.sourceReference.title
-          )}" aria-label="${escapeHtml(block.sourceReference.title)}">${bookmarkIconHtml()}</button>`
-        : "";
       return `<${tagName} data-block-id="${escapeHtml(block.id)}" data-block-type="${block.type}"${sourceReference}>${renderNoteInlineNodesHtml(
         block.children
-      )}${indicator}</${tagName}>`;
+      )}</${tagName}>`;
     })
     .join("");
 }
@@ -873,10 +851,6 @@ export function updateBlockSourceReference(
   }
 
   const blockType = blockTypeFromElement(block);
-  block.querySelectorAll<HTMLElement>("[data-heading-reference-indicator='true']").forEach((element) => {
-    element.remove();
-  });
-
   const normalized =
     blockType === "paragraph"
       ? null
@@ -888,7 +862,6 @@ export function updateBlockSourceReference(
   }
 
   block.dataset.sourceReference = encodeDataJson(normalized);
-  block.append(createHeadingReferenceIndicator(root.ownerDocument, normalized));
   return true;
 }
 

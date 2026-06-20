@@ -4,15 +4,12 @@ import { createPortal } from "react-dom";
 import { logNoteDebugEvent } from "../../lib/api";
 import {
   createDirectHeadingReference,
-  createOutlineHeadingReference,
-  createUserOutlineItemFromHeading,
-  dedupeOutlineItems,
-  findUserOutlineItemForHeading,
   headingLevel,
   headingTitle,
-  resolveSourceReferenceTarget,
-  scoreOutlineCandidates
+  resolveSourceReferenceTarget
 } from "../../lib/documentReferences";
+import { makeBookmark } from "../../lib/app/helpers";
+import { findBookmarkAtPage } from "../../lib/commands";
 import { noteBlockText, parsePageLinkTargetInput } from "../../lib/notes";
 import type {
   DocumentState,
@@ -22,8 +19,7 @@ import type {
   NotePageLinkNode,
   NoteRevealRequest,
   OutlineItem,
-  PdfNavigationTarget,
-  PdfOutlineItem
+  PdfNavigationTarget
 } from "../../lib/types";
 import NotesContextMenu from "./context-menu/NotesContextMenu";
 import { toPanePoint } from "./context-menu/menuPlacement";
@@ -49,7 +45,7 @@ type NotesPaneProps = {
   outlineItems: OutlineItem[];
   readerState: DocumentState | null;
   onNavigateToTarget: (target: PdfNavigationTarget) => void;
-  onSetUserOutlineItems: (items: PdfOutlineItem[]) => void;
+  onSetBookmarks: (bookmarks: DocumentState["bookmarks"]) => void;
   currentPage: number | null;
   revealRequest: NoteRevealRequest | null;
   commandPaletteOpen: boolean;
@@ -248,7 +244,7 @@ const NotesPane = memo(function NotesPane({
   outlineItems,
   readerState,
   onNavigateToTarget,
-  onSetUserOutlineItems,
+  onSetBookmarks,
   currentPage,
   revealRequest,
   commandPaletteOpen,
@@ -293,10 +289,6 @@ const NotesPane = memo(function NotesPane({
     pageLinkId: string | null;
     value: string;
     error: string | null;
-  } | null>(null);
-  const [sectionPicker, setSectionPicker] = useState<{
-    blockId: string;
-    query: string;
   } | null>(null);
   const headerActionsContainer =
     typeof document !== "undefined" && headerActionsContainerId
@@ -541,7 +533,6 @@ const NotesPane = memo(function NotesPane({
   function closeInlineOverlays() {
     setNavigationOpen(false);
     setPageLinkDialog(null);
-    setSectionPicker(null);
     setFindOpen(false);
   }
 
@@ -636,9 +627,9 @@ const NotesPane = memo(function NotesPane({
     return true;
   }
 
-  function linkHeadingToCurrentPage() {
+  function addHeadingPagemark() {
     if (contextMenuState?.target !== "body" || !documentId || !currentPage) {
-      showToast("Open a document page before linking a heading.");
+      showToast("Open a document page before adding a pagemark.");
       closeMenu();
       return;
     }
@@ -657,56 +648,15 @@ const NotesPane = memo(function NotesPane({
         pageNumber: currentPage
       })
     );
-    editorRef.current?.clearSelectedBlock();
-    closeMenu();
-  }
 
-  function openSectionPicker() {
-    if (contextMenuState?.target !== "body") {
-      return;
+    const existingBookmark = findBookmarkAtPage(readerState?.bookmarks ?? [], currentPage);
+    if (!existingBookmark) {
+      onSetBookmarks([
+        ...(readerState?.bookmarks ?? []),
+        makeBookmark(currentPage, headingTitle(block))
+      ]);
     }
 
-    const block = findHeadingBlock(contextMenuState.blockId);
-    if (!block) {
-      closeMenu();
-      return;
-    }
-
-    setSectionPicker({
-      blockId: block.id,
-      query: headingTitle(block)
-    });
-    closeMenu();
-  }
-
-  function createSectionFromHeading() {
-    if (contextMenuState?.target !== "body" || !documentId || !currentPage) {
-      showToast("Open a document page before creating a section.");
-      closeMenu();
-      return;
-    }
-
-    const block = findHeadingBlock(contextMenuState.blockId);
-    if (!block) {
-      closeMenu();
-      return;
-    }
-
-    const title = headingTitle(block);
-    const currentUserOutlineItems = readerState?.userOutlineItems ?? [];
-    const existingUserOutlineItem = findUserOutlineItemForHeading({
-      items: currentUserOutlineItems,
-      documentId,
-      title,
-      pageNumber: currentPage
-    });
-    const userOutlineItem = existingUserOutlineItem ?? createUserOutlineItemFromHeading({
-      documentId,
-      title,
-      pageNumber: currentPage
-    });
-    onSetUserOutlineItems(dedupeOutlineItems([...currentUserOutlineItems, userOutlineItem]));
-    setHeadingReference(block.id, createOutlineHeadingReference(userOutlineItem));
     editorRef.current?.clearSelectedBlock();
     closeMenu();
   }
@@ -733,23 +683,10 @@ const NotesPane = memo(function NotesPane({
     onNavigateToTarget(target);
   }
 
-  const sectionPickerBlock = sectionPicker ? findHeadingBlock(sectionPicker.blockId) : null;
-  const sectionPickerItems = useMemo(
-    () =>
-      sectionPicker && sectionPickerBlock
-        ? scoreOutlineCandidates({
-            outlineItems,
-            headingTitle: headingTitle(sectionPickerBlock),
-            currentPage,
-            query: sectionPicker.query
-          })
-        : [],
-    [currentPage, outlineItems, sectionPicker, sectionPickerBlock]
-  );
-
   useEffect(() => {
     closeMenu();
-    closeInlineOverlays();
+    setPageLinkDialog(null);
+    setNavigationOpen(false);
   }, [closeMenu, note?.id]);
 
   useEffect(() => {
@@ -1046,7 +983,17 @@ const NotesPane = memo(function NotesPane({
         />
         {navigationOpen ? (
           <div className="notes-popover notes-popover--navigation">
-            <span className="eyebrow">Navigation</span>
+            <div className="notes-popover__header notes-popover__header--navigation">
+              <span className="notes-popover__header-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M7.2 4.75h6.6L18.25 9v10.05A1.2 1.2 0 0 1 17.05 20H7.2A1.2 1.2 0 0 1 6 18.8V5.95A1.2 1.2 0 0 1 7.2 4.75Z" />
+                  <path d="M13.8 4.95V9h4.05" />
+                  <path d="M9 12.2h6" />
+                  <path d="M9 15.2h4.1" />
+                </svg>
+              </span>
+              <p className="notes-popover__header-title">Navigation</p>
+            </div>
             {navigationItems.length === 0 ? (
               <p className="notes-popover__empty">Add a heading to build note navigation.</p>
             ) : (
@@ -1406,75 +1353,6 @@ const NotesPane = memo(function NotesPane({
         </form>
       ) : null}
 
-      {sectionPicker ? (
-        <div
-          className="notes-inline-dialog notes-inline-dialog--section-picker"
-          role="dialog"
-          aria-label="Link heading to PDF section"
-        >
-          <div className="notes-inline-dialog__header">
-            <strong className="notes-inline-dialog__title">Link Heading</strong>
-            <button
-              className="notes-inline-dialog__close"
-              type="button"
-              aria-label="Close section picker"
-              onClick={() => {
-                setSectionPicker(null);
-              }}
-            >
-              x
-            </button>
-          </div>
-          <p className="notes-inline-dialog__help">Choose a PDF section for this heading.</p>
-          <input
-            className="notes-inline-dialog__input"
-            type="text"
-            value={sectionPicker.query}
-            placeholder="Search sections"
-            spellCheck={false}
-            autoFocus
-            onChange={(event) => {
-              setSectionPicker((current) =>
-                current ? { ...current, query: event.target.value } : current
-              );
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                setSectionPicker(null);
-              }
-            }}
-          />
-          <div className="notes-section-picker">
-            {sectionPickerItems.length === 0 ? (
-              <p className="notes-popover__empty">No matching PDF sections.</p>
-            ) : (
-              sectionPickerItems.slice(0, 12).map(({ item, depth }) => (
-                <button
-                  key={item.id}
-                  className="notes-section-picker__item"
-                  type="button"
-                  style={{ paddingLeft: `${12 + depth * 14}px` }}
-                  onClick={() => {
-                    if (!sectionPickerBlock) {
-                      return;
-                    }
-
-                    setHeadingReference(sectionPickerBlock.id, createOutlineHeadingReference(item));
-                    setSectionPicker(null);
-                    window.requestAnimationFrame(() => {
-                      editorRef.current?.focus();
-                    });
-                  }}
-                >
-                  <span>{item.title}</span>
-                  <small>{item.page ? `Page ${item.page}` : item.externalUrl ? "External" : "No target"}</small>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-      ) : null}
-
       {toastMessage ? <div className="notes-pane__toast">{toastMessage}</div> : null}
 
       <NotesContextMenu
@@ -1510,9 +1388,7 @@ const NotesPane = memo(function NotesPane({
           });
           closeMenu();
         }}
-        onLinkHeadingToCurrentPage={linkHeadingToCurrentPage}
-        onLinkHeadingToSection={openSectionPicker}
-        onCreateSectionFromHeading={createSectionFromHeading}
+        onAddHeadingPagemark={addHeadingPagemark}
         onRemoveHeadingReference={removeHeadingReference}
         onOpenPage={() => {
           if (contextMenuState?.target !== "page-link") {

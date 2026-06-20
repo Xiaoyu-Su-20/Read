@@ -48,6 +48,14 @@ pub struct DocumentRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct DocumentDeleteState {
+    pub can_delete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Bookmark {
     pub id: String,
     pub page: u32,
@@ -152,8 +160,6 @@ pub struct DocumentState {
     pub zoom: f32,
     pub bookmarks: Vec<Bookmark>,
     pub preferences: ReaderPreferences,
-    #[serde(default)]
-    pub user_outline_items: Vec<PdfOutlineItem>,
 }
 
 impl DocumentState {
@@ -167,7 +173,6 @@ impl DocumentState {
             zoom: 1.0,
             bookmarks: Vec::new(),
             preferences: ReaderPreferences::default(),
-            user_outline_items: Vec::new(),
         }
     }
 }

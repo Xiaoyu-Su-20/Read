@@ -5,9 +5,9 @@ use uuid::Uuid;
 use crate::{
     error::AppResult,
     models::{
-        DocumentRecord, DocumentSourceReference, DocumentSourceReferenceKind, NoteBlock,
-        NoteBlockType, NoteDocument, NoteIndex, NoteIndexEntry, NoteInlineNode, NotePageLinkNode,
-        NoteTextNode,
+        DocumentDeleteState, DocumentRecord, DocumentSourceReference,
+        DocumentSourceReferenceKind, NoteBlock, NoteBlockType, NoteDocument, NoteIndex,
+        NoteIndexEntry, NoteInlineNode, NotePageLinkNode, NoteTextNode,
     },
 };
 
@@ -17,6 +17,51 @@ use super::{paths::StorePaths, timestamp, NOTE_DOCUMENT_VERSION};
 pub struct NoteStore;
 
 impl NoteStore {
+    pub fn document_delete_state(
+        &self,
+        paths: &StorePaths,
+        document_id: &str,
+    ) -> AppResult<DocumentDeleteState> {
+        let has_note_content = self
+            .load_notes_index(paths)?
+            .notes
+            .iter()
+            .any(|entry| {
+                entry.book_id.as_deref() == Some(document_id) && !entry.excerpt.trim().is_empty()
+            });
+
+        Ok(DocumentDeleteState {
+            can_delete: !has_note_content,
+            reason: has_note_content.then(|| {
+                "PDFs with note content cannot be deleted.".to_string()
+            }),
+        })
+    }
+
+    pub fn delete_notes_for_book(&self, paths: &StorePaths, document_id: &str) -> AppResult<()> {
+        let mut index = self.load_notes_index(paths)?;
+        let note_ids = index
+            .notes
+            .iter()
+            .filter(|entry| entry.book_id.as_deref() == Some(document_id))
+            .map(|entry| entry.id.clone())
+            .collect::<Vec<_>>();
+
+        index
+            .notes
+            .retain(|entry| entry.book_id.as_deref() != Some(document_id));
+        self.save_notes_index(paths, &index)?;
+
+        for note_id in note_ids {
+            let path = paths.note_path(&note_id);
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn get_or_create_for_book(
         &self,
         paths: &StorePaths,

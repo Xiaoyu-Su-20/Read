@@ -11,7 +11,7 @@ import {
 import { dedupeBookmarks } from "../commands";
 import { readerDiagnostic } from "../debug/readerDiagnostics";
 import { debugAction, startDebugProcess } from "../debugLog";
-import { dedupeOutlineItems, mergeOutlineItems } from "../documentReferences";
+import { dedupeOutlineItems } from "../documentReferences";
 import type {
   Bookmark,
   DocumentPayload,
@@ -265,8 +265,7 @@ function normalizeDocumentState(state: DocumentState): DocumentState {
     bookmarks: dedupeBookmarks(state.bookmarks ?? []),
     preferences: {
       fitMode: normalizeReaderFitMode(rawPreferences.fitMode)
-    },
-    userOutlineItems: dedupeOutlineItems(state.userOutlineItems ?? [])
+    }
   };
 }
 
@@ -279,8 +278,7 @@ function stateSignature(state: DocumentState) {
     lastPage: normalizedState.lastPage,
     zoom: normalizedState.zoom,
     bookmarks: normalizedState.bookmarks,
-    preferences: normalizedState.preferences,
-    userOutlineItems: normalizedState.userOutlineItems
+    preferences: normalizedState.preferences
   });
 }
 
@@ -1057,13 +1055,8 @@ export function useReaderController({
     onStateChange(normalizedState);
   }
 
-  function publishOutlineItems(userOutlineItems?: PdfOutlineItem[]) {
-    onOutlineChange(
-      mergeOutlineItems(
-        embeddedOutlineItemsRef.current,
-        userOutlineItems ?? readerStateRef.current?.userOutlineItems ?? []
-      )
-    );
+  function publishOutlineItems() {
+    onOutlineChange(dedupeOutlineItems(embeddedOutlineItemsRef.current));
   }
 
   function navigateToTarget(target: PdfNavigationTarget, reason: string) {
@@ -1518,20 +1511,17 @@ export function useReaderController({
       ...document.state,
       lastPage: nextPage,
       zoom: nextZoom,
-      preferences: document.state.preferences ?? { fitMode: "auto-maximize" },
-      userOutlineItems: document.state.userOutlineItems ?? []
+      preferences: document.state.preferences ?? { fitMode: "auto-maximize" }
     };
     const nextState = normalizeDocumentState(rawNextState);
     const stateWasNormalized =
       JSON.stringify(rawNextState.bookmarks ?? []) !== JSON.stringify(nextState.bookmarks) ||
-      JSON.stringify(rawNextState.preferences ?? null) !== JSON.stringify(nextState.preferences) ||
-      JSON.stringify(rawNextState.userOutlineItems ?? []) !==
-        JSON.stringify(nextState.userOutlineItems);
+      JSON.stringify(rawNextState.preferences ?? null) !== JSON.stringify(nextState.preferences);
     clearScheduledSave();
     dirtyStateRef.current = false;
     lastPersistedSignatureRef.current = stateSignature(nextState);
     updateReaderState(nextState);
-    onOutlineChange(nextState.userOutlineItems);
+    publishOutlineItems();
     if (stateWasNormalized) {
       markReaderStateDirty(nextState, "dedupe-reader-state", BOOKMARK_SAVE_DEBOUNCE_MS, {
         force: true
@@ -2599,23 +2589,6 @@ export function useReaderController({
               return nextState;
             });
           },
-          setUserOutlineItems: (items) => {
-            setReaderState((current) => {
-              if (!current) {
-                return current;
-              }
-              const nextItems = dedupeOutlineItems(items);
-              const nextState = {
-                ...current,
-                userOutlineItems: nextItems
-              };
-              readerStateRef.current = nextState;
-              markReaderStateDirty(nextState, "outline");
-              onStateChange(nextState);
-              publishOutlineItems(nextItems);
-              return nextState;
-            });
-          }
         }
       : null;
 

@@ -7,7 +7,9 @@ use super::{
     super::{LibraryStore, DEFAULT_COLLECTIONS, DEFAULT_COLLECTION_ID},
     support::write_sample_pdf,
 };
-use crate::models::{DocumentAvailability, ROOT_FOLDER_ID};
+use crate::models::{
+    DocumentAvailability, NoteBlock, NoteInlineNode, NoteTextNode, ROOT_FOLDER_ID,
+};
 
 #[test]
 fn imports_pdf_without_creating_sidecar_files() {
@@ -382,6 +384,35 @@ fn rename_folder_updates_document_paths_without_rescan() {
 }
 
 #[test]
+fn renaming_collection_one_does_not_recreate_an_empty_collection_one() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("default-folder.pdf");
+    write_sample_pdf(&source, "default-folder");
+
+    let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+    let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+
+    let renamed = store.rename_folder(DEFAULT_COLLECTION_ID, "Renamed Shelf").unwrap();
+    assert_eq!(renamed.id, "Renamed Shelf");
+
+    let library = store.list_library().unwrap();
+    assert!(library
+        .folders
+        .iter()
+        .all(|folder| folder.folder.id != DEFAULT_COLLECTION_ID));
+
+    let renamed_collection = library
+        .folders
+        .iter()
+        .find(|folder| folder.folder.id == "Renamed Shelf")
+        .unwrap();
+    assert_eq!(renamed_collection.documents.len(), 1);
+    assert_eq!(renamed_collection.documents[0].id, record.id);
+    assert!(temp.path().join("Reader").join("Renamed Shelf").exists());
+    assert!(!temp.path().join("Reader").join(DEFAULT_COLLECTION_ID).exists());
+}
+
+#[test]
 fn delete_folder_removes_empty_collection() {
     let temp = tempdir().unwrap();
     let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
@@ -536,4 +567,131 @@ fn move_document_updates_collection_order_membership() {
         .iter()
         .all(|document| document.id != record.id));
     assert_eq!(destination_collection.documents[0].id, record.id);
+}
+
+#[test]
+fn get_document_delete_state_allows_default_note() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("default-note.pdf");
+    write_sample_pdf(&source, "default-note");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+
+    let _ = store.get_or_create_note_for_book(&record.id).unwrap();
+    let state = store.get_document_delete_state(&record.id).unwrap();
+
+    assert!(state.can_delete);
+    assert_eq!(state.reason, None);
+}
+
+#[test]
+fn get_document_delete_state_blocks_non_empty_note_body() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("noted.pdf");
+    write_sample_pdf(&source, "noted");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+    let note = store.get_or_create_note_for_book(&record.id).unwrap();
+
+    store
+        .save_note(crate::models::NoteDocument {
+            blocks: vec![NoteBlock {
+                id: "body".to_string(),
+                r#type: crate::models::NoteBlockType::Paragraph,
+                children: vec![NoteInlineNode::Text(NoteTextNode {
+                    text: "Saved note content".to_string(),
+                    bold: false,
+                    italic: false,
+                })],
+                source_reference: None,
+                spans: Vec::new(),
+            }],
+            ..note
+        })
+        .unwrap();
+
+    let state = store.get_document_delete_state(&record.id).unwrap();
+    assert!(!state.can_delete);
+    assert_eq!(
+        state.reason.as_deref(),
+        Some("PDFs with note content cannot be deleted.")
+    );
+}
+
+#[test]
+fn delete_document_removes_pdf_index_order_notes_and_state() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("delete-me.pdf");
+    write_sample_pdf(&source, "delete-me");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+    let note = store.get_or_create_note_for_book(&record.id).unwrap();
+
+    let imported_path = temp
+        .path()
+        .join("Reader")
+        .join(DEFAULT_COLLECTION_ID)
+        .join(&record.file_name);
+    let state_path = app_dir.join("document-states").join(format!("{}.json", record.id));
+    let note_path = app_dir.join("notes").join(format!("{}.json", note.id));
+
+    assert!(imported_path.exists());
+    assert!(state_path.exists());
+    assert!(note_path.exists());
+
+    let deleted = store.delete_document(&record.id).unwrap();
+    assert_eq!(deleted.id, record.id);
+
+    assert!(!imported_path.exists());
+    assert!(!state_path.exists());
+    assert!(!note_path.exists());
+
+    let library = store.list_library().unwrap();
+    let collection = library
+        .folders
+        .iter()
+        .find(|folder| folder.folder.id == DEFAULT_COLLECTION_ID)
+        .unwrap();
+    assert!(collection.documents.iter().all(|document| document.id != record.id));
+
+    let index: Value =
+        serde_json::from_str(&fs::read_to_string(app_dir.join("library-index.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        index["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|document| document["id"] == record.id)
+            .count(),
+        0
+    );
+    assert_eq!(
+        index["documentOrderByCollection"][DEFAULT_COLLECTION_ID]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|document_id| document_id.as_str() == Some(record.id.as_str()))
+            .count(),
+        0
+    );
+
+    let notes_index: Value =
+        serde_json::from_str(&fs::read_to_string(app_dir.join("notes").join("index.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        notes_index["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["bookId"].as_str() == Some(record.id.as_str()))
+            .count(),
+        0
+    );
 }

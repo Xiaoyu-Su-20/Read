@@ -8,7 +8,7 @@ import {
 import type { DocumentSourceReference } from "./types";
 
 describe("noteEditorDom accessibility behavior", () => {
-  it("renders pagelinks and heading reference indicators outside the natural tab order", () => {
+  it("renders pagelinks outside the natural tab order and keeps heading references in data only", () => {
     const sourceReference: DocumentSourceReference = {
       id: "ref-1",
       documentId: "doc-1",
@@ -48,7 +48,8 @@ describe("noteEditorDom accessibility behavior", () => {
     expect(markup).not.toContain('tabindex="0"');
     expect(markup).toContain('data-inline-type="page-link"');
     expect(markup).toContain('tabindex="-1"');
-    expect(markup).toContain('data-heading-reference-indicator="true"');
+    expect(markup).toContain('data-source-reference=');
+    expect(markup).not.toContain('data-heading-reference-indicator="true"');
   });
 
   it("does not render any inline note token as naturally tabbable", () => {
@@ -91,6 +92,8 @@ describe("noteEditorDom accessibility behavior", () => {
     const nonNegativeTabStops = markup.match(/tabindex="(0|[1-9]\d*)"/g);
 
     expect(nonNegativeTabStops).toBeNull();
-    expect(markup.match(/tabindex="-1"/g)).toHaveLength(2);
+    expect(markup.match(/tabindex="-1"/g)).toHaveLength(1);
+    expect(markup).toContain('data-source-reference=');
+    expect(markup).not.toContain('data-heading-reference-indicator="true"');
   });
 });

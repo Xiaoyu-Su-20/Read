@@ -8,8 +8,13 @@ import {
   type DropPosition,
   type VerticalDropLayout
 } from "../lib/collectionOrdering";
+import {
+  buildDocumentMenuEntries,
+  resolveDocumentMenuAction,
+  type DocumentMenuView
+} from "../lib/collectionDocumentMenu";
 import { debugAction, debugLocalAction } from "../lib/debugLog";
-import type { DocumentRecord, FolderTreeNode } from "../lib/types";
+import type { DocumentDeleteState, DocumentRecord, FolderTreeNode } from "../lib/types";
 import { usePointerReorder, type PointerReorderSnapshot } from "../lib/usePointerReorder";
 
 function startupTrace(step: string, fields: Record<string, unknown> = {}) {
@@ -42,6 +47,9 @@ type CollectionViewRefreshProps = {
     documentId: string,
     destinationCollectionId: string
   ) => void | Promise<void>;
+  onDeleteDocument: (documentId: string) => void | Promise<void>;
+  onShowDocumentInFolder: (documentId: string) => void | Promise<void>;
+  onGetDocumentDeleteState: (documentId: string) => Promise<DocumentDeleteState>;
   onReorderCollections: (collectionIds: string[]) => void | Promise<void>;
   onReorderDocuments: (collectionId: string, documentIds: string[]) => void | Promise<void>;
   onShowStatus: (message: string) => void;
@@ -56,6 +64,11 @@ type FloatingMenuPosition = {
   left: number;
   placement: "above" | "below";
   top: number;
+} | null;
+
+type OpenDocumentMenuState = {
+  documentId: string;
+  view: DocumentMenuView;
 } | null;
 
 type InternalPointerDragPayload =
@@ -94,17 +107,18 @@ type DragPreview = {
   y: number;
 } | null;
 
+function documentBaseName(fileName: string) {
+  return fileName.replace(/\.pdf$/i, "");
+}
+
 function nextDocumentName(value: string, originalFileName: string) {
   const trimmed = value.trim();
   if (!trimmed) {
     return originalFileName;
   }
 
-  if (trimmed.toLowerCase().endsWith(".pdf")) {
-    return trimmed;
-  }
-
-  return `${trimmed}.pdf`;
+  const baseName = trimmed.replace(/\.pdf$/i, "");
+  return `${baseName}.pdf`;
 }
 
 function pointInsideRect(clientX: number, clientY: number, element: HTMLElement | null) {
@@ -118,6 +132,13 @@ function pointInsideRect(clientX: number, clientY: number, element: HTMLElement 
     clientX <= rect.right &&
     clientY >= rect.top &&
     clientY <= rect.bottom
+  );
+}
+
+function isInteractiveTarget(target: EventTarget | null) {
+  return (
+    target instanceof HTMLElement &&
+    Boolean(target.closest("input, button, textarea, select, [contenteditable='true']"))
   );
 }
 
@@ -176,6 +197,9 @@ export default function CollectionViewRefresh({
   onPromptImportCollection,
   onImportDocuments,
   onMoveDocumentToCollection,
+  onDeleteDocument,
+  onShowDocumentInFolder,
+  onGetDocumentDeleteState,
   onReorderCollections,
   onReorderDocuments,
   onShowStatus
@@ -189,7 +213,8 @@ export default function CollectionViewRefresh({
   const [editingDocumentId, setEditingDocumentId] = useState<string | null>(null);
   const [editingDocumentValue, setEditingDocumentValue] = useState("");
   const [openCollectionMenu, setOpenCollectionMenu] = useState<CollectionMenuAnchor>(null);
-  const [confirmDeleteCollectionId, setConfirmDeleteCollectionId] = useState<string | null>(null);
+  const [openDocumentMenu, setOpenDocumentMenu] = useState<OpenDocumentMenuState>(null);
+  const [documentDeleteState, setDocumentDeleteState] = useState<DocumentDeleteState | null>(null);
   const [optimisticCollectionOrder, setOptimisticCollectionOrder] = useState<string[] | null>(
     null
   );
@@ -209,6 +234,7 @@ export default function CollectionViewRefresh({
   const skipNextCollectionSelectionRef = useRef(false);
   const skipNextDocumentActivationRef = useRef(false);
   const collectionMenuButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const documentMenuButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const collectionRowRefs = useRef(new Map<string, HTMLDivElement>());
   const bookRowRefs = useRef(new Map<string, HTMLDivElement>());
   const collectionRowsContainerRef = useRef<HTMLDivElement | null>(null);
@@ -237,6 +263,7 @@ export default function CollectionViewRefresh({
   } | null>(null);
   const collectionViewRef = useRef<HTMLElement | null>(null);
   const floatingCollectionMenuRef = useRef<HTMLDivElement | null>(null);
+  const floatingDocumentMenuRef = useRef<HTMLDivElement | null>(null);
   const headerCollectionMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const bookListRef = useRef<HTMLDivElement | null>(null);
   const importPanelRef = useRef<HTMLDivElement | null>(null);
@@ -251,6 +278,8 @@ export default function CollectionViewRefresh({
     visible: false
   });
   const [floatingCollectionMenuPosition, setFloatingCollectionMenuPosition] =
+    useState<FloatingMenuPosition>(null);
+  const [floatingDocumentMenuPosition, setFloatingDocumentMenuPosition] =
     useState<FloatingMenuPosition>(null);
 
   const displayedCollections = applyOrder(
@@ -272,6 +301,20 @@ export default function CollectionViewRefresh({
     optimisticSelectedBookOrderIds,
     (document) => document.id
   );
+  const openMenuDocument =
+    openDocumentMenu ? books.find((document) => document.id === openDocumentMenu.documentId) ?? null : null;
+  const documentMenuEntries =
+    openDocumentMenu && openMenuDocument
+      ? buildDocumentMenuEntries({
+          view: openDocumentMenu.view,
+          currentCollectionId: openMenuDocument.folderId,
+          collections: displayedCollections.map((collection) => ({
+            id: collection.folder.id,
+            name: collection.folder.name
+          })),
+          deleteState: documentDeleteState
+        })
+      : [];
 
   function suppressCollectionActivation() {
     suppressCollectionActivationUntilRef.current = window.performance.now() + 250;
@@ -301,24 +344,37 @@ export default function CollectionViewRefresh({
     return collectionMenuButtonRefs.current.get(openCollectionMenu.collectionId) ?? null;
   }
 
+  function getDocumentMenuAnchorElement() {
+    if (!openDocumentMenu) {
+      return null;
+    }
+
+    return documentMenuButtonRefs.current.get(openDocumentMenu.documentId) ?? null;
+  }
+
   function closeCollectionMenu() {
     setOpenCollectionMenu(null);
-    setConfirmDeleteCollectionId(null);
     setFloatingCollectionMenuPosition(null);
   }
 
-  function updateFloatingCollectionMenuPosition(anchorOverride?: HTMLElement | null) {
-    const anchorElement = anchorOverride ?? getCollectionMenuAnchorElement();
+  function closeDocumentMenu() {
+    setOpenDocumentMenu(null);
+    setDocumentDeleteState(null);
+    setFloatingDocumentMenuPosition(null);
+  }
+
+  function resolveFloatingMenuPosition(
+    anchorElement: HTMLElement | null,
+    menuElement: HTMLDivElement | null
+  ): FloatingMenuPosition {
     const overlayRoot = collectionViewRef.current;
     if (!anchorElement) {
-      setFloatingCollectionMenuPosition(null);
-      return;
+      return null;
     }
     if (!overlayRoot) {
-      return;
+      return null;
     }
 
-    const menuElement = floatingCollectionMenuRef.current;
     const anchorRect = anchorElement.getBoundingClientRect();
     const overlayRootRect = overlayRoot.getBoundingClientRect();
     const gap = 6;
@@ -346,11 +402,29 @@ export default function CollectionViewRefresh({
           overlayRootRect.height - menuHeight - viewportPadding
         );
 
-    setFloatingCollectionMenuPosition({
+    return {
       left,
       placement: placeAbove ? "above" : "below",
       top
-    });
+    };
+  }
+
+  function updateFloatingCollectionMenuPosition(anchorOverride?: HTMLElement | null) {
+    setFloatingCollectionMenuPosition(
+      resolveFloatingMenuPosition(
+        anchorOverride ?? getCollectionMenuAnchorElement(),
+        floatingCollectionMenuRef.current
+      )
+    );
+  }
+
+  function updateFloatingDocumentMenuPosition(anchorOverride?: HTMLElement | null) {
+    setFloatingDocumentMenuPosition(
+      resolveFloatingMenuPosition(
+        anchorOverride ?? getDocumentMenuAnchorElement(),
+        floatingDocumentMenuRef.current
+      )
+    );
   }
 
   function updateCollectionSidebarScrollbar() {
@@ -475,7 +549,7 @@ export default function CollectionViewRefresh({
     displayedCollections.length,
     editingCollectionId,
     openCollectionMenu,
-    confirmDeleteCollectionId
+    openDocumentMenu
   ]);
 
   useEffect(() => {
@@ -517,6 +591,7 @@ export default function CollectionViewRefresh({
     books.length,
     editingDocumentId,
     openCollectionMenu,
+    openDocumentMenu,
     nativeDropTarget
   ]);
 
@@ -819,6 +894,7 @@ export default function CollectionViewRefresh({
     thresholdPx: 8,
     onDragStart(snapshot) {
       closeCollectionMenu();
+      closeDocumentMenu();
       suppressCollectionActivation();
       suppressBookActivation();
       updatePointerFeedback(snapshot);
@@ -965,18 +1041,51 @@ export default function CollectionViewRefresh({
   }, [dragPreview]);
 
   useEffect(() => {
+    if (!openDocumentMenu) {
+      return;
+    }
+
+    let cancelled = false;
+    setDocumentDeleteState(null);
+    void onGetDocumentDeleteState(openDocumentMenu.documentId)
+      .then((state) => {
+        if (!cancelled) {
+          setDocumentDeleteState(state);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setDocumentDeleteState({
+            canDelete: false,
+            reason: error instanceof Error ? error.message : "Unable to check note status."
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [onGetDocumentDeleteState, openDocumentMenu]);
+
+  useEffect(() => {
     function handleWindowPointerDown(event: PointerEvent) {
       const target = event.target as HTMLElement | null;
-      if (target?.closest(".collection-row__actions, .collection-row__menu, .collection-header__actions")) {
+      if (
+        target?.closest(
+          ".collection-row__actions, .collection-row__menu, .collection-header__actions, .book-row__actions, .book-row__menu"
+        )
+      ) {
         return;
       }
 
       closeCollectionMenu();
+      closeDocumentMenu();
     }
 
     function handleWindowKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         closeCollectionMenu();
+        closeDocumentMenu();
       }
     }
 
@@ -1010,10 +1119,35 @@ export default function CollectionViewRefresh({
       window.removeEventListener("resize", handleViewportChange);
       window.removeEventListener("scroll", handleViewportChange, true);
     };
-  }, [openCollectionMenu, confirmDeleteCollectionId, displayedCollections.length]);
+  }, [openCollectionMenu, displayedCollections.length]);
+
+  useEffect(() => {
+    if (!openDocumentMenu) {
+      setFloatingDocumentMenuPosition(null);
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      updateFloatingDocumentMenuPosition();
+    });
+
+    function handleViewportChange() {
+      updateFloatingDocumentMenuPosition();
+    }
+
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("scroll", handleViewportChange, true);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("scroll", handleViewportChange, true);
+    };
+  }, [documentDeleteState, documentMenuEntries.length, openDocumentMenu]);
 
   useEffect(() => {
     closeCollectionMenu();
+    closeDocumentMenu();
     cancelDrag();
     resetPointerFeedback();
     startupTrace("selected-collection-effect", {
@@ -1083,7 +1217,6 @@ export default function CollectionViewRefresh({
     position: Exclude<FloatingMenuPosition, null>
   ) {
     const collectionHasDocuments = collection.documents.length > 0;
-    const isDeleteConfirming = collection.folder.id === confirmDeleteCollectionId;
 
     return (
       <div
@@ -1096,18 +1229,191 @@ export default function CollectionViewRefresh({
         }}
         onClick={(event) => event.stopPropagation()}
       >
-        {isDeleteConfirming ? (
+        <button
+          className="notes-popover__action collection-row__menu-action"
+          type="button"
+          onClick={() => {
+            closeCollectionMenu();
+            setEditingDocumentId(null);
+            setEditingCollectionId(collection.folder.id);
+            setEditingCollectionValue(collection.folder.name);
+            onSelectCollection(collection.folder.id);
+          }}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <path d="M4 20h4l10-10-4-4L4 16v4Z" />
+            <path d="m12.5 7.5 4 4" />
+          </svg>
+          <span>Rename</span>
+        </button>
+        {collectionHasDocuments ? (
+          <div className="collection-row__menu-disabled">
+            <button
+              className="notes-popover__action collection-row__menu-action collection-row__menu-action--danger"
+              type="button"
+              disabled
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                <path d="M6 7h12" />
+                <path d="M9 7V5.5h6V7" />
+                <path d="M8.2 7l.6 11h6.4l.6-11" />
+              </svg>
+              <span>Delete</span>
+            </button>
+            <div className="collection-row__menu-tooltip" role="note">
+              Collections with PDFs inside cannot be deleted.
+            </div>
+          </div>
+        ) : (
+          <button
+            className="notes-popover__action collection-row__menu-action collection-row__menu-action--danger"
+            type="button"
+            onClick={() => {
+              closeCollectionMenu();
+              void onDeleteCollection(collection.folder.id);
+            }}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <path d="M6 7h12" />
+              <path d="M9 7V5.5h6V7" />
+              <path d="M8.2 7l.6 11h6.4l.6-11" />
+            </svg>
+            <span>Delete</span>
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  function renderDocumentMenuAction(
+    document: DocumentRecord,
+    entry: ReturnType<typeof buildDocumentMenuEntries>[number]
+  ) {
+    if (entry.kind === "divider") {
+      return <div key={entry.id} className="collection-row__menu-divider" aria-hidden="true" />;
+    }
+
+    const actionButton = (
+      <button
+        className={`notes-popover__action collection-row__menu-action${
+          entry.danger ? " collection-row__menu-action--danger" : ""
+        }`}
+        type="button"
+        disabled={entry.disabled}
+        onClick={() => {
+          const resolution = resolveDocumentMenuAction({
+            view: openDocumentMenu?.view ?? "actions",
+            actionId: entry.id,
+            deleteState: documentDeleteState,
+            destinationCollectionId: entry.collectionId
+          });
+
+          if (resolution.nextView) {
+            const nextView = resolution.nextView;
+            setOpenDocumentMenu((current) =>
+              current
+                ? {
+                    ...current,
+                    view: nextView
+                  }
+                : current
+            );
+            return;
+          }
+
+          closeDocumentMenu();
+          switch (resolution.effect) {
+            case "open":
+              void onOpenDocument(document.id);
+              return;
+            case "rename":
+              suppressBookActivation();
+              setEditingCollectionId(null);
+              setEditingDocumentId(document.id);
+              setEditingDocumentValue(documentBaseName(document.fileName));
+              return;
+            case "show-in-folder":
+              void Promise.resolve(onShowDocumentInFolder(document.id)).catch(() => {
+                onShowStatus("Could not show the PDF in Explorer.");
+              });
+              return;
+            case "move":
+              if (resolution.destinationCollectionId) {
+                void Promise.resolve(
+                  onMoveDocumentToCollection(document.id, resolution.destinationCollectionId)
+                ).catch(() => {
+                  onShowStatus("Could not move the PDF.");
+                });
+              }
+              return;
+            case "delete":
+              void Promise.resolve(onDeleteDocument(document.id)).catch(() => {
+                onShowStatus("Could not delete the PDF.");
+              });
+              return;
+            default:
+              return;
+          }
+        }}
+      >
+        <span>{entry.label}</span>
+      </button>
+    );
+
+    if (!entry.disabled || !entry.tooltip) {
+      return <div key={`${entry.id}-${entry.collectionId ?? "action"}`}>{actionButton}</div>;
+    }
+
+    return (
+      <div key={`${entry.id}-${entry.collectionId ?? "action"}`} className="collection-row__menu-disabled">
+        {actionButton}
+        <div className="collection-row__menu-tooltip" role="note">
+          {entry.tooltip}
+        </div>
+      </div>
+    );
+  }
+
+  function renderDocumentMenu(
+    document: DocumentRecord,
+    position: Exclude<FloatingMenuPosition, null>
+  ) {
+    const currentView = openDocumentMenu?.view ?? "actions";
+
+    return (
+      <div
+        ref={floatingDocumentMenuRef}
+        className={`notes-popover collection-row__menu book-row__menu collection-row__menu--overlay collection-row__menu--${position.placement}`}
+        role="menu"
+        style={{
+          left: `${position.left}px`,
+          top: `${position.top}px`
+        }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        {currentView === "confirm-delete" ? (
           <>
-            <strong className="collection-row__menu-title">Delete collection?</strong>
-            <p className="collection-row__menu-help">
-              {`This will delete "${collection.folder.name}" permanently.`}
-            </p>
+            <strong className="collection-row__menu-title">Delete PDF?</strong>
+            <p className="collection-row__menu-help">{`This will permanently delete "${document.title}".`}</p>
             <div className="collection-row__menu-footer">
               <button
                 className="collection-row__menu-button collection-row__menu-button--ghost"
                 type="button"
                 onClick={() => {
-                  setConfirmDeleteCollectionId(null);
+                  const resolution = resolveDocumentMenuAction({
+                    view: "confirm-delete",
+                    actionId: "cancel-delete",
+                    deleteState: documentDeleteState
+                  });
+                  const nextView = resolution.nextView ?? "actions";
+                  setOpenDocumentMenu((current) =>
+                    current
+                      ? {
+                          ...current,
+                          view: nextView
+                        }
+                      : current
+                  );
                 }}
               >
                 Cancel
@@ -1116,8 +1422,17 @@ export default function CollectionViewRefresh({
                 className="collection-row__menu-button collection-row__menu-button--danger"
                 type="button"
                 onClick={() => {
-                  closeCollectionMenu();
-                  void onDeleteCollection(collection.folder.id);
+                  const resolution = resolveDocumentMenuAction({
+                    view: "confirm-delete",
+                    actionId: "confirm-delete",
+                    deleteState: documentDeleteState
+                  });
+                  closeDocumentMenu();
+                  if (resolution.effect === "delete") {
+                    void Promise.resolve(onDeleteDocument(document.id)).catch(() => {
+                      onShowStatus("Could not delete the PDF.");
+                    });
+                  }
                 }}
               >
                 Delete
@@ -1126,57 +1441,10 @@ export default function CollectionViewRefresh({
           </>
         ) : (
           <>
-            <button
-              className="notes-popover__action collection-row__menu-action"
-              type="button"
-              onClick={() => {
-                closeCollectionMenu();
-                setEditingDocumentId(null);
-                setEditingCollectionId(collection.folder.id);
-                setEditingCollectionValue(collection.folder.name);
-                onSelectCollection(collection.folder.id);
-              }}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                <path d="M4 20h4l10-10-4-4L4 16v4Z" />
-                <path d="m12.5 7.5 4 4" />
-              </svg>
-              <span>Rename</span>
-            </button>
-            {collectionHasDocuments ? (
-              <div className="collection-row__menu-disabled">
-                <button
-                  className="notes-popover__action collection-row__menu-action collection-row__menu-action--danger"
-                  type="button"
-                  disabled
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                    <path d="M6 7h12" />
-                    <path d="M9 7V5.5h6V7" />
-                    <path d="M8.2 7l.6 11h6.4l.6-11" />
-                  </svg>
-                  <span>Delete</span>
-                </button>
-                <div className="collection-row__menu-tooltip" role="note">
-                  Collections with PDFs inside cannot be deleted.
-                </div>
-              </div>
-            ) : (
-              <button
-                className="notes-popover__action collection-row__menu-action collection-row__menu-action--danger"
-                type="button"
-                onClick={() => {
-                  setConfirmDeleteCollectionId(collection.folder.id);
-                }}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                  <path d="M6 7h12" />
-                  <path d="M9 7V5.5h6V7" />
-                  <path d="M8.2 7l.6 11h6.4l.6-11" />
-                </svg>
-                <span>Delete</span>
-              </button>
-            )}
+            {currentView === "move" ? (
+              <strong className="collection-row__menu-title">Move to collection</strong>
+            ) : null}
+            {documentMenuEntries.map((entry) => renderDocumentMenuAction(document, entry))}
           </>
         )}
       </div>
@@ -1245,8 +1513,12 @@ export default function CollectionViewRefresh({
                   className={`collection-row${isActive ? " collection-row--active" : ""}${collectionDropClass}${collectionNativeDropClass}`}
                   role="button"
                   tabIndex={isEditing ? -1 : 0}
-                  onClick={() => {
-                    if (shouldSuppressCollectionActivation()) {
+                  onClick={(event) => {
+                    if (
+                      isEditing ||
+                      isInteractiveTarget(event.target) ||
+                      shouldSuppressCollectionActivation()
+                    ) {
                       return;
                     }
                     if (skipNextCollectionSelectionRef.current) {
@@ -1256,7 +1528,16 @@ export default function CollectionViewRefresh({
                     onSelectCollection(collection.folder.id);
                   }}
                   onKeyDown={(event) => {
-                    if (isEditing) {
+                    if (
+                      isEditing ||
+                      isInteractiveTarget(event.target) ||
+                      shouldSuppressCollectionActivation()
+                    ) {
+                      return;
+                    }
+
+                    if (skipNextCollectionSelectionRef.current) {
+                      skipNextCollectionSelectionRef.current = false;
                       return;
                     }
 
@@ -1277,17 +1558,24 @@ export default function CollectionViewRefresh({
                       }}
                       onClick={(event) => event.stopPropagation()}
                       onDoubleClick={(event) => event.stopPropagation()}
+                      onMouseDown={(event) => event.stopPropagation()}
                       onKeyDown={(event) => {
-                        if (event.key === "Escape") {
-                          event.preventDefault();
-                          setEditingCollectionId(null);
-                          setEditingCollectionValue("");
+                        event.stopPropagation();
+
+                        if (event.key !== "Enter" && event.key !== "Escape") {
+                          return;
                         }
 
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          void commitCollectionRename();
+                        event.preventDefault();
+                        event.nativeEvent.stopImmediatePropagation();
+
+                        if (event.key === "Escape") {
+                          setEditingCollectionId(null);
+                          setEditingCollectionValue("");
+                          return;
                         }
+
+                        void commitCollectionRename({ skipNextSelection: true });
                       }}
                     />
                   ) : (
@@ -1349,7 +1637,6 @@ export default function CollectionViewRefresh({
                                     source: "row"
                                   }
                             );
-                            setConfirmDeleteCollectionId(null);
                             if (isClosing) {
                               setFloatingCollectionMenuPosition(null);
                               return;
@@ -1475,7 +1762,6 @@ export default function CollectionViewRefresh({
                               source: "header"
                             }
                       );
-                      setConfirmDeleteCollectionId(null);
                       if (isClosing) {
                         setFloatingCollectionMenuPosition(null);
                         return;
@@ -1553,8 +1839,12 @@ export default function CollectionViewRefresh({
                     className={`book-row${bookDropClass}`}
                     role="button"
                     tabIndex={isEditing ? -1 : 0}
-                    onClick={() => {
-                      if (isEditing || shouldSuppressBookActivation()) {
+                    onClick={(event) => {
+                      if (
+                        isEditing ||
+                        isInteractiveTarget(event.target) ||
+                        shouldSuppressBookActivation()
+                      ) {
                         return;
                       }
                       if (skipNextDocumentActivationRef.current) {
@@ -1564,7 +1854,11 @@ export default function CollectionViewRefresh({
                       void onOpenDocument(document.id);
                     }}
                     onKeyDown={(event) => {
-                      if (isEditing || shouldSuppressBookActivation()) {
+                      if (
+                        isEditing ||
+                        isInteractiveTarget(event.target) ||
+                        shouldSuppressBookActivation()
+                      ) {
                         return;
                       }
                       if (skipNextDocumentActivationRef.current) {
@@ -1579,34 +1873,41 @@ export default function CollectionViewRefresh({
                     }}
                   >
                     {isEditing ? (
-                      <input
-                        className="book-row__input"
-                        autoFocus
-                        value={editingDocumentValue}
-                        onChange={(event) => setEditingDocumentValue(event.target.value)}
-                        onBlur={() => {
-                          void commitDocumentRename(document, { skipNextActivation: true });
-                        }}
-                        onClick={(event) => event.stopPropagation()}
-                        onDoubleClick={(event) => event.stopPropagation()}
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onKeyUp={(event) => event.stopPropagation()}
-                        onKeyDown={(event) => {
-                          event.stopPropagation();
+                      <div className="book-row__rename">
+                        <input
+                          className="book-row__input"
+                          autoFocus
+                          value={editingDocumentValue}
+                          onChange={(event) => setEditingDocumentValue(event.target.value)}
+                          onBlur={() => {
+                            void commitDocumentRename(document, { skipNextActivation: true });
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                          onDoubleClick={(event) => event.stopPropagation()}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onKeyUp={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            event.stopPropagation();
 
-                          if (event.key === "Escape") {
-                            event.preventDefault();
-                            suppressBookActivation();
-                            setEditingDocumentId(null);
-                            setEditingDocumentValue("");
-                          }
+                            if (event.key !== "Enter" && event.key !== "Escape") {
+                              return;
+                            }
 
-                          if (event.key === "Enter") {
                             event.preventDefault();
-                            void commitDocumentRename(document);
-                          }
-                        }}
-                      />
+                            event.nativeEvent.stopImmediatePropagation();
+
+                            if (event.key === "Escape") {
+                              suppressBookActivation();
+                              setEditingDocumentId(null);
+                              setEditingDocumentValue("");
+                              return;
+                            }
+
+                            void commitDocumentRename(document, { skipNextActivation: true });
+                          }}
+                        />
+                        <span className="book-row__extension">.pdf</span>
+                      </div>
                     ) : (
                       <>
                         <span
@@ -1631,16 +1932,33 @@ export default function CollectionViewRefresh({
                           <button
                             className="row-action-button"
                             type="button"
-                            aria-label={`Rename ${document.title}`}
+                            aria-label={`Open actions for ${document.title}`}
+                            ref={(element) => {
+                              if (element) {
+                                documentMenuButtonRefs.current.set(document.id, element);
+                              } else {
+                                documentMenuButtonRefs.current.delete(document.id);
+                              }
+                            }}
                             onKeyDown={(event) => {
                               event.stopPropagation();
                             }}
                             onClick={(event) => {
                               event.stopPropagation();
                               suppressBookActivation();
-                              setEditingCollectionId(null);
-                              setEditingDocumentId(document.id);
-                              setEditingDocumentValue(document.fileName);
+                              closeCollectionMenu();
+                              setOpenDocumentMenu((current) =>
+                                current?.documentId === document.id
+                                  ? null
+                                  : {
+                                      documentId: document.id,
+                                      view: "actions"
+                                    }
+                              );
+                              setDocumentDeleteState(null);
+                              window.requestAnimationFrame(() => {
+                                updateFloatingDocumentMenuPosition(event.currentTarget);
+                              });
                             }}
                           >
                             <svg
@@ -1720,6 +2038,9 @@ export default function CollectionViewRefresh({
             : null;
         })()
       ) : null}
+      {openDocumentMenu && openMenuDocument && floatingDocumentMenuPosition
+        ? renderDocumentMenu(openMenuDocument, floatingDocumentMenuPosition)
+        : null}
       {dragPreview ? (
         <div
           className="collection-drag-preview"

@@ -14,8 +14,8 @@ use std::{
 
 use debug::process as debug_process;
 use models::{
-    DocumentPayload, DocumentRecord, DocumentState, FolderRecord, FolderTreeNode,
-    NativeTextPagePayload, NoteDocument, PdfOutlineItem, RenderedPagePayload,
+    DocumentDeleteState, DocumentPayload, DocumentRecord, DocumentState, FolderRecord,
+    FolderTreeNode, NativeTextPagePayload, NoteDocument, PdfOutlineItem, RenderedPagePayload,
 };
 use normalization::{new_manifest_cache, ManifestCache, NormalizationWorker};
 use serde::Deserialize;
@@ -211,6 +211,22 @@ fn run_logged_command<T>(
     result
 }
 
+fn release_document_render_resources(
+    store: &LibraryStore,
+    render_cache: &Arc<Mutex<RenderCache>>,
+    render_sessions: &RenderSessionRegistry,
+    document_id: &str,
+) -> Result<(), String> {
+    let document = store
+        .document_record(document_id)
+        .map_err(|error| error.to_string())?;
+    render_sessions.drop_fingerprint(&document.fingerprint);
+    if let Ok(mut cache) = render_cache.lock() {
+        cache.remove_fingerprint(&document.fingerprint);
+    }
+    Ok(())
+}
+
 fn open_in_explorer(path: &str, select: bool) -> Result<(), String> {
     let mut command = Command::new("explorer.exe");
     if select {
@@ -329,7 +345,15 @@ fn move_document(
             "documentId": document_id,
         }),
         || {
+            let render_cache = state.render_cache.clone();
+            let render_sessions = state.render_sessions.clone();
             with_store(&app, state, |store| {
+                release_document_render_resources(
+                    &store,
+                    &render_cache,
+                    &render_sessions,
+                    &document_id,
+                )?;
                 store
                     .move_document(&document_id, &destination_folder_id)
                     .map_err(|error| error.to_string())
@@ -396,9 +420,67 @@ fn rename_document(
             "newName": new_name,
         }),
         || {
+            let render_cache = state.render_cache.clone();
+            let render_sessions = state.render_sessions.clone();
             with_store(&app, state, |store| {
+                release_document_render_resources(
+                    &store,
+                    &render_cache,
+                    &render_sessions,
+                    &document_id,
+                )?;
                 store
                     .rename_document(&document_id, &new_name)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
+}
+
+#[tauri::command]
+fn delete_document(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    document_id: String,
+) -> Result<DocumentRecord, String> {
+    run_logged_command(
+        "delete_document",
+        json!({
+            "documentId": document_id,
+        }),
+        || {
+            let render_cache = state.render_cache.clone();
+            let render_sessions = state.render_sessions.clone();
+            with_store(&app, state, |store| {
+                release_document_render_resources(
+                    &store,
+                    &render_cache,
+                    &render_sessions,
+                    &document_id,
+                )?;
+                store
+                    .delete_document(&document_id)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
+}
+
+#[tauri::command]
+fn get_document_delete_state(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    document_id: String,
+) -> Result<DocumentDeleteState, String> {
+    run_logged_command(
+        "get_document_delete_state",
+        json!({
+            "documentId": document_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .get_document_delete_state(&document_id)
                     .map_err(|error| error.to_string())
             })
         },
@@ -1221,6 +1303,8 @@ pub fn run() {
             reorder_collections,
             reorder_collection_documents,
             rename_document,
+            delete_document,
+            get_document_delete_state,
             rename_folder,
             delete_folder,
             remove_from_library,

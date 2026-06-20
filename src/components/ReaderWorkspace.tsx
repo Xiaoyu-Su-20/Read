@@ -16,7 +16,6 @@ import type {
   NoteRevealRequest,
   OutlineItem,
   PdfNavigationTarget,
-  PdfOutlineItem,
   ReaderSession,
   ViewerApi,
   ViewerSnapshot
@@ -47,7 +46,7 @@ type ReaderWorkspaceProps = {
   outlineItems: OutlineItem[];
   readerState: DocumentState | null;
   onNavigateToTarget: (target: PdfNavigationTarget) => void;
-  onSetUserOutlineItems: (items: PdfOutlineItem[]) => void;
+  onSetBookmarks: (bookmarks: DocumentState["bookmarks"]) => void;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
   onOutlineChange: (items: OutlineItem[]) => void;
   onStatusChange: (message: string) => void;
@@ -97,7 +96,7 @@ export default function ReaderWorkspace({
   outlineItems,
   readerState,
   onNavigateToTarget,
-  onSetUserOutlineItems,
+  onSetBookmarks,
   onSnapshotChange,
   onOutlineChange,
   onStatusChange,
@@ -368,7 +367,7 @@ export default function ReaderWorkspace({
             outlineItems={outlineItems}
             readerState={readerState}
             onNavigateToTarget={onNavigateToTarget}
-            onSetUserOutlineItems={onSetUserOutlineItems}
+            onSetBookmarks={onSetBookmarks}
             currentPage={currentReaderPage}
             revealRequest={noteRevealRequest}
             headerActionsContainerId="reader-workspace-notes-header-tools"

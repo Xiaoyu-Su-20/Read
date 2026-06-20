@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { debugAction, runDebugProcess } from "./debugLog";
 
 import type {
+  DocumentDeleteState,
   DocumentPayload,
   DocumentRecord,
   RenderedPagePayload,
@@ -91,6 +92,18 @@ export function renameDocument(documentId: string, newName: string) {
   return invokeLogged<DocumentRecord>("rename_document", {
     documentId,
     newName
+  });
+}
+
+export function deleteDocument(documentId: string) {
+  return invokeLogged<DocumentRecord>("delete_document", {
+    documentId
+  });
+}
+
+export function getDocumentDeleteState(documentId: string) {
+  return invokeLogged<DocumentDeleteState>("get_document_delete_state", {
+    documentId
   });
 }
 

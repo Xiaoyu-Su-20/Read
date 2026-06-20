@@ -52,7 +52,9 @@ describe("OutlineOverlay", () => {
         items: [outlineItem({ id: "chapter-3", title: "Chapter 3 Coding", page: 57 })],
         bookmarks: [bookmark("bm-57", 57, "Coding note")],
         onClose: vi.fn(),
+        onAddBookmark: vi.fn(),
         onDeleteBookmark: vi.fn(),
+        onRenameBookmark: vi.fn(),
         onSelect: vi.fn(),
         onSelectBookmark: vi.fn()
       })
@@ -65,6 +67,7 @@ describe("OutlineOverlay", () => {
     expect(markup).toContain("Coding note");
     expect(markup).toContain(">57<");
     expect(markup).toContain("Bookmark actions for Coding note");
+    expect(markup).toContain("Add bookmark for current page");
     expect(markup).not.toContain("overlay-shell");
     expect(markup).not.toContain("Saved places");
     expect(markup).not.toContain(">Close<");
@@ -86,7 +89,9 @@ describe("OutlineOverlay", () => {
         ],
         bookmarks: [],
         onClose: vi.fn(),
+        onAddBookmark: vi.fn(),
         onDeleteBookmark: vi.fn(),
+        onRenameBookmark: vi.fn(),
         onSelect: vi.fn(),
         onSelectBookmark: vi.fn()
       })
@@ -137,5 +142,50 @@ describe("marks popover helpers", () => {
 
     expect(initialExpandedOutlineIds(items, 58)).toEqual(["chapter-2", "chapter-2.1"]);
     expect(initialExpandedOutlineIds(items, null)).toEqual(["chapter-1"]);
+  });
+
+  it("renders bookmarks sorted by page", () => {
+    const markup = renderToStaticMarkup(
+      createElement(OutlineOverlay, {
+        anchorElement: null,
+        currentPage: 30,
+        open: true,
+        items: [],
+        bookmarks: [
+          bookmark("bm-30", 30, "Thirty"),
+          bookmark("bm-5", 5, "Five"),
+          bookmark("bm-14", 14, "Fourteen")
+        ],
+        onClose: vi.fn(),
+        onAddBookmark: vi.fn(),
+        onDeleteBookmark: vi.fn(),
+        onRenameBookmark: vi.fn(),
+        onSelect: vi.fn(),
+        onSelectBookmark: vi.fn()
+      })
+    );
+
+    expect(markup.indexOf("Five")).toBeLessThan(markup.indexOf("Fourteen"));
+    expect(markup.indexOf("Fourteen")).toBeLessThan(markup.indexOf("Thirty"));
+  });
+
+  it("shows rename in the bookmark menu when the menu is open", () => {
+    const markup = renderToStaticMarkup(
+      createElement(OutlineOverlay, {
+        anchorElement: null,
+        currentPage: 30,
+        open: true,
+        items: [],
+        bookmarks: [bookmark("bm-30", 30, "Thirty")],
+        onClose: vi.fn(),
+        onAddBookmark: vi.fn(),
+        onDeleteBookmark: vi.fn(),
+        onRenameBookmark: vi.fn(),
+        onSelect: vi.fn(),
+        onSelectBookmark: vi.fn()
+      })
+    );
+
+    expect(markup).toContain("Bookmark actions for Thirty");
   });
 });

@@ -106,8 +106,7 @@ const documentPayload: DocumentPayload = {
     bookmarks: [],
     preferences: {
       fitMode: "width"
-    },
-    userOutlineItems: []
+    }
   },
   filePath: "D:/Read/example.pdf",
   pageCount: 12

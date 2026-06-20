@@ -2,7 +2,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useMemo } from "react";
 
 import { dedupeBookmarks, findBookmarkAtPage } from "../commands";
-import { dedupeOutlineItems, flattenOutlineItems } from "../documentReferences";
+import { flattenOutlineItems } from "../documentReferences";
 import type {
   DocumentPayload,
   DocumentRecord,
@@ -98,7 +98,7 @@ export function useCommandRegistry({
     }));
 
     const savedMarks = dedupeBookmarks(readerState?.bookmarks ?? []);
-    const flatOutlineItems = flattenOutlineItems(dedupeOutlineItems(outlineItems));
+    const flatOutlineItems = flattenOutlineItems(outlineItems);
     const markItems = [
       ...savedMarks.map((bookmark) => ({
         id: `saved-mark-${bookmark.id}`,
@@ -114,9 +114,7 @@ export function useCommandRegistry({
       ...flatOutlineItems.map(({ item, depth }) => ({
         id: `section-mark-${item.id}`,
         title: `${"> ".repeat(depth)}${item.title}`,
-        subtitle: `${item.page ? `Page ${item.page}` : item.externalUrl ? "External" : "No target"} - ${
-          item.source === "user" ? "Note" : "PDF"
-        }`,
+        subtitle: `${item.page ? `Page ${item.page}` : item.externalUrl ? "External" : "No target"} - PDF`,
         glyph: "bookmark" as const,
         keywords: ["mark", "outline", "section", "heading", item.source],
         onSelect: async () => {

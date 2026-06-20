@@ -7,8 +7,7 @@ import type {
   NoteNavigationItem,
   NoteRevealRequest,
   OutlineItem,
-  PdfNavigationTarget,
-  PdfOutlineItem
+  PdfNavigationTarget
 } from "../lib/types";
 
 type NotesViewportProps = {
@@ -30,7 +29,7 @@ type NotesViewportProps = {
   outlineItems: OutlineItem[];
   readerState: DocumentState | null;
   onNavigateToTarget: (target: PdfNavigationTarget) => void;
-  onSetUserOutlineItems: (items: PdfOutlineItem[]) => void;
+  onSetBookmarks: (bookmarks: DocumentState["bookmarks"]) => void;
   currentPage: number | null;
   revealRequest: NoteRevealRequest | null;
 };
@@ -54,7 +53,7 @@ const NotesViewport = memo(function NotesViewport({
   outlineItems,
   readerState,
   onNavigateToTarget,
-  onSetUserOutlineItems,
+  onSetBookmarks,
   currentPage,
   revealRequest
 }: NotesViewportProps) {
@@ -82,7 +81,7 @@ const NotesViewport = memo(function NotesViewport({
         outlineItems={outlineItems}
         readerState={readerState}
         onNavigateToTarget={onNavigateToTarget}
-        onSetUserOutlineItems={onSetUserOutlineItems}
+        onSetBookmarks={onSetBookmarks}
         currentPage={currentPage}
         revealRequest={revealRequest}
       />

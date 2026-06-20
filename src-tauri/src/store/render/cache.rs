@@ -109,6 +109,11 @@ impl RenderCache {
         }
     }
 
+    pub fn remove_fingerprint(&mut self, fingerprint: &str) {
+        self.entries
+            .retain(|_, entry| entry.fingerprint != fingerprint);
+    }
+
     #[cfg(test)]
     pub(crate) fn cache_keys(&self) -> Vec<String> {
         self.entries.keys().cloned().collect()

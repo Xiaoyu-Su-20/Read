@@ -12,8 +12,9 @@ use crate::{
     debug::process as debug_process,
     error::{AppError, AppResult},
     models::{
-        DocumentAvailability, DocumentPayload, DocumentRecord, DocumentState, FolderRecord,
-        FolderTreeNode, LibraryIndex, NoteDocument, NoteIndex, RenderedPagePayload, ROOT_FOLDER_ID,
+        DocumentAvailability, DocumentDeleteState, DocumentPayload, DocumentRecord,
+        DocumentState, FolderRecord, FolderTreeNode, LibraryIndex, NoteDocument, NoteIndex,
+        RenderedPagePayload, ROOT_FOLDER_ID,
     },
     normalization::{ready_manifest_for, ManifestCache, NormalizationJob},
 };
@@ -245,6 +246,22 @@ impl LibraryStore {
             .rename_document(&self.paths, document_id, new_name)
     }
 
+    pub fn delete_document(&self, document_id: &str) -> AppResult<DocumentRecord> {
+        self.ensure_ready()?;
+        let deleted = self.catalog.delete_document(&self.paths, document_id)?;
+        self.notes.delete_notes_for_book(&self.paths, document_id)?;
+        Ok(deleted)
+    }
+
+    pub fn get_document_delete_state(
+        &self,
+        document_id: &str,
+    ) -> AppResult<DocumentDeleteState> {
+        self.ensure_ready()?;
+        let _ = self.catalog.find_document_by_id(&self.paths, document_id)?;
+        self.notes.document_delete_state(&self.paths, document_id)
+    }
+
     pub fn rename_folder(&self, folder_id: &str, new_name: &str) -> AppResult<FolderRecord> {
         self.ensure_ready()?;
         self.catalog.rename_folder(&self.paths, folder_id, new_name)
@@ -367,6 +384,11 @@ impl LibraryStore {
         self.catalog.ensure_document_available(&document)?;
         let path = self.resolved_document_path(&document)?;
         Ok(path.to_string_lossy().to_string())
+    }
+
+    pub fn document_record(&self, document_id: &str) -> AppResult<DocumentRecord> {
+        self.ensure_ready()?;
+        self.catalog.find_document_by_id(&self.paths, document_id)
     }
 
     pub fn folder_path_string(&self, folder_id: Option<&str>) -> AppResult<String> {

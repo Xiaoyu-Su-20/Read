@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createFolder,
+  deleteDocument,
   deleteFolder,
+  getDocumentDeleteState,
   getLibraryRoot,
   importPdf,
   listLibrary,
@@ -14,7 +16,8 @@ import {
   removeFromLibrary,
   renameDocument,
   renameFolder,
-  rescanLibrary
+  rescanLibrary,
+  showDocumentInExplorer
 } from "../api";
 import { sortRecentDocuments } from "../commands";
 import { debugAction, runDebugProcess } from "../debugLog";
@@ -245,7 +248,7 @@ export function useWorkspaceController() {
     [refreshLibraryState, refreshRecentDocuments]
   );
 
-  const syncActiveDocument = useCallback(async () => {
+  const syncActiveDocument = useCallback(async (options?: { preserveSelectedCollectionId?: boolean }) => {
     if (!activeDocument) {
       return;
     }
@@ -274,7 +277,9 @@ export function useWorkspaceController() {
               : null
           );
           setReaderState(payload.state);
-          setSelectedCollectionId(payload.document.folderId);
+          if (!options?.preserveSelectedCollectionId) {
+            setSelectedCollectionId(payload.document.folderId);
+          }
           await refreshRecentDocuments();
         }
       );
@@ -329,10 +334,8 @@ export function useWorkspaceController() {
     async (documentId: string, destinationFolderId: string) => {
       const moved = await moveDocument(documentId, destinationFolderId);
       await refreshLibraryState();
-      setSelectedCollectionId(destinationFolderId);
-      setWorkspaceMode("collection");
       if (activeDocumentId === documentId) {
-        await syncActiveDocument();
+        await syncActiveDocument({ preserveSelectedCollectionId: true });
       }
       setStatusMessage(`Moved ${moved.title}.`);
       return moved;
@@ -441,6 +444,31 @@ export function useWorkspaceController() {
     [activeDocumentId, handleOpenDocument, refreshLibraryState]
   );
 
+  const deleteDocumentInLibrary = useCallback(
+    async (documentId: string) => {
+      const deletingActiveDocument = activeDocumentId === documentId;
+      if (deletingActiveDocument) {
+        resetOpenDocument();
+      }
+      const deleted = await deleteDocument(documentId);
+      await refreshLibraryState({ rescan: true });
+      if (deletingActiveDocument) {
+        setWorkspaceMode("collection");
+      }
+      setStatusMessage(`Deleted ${deleted.title}.`);
+      return deleted;
+    },
+    [activeDocumentId, refreshLibraryState, resetOpenDocument]
+  );
+
+  const showDocumentInFolder = useCallback(async (documentId: string) => {
+    await showDocumentInExplorer(documentId);
+  }, []);
+
+  const getLibraryDocumentDeleteState = useCallback(async (documentId: string) => {
+    return getDocumentDeleteState(documentId);
+  }, []);
+
   const removeActiveDocument = useCallback(
     async (destinationDirectory: string) => {
       if (!activeDocument) {
@@ -527,6 +555,9 @@ export function useWorkspaceController() {
     reorderDocumentsInCollection,
     deleteCollection,
     renameDocumentInLibrary,
+    deleteDocumentInLibrary,
+    showDocumentInFolder,
+    getLibraryDocumentDeleteState,
     removeActiveDocument,
     rescanLibraryState,
     viewerOrStatus,

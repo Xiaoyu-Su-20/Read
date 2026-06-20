@@ -141,6 +141,12 @@ impl RenderSessionRegistry {
         session.get_native_outline(&request.document_id)
     }
 
+    pub fn drop_fingerprint(&self, fingerprint: &str) {
+        if let Ok(mut registry) = self.inner.lock() {
+            registry.sessions.remove(fingerprint);
+        }
+    }
+
     fn session_for(
         &self,
         fingerprint: &str,

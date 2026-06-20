@@ -15,9 +15,7 @@ type NotesContextMenuProps = {
   onPaste: () => void | Promise<void>;
   onTurnInto: (type: NoteBlockType) => void;
   onAddPageLink: () => void;
-  onLinkHeadingToCurrentPage: () => void;
-  onLinkHeadingToSection: () => void;
-  onCreateSectionFromHeading: () => void;
+  onAddHeadingPagemark: () => void;
   onRemoveHeadingReference: () => void;
   onOpenPage: () => void;
   onEditPageLink: () => void;
@@ -39,9 +37,7 @@ export default function NotesContextMenu({
   onPaste,
   onTurnInto,
   onAddPageLink,
-  onLinkHeadingToCurrentPage,
-  onLinkHeadingToSection,
-  onCreateSectionFromHeading,
+  onAddHeadingPagemark,
   onRemoveHeadingReference,
   onOpenPage,
   onEditPageLink,
@@ -108,18 +104,12 @@ export default function NotesContextMenu({
             ) : null}
             {isHeadingTarget ? (
               <>
-                <button className="editor-context-menu__item" type="button" onClick={onLinkHeadingToCurrentPage}>
-                  Link heading to current page
-                </button>
-                <button className="editor-context-menu__item" type="button" onClick={onLinkHeadingToSection}>
-                  Link heading to PDF section
-                </button>
-                <button className="editor-context-menu__item" type="button" onClick={onCreateSectionFromHeading}>
-                  Create PDF section from heading
+                <button className="editor-context-menu__item" type="button" onClick={onAddHeadingPagemark}>
+                  Add pagemark
                 </button>
                 {state.sourceReference ? (
                   <button className="editor-context-menu__item" type="button" onClick={onRemoveHeadingReference}>
-                    Remove heading link
+                    Remove pagemark
                   </button>
                 ) : null}
               </>

@@ -64,8 +64,7 @@ const documentPayload: DocumentPayload = {
     bookmarks: [],
     preferences: {
       fitMode: "width"
-    },
-    userOutlineItems: []
+    }
   },
   filePath: "D:/Read/example.pdf",
   pageCount: 191
@@ -102,7 +101,6 @@ function makeViewerApi(overrides?: Partial<ViewerApi>): ViewerApi {
     getPageCount: vi.fn(() => 191),
     getReaderState: vi.fn(() => documentPayload.state),
     setBookmarks: vi.fn(),
-    setUserOutlineItems: vi.fn(),
     ...overrides
   };
 }
@@ -126,7 +124,7 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
     outlineItems: [],
     readerState: documentPayload.state,
     onNavigateToTarget: vi.fn(),
-    onSetUserOutlineItems: vi.fn(),
+    onSetBookmarks: vi.fn(),
     onSnapshotChange: vi.fn(),
     onOutlineChange: vi.fn(),
     onStatusChange: vi.fn(),

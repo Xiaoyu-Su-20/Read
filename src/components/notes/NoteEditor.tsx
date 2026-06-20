@@ -2,7 +2,8 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
-  useRef
+  useRef,
+  useState
 } from "react";
 
 import {
@@ -44,6 +45,13 @@ import {
 } from "../../lib/noteEditorDom";
 import { logNoteDebugEvent } from "../../lib/api";
 import { computeCenteredChildScrollTop } from "./noteEditorScroll";
+import HeadingReferenceOverlay from "./HeadingReferenceOverlay";
+import {
+  createHeadingReferenceDecoration,
+  resolveHeadingReferenceAnchorRect,
+  type HeadingReferenceDecoration,
+  type HeadingReferenceRect
+} from "./headingReferenceDecorations";
 import {
   commitNoteHistoryState,
   createNoteHistoryState,
@@ -109,10 +117,59 @@ type NoteEditorProps = {
   onOpenHeadingReference: (reference: DocumentSourceReference) => void;
 };
 
+function isHeadingBlockType(
+  blockType: string | undefined
+): blockType is Exclude<NoteBlockType, "paragraph"> {
+  return blockType === "heading1" || blockType === "heading2" || blockType === "heading3";
+}
+
+function toHeadingReferenceRect(rect: DOMRect | DOMRectReadOnly): HeadingReferenceRect {
+  return {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height
+  };
+}
+
+function headingReferenceDecorationsEqual(
+  left: HeadingReferenceDecoration[],
+  right: HeadingReferenceDecoration[]
+) {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    const previous = left[index];
+    const next = right[index];
+    if (!previous || !next) {
+      return false;
+    }
+
+    if (
+      previous.blockId !== next.blockId ||
+      previous.blockType !== next.blockType ||
+      previous.reference.id !== next.reference.id ||
+      previous.reference.title !== next.reference.title ||
+      JSON.stringify(previous.reference.target) !== JSON.stringify(next.reference.target) ||
+      Math.abs(previous.left - next.left) > 0.25 ||
+      Math.abs(previous.top - next.top) > 0.25
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEditor(
   { note, loading, currentPage, onChangeBlocks, onBlur, onOpenPageLink, onOpenHeadingReference },
   ref
 ) {
+  const editorRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const appliedNoteIdRef = useRef<string | null>(null);
   const selectedBlockIdRef = useRef<string | null>(null);
@@ -120,6 +177,10 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
   const pendingPageLinkRangeRef = useRef<Range | null>(null);
   const historyRef = useRef<NoteHistoryState | null>(null);
   const applyingHistoryRef = useRef(false);
+  const headingReferenceMeasureFrameRef = useRef<number | null>(null);
+  const [headingReferenceDecorations, setHeadingReferenceDecorations] = useState<
+    HeadingReferenceDecoration[]
+  >([]);
 
   function inferHistoryMergeKeyFromInputType(inputType: string): NoteHistoryMergeKey | null {
     if (inputType === "insertFromPaste" || inputType === "insertFromDrop") {
@@ -177,6 +238,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         nextHistoryState.current.html ?? renderNoteBlocksHtml(nextHistoryState.current.blocks);
       normalizeNoteEditorDom(bodyRef.current);
       restoreEditorSelection(bodyRef.current, nextHistoryState.current.selection);
+      scheduleHeadingReferenceMeasurement();
       onChangeBlocks(nextHistoryState.current.blocks);
     } finally {
       applyingHistoryRef.current = false;
@@ -219,6 +281,74 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     }
   }
 
+  function commitHeadingReferenceDecorations(nextDecorations: HeadingReferenceDecoration[]) {
+    setHeadingReferenceDecorations((current) =>
+      headingReferenceDecorationsEqual(current, nextDecorations) ? current : nextDecorations
+    );
+  }
+
+  function measureHeadingReferenceDecorationsFromDom() {
+    if (!editorRef.current || !bodyRef.current) {
+      commitHeadingReferenceDecorations([]);
+      return;
+    }
+
+    const containerRect = toHeadingReferenceRect(editorRef.current.getBoundingClientRect());
+    const nextDecorations: HeadingReferenceDecoration[] = [];
+
+    for (const child of Array.from(bodyRef.current.children)) {
+      if (!(child instanceof HTMLElement)) {
+        continue;
+      }
+
+      const blockId = child.dataset.blockId?.trim();
+      const blockType = child.dataset.blockType;
+      if (!blockId || !isHeadingBlockType(blockType)) {
+        continue;
+      }
+
+      const reference = readSourceReference(child);
+      if (!reference) {
+        continue;
+      }
+
+      const range = child.ownerDocument.createRange();
+      range.selectNodeContents(child);
+      const anchorRect = resolveHeadingReferenceAnchorRect(
+        Array.from(range.getClientRects()).map((rect) => toHeadingReferenceRect(rect)),
+        toHeadingReferenceRect(child.getBoundingClientRect())
+      );
+
+      nextDecorations.push(
+        createHeadingReferenceDecoration({
+          blockId,
+          blockType,
+          reference,
+          anchorRect,
+          containerRect,
+          gapPx: 4
+        })
+      );
+    }
+
+    commitHeadingReferenceDecorations(nextDecorations);
+  }
+
+  function scheduleHeadingReferenceMeasurement() {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (headingReferenceMeasureFrameRef.current !== null) {
+      window.cancelAnimationFrame(headingReferenceMeasureFrameRef.current);
+    }
+
+    headingReferenceMeasureFrameRef.current = window.requestAnimationFrame(() => {
+      headingReferenceMeasureFrameRef.current = null;
+      measureHeadingReferenceDecorationsFromDom();
+    });
+  }
+
   function syncBlocksFromDom(mergeKey?: NoteHistoryMergeKey | null) {
     if (!bodyRef.current) {
       return;
@@ -228,6 +358,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     const nextSelection = captureEditorSelection(bodyRef.current);
     const nextHtml = captureHistoryHtml();
     const currentHistoryState = historyRef.current;
+    scheduleHeadingReferenceMeasurement();
 
     if (!currentHistoryState) {
       historyRef.current = createNoteHistoryState({
@@ -430,6 +561,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       selectedPageLinkIdRef.current = null;
       pendingPageLinkRangeRef.current = null;
       historyRef.current = null;
+      commitHeadingReferenceDecorations([]);
       return;
     }
 
@@ -444,11 +576,45 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       selection: captureEditorSelection(bodyRef.current),
       html: captureHistoryHtml()
     });
+    scheduleHeadingReferenceMeasurement();
     appliedNoteIdRef.current = note.id;
     updateSelectedBlock(null);
     updateSelectedPageLink(null);
     pendingPageLinkRangeRef.current = null;
   }, [note]);
+
+  useEffect(() => {
+    if (!bodyRef.current) {
+      return;
+    }
+
+    const scrollSurface = bodyRef.current.closest(".notes-pane__scroll-surface");
+    const schedule = () => {
+      scheduleHeadingReferenceMeasurement();
+    };
+
+    schedule();
+    window.addEventListener("resize", schedule);
+    scrollSurface?.addEventListener("scroll", schedule, { passive: true });
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => {
+            scheduleHeadingReferenceMeasurement();
+          });
+
+    if (editorRef.current) {
+      resizeObserver?.observe(editorRef.current);
+    }
+    resizeObserver?.observe(bodyRef.current);
+
+    return () => {
+      window.removeEventListener("resize", schedule);
+      scrollSurface?.removeEventListener("scroll", schedule);
+      resizeObserver?.disconnect();
+    };
+  }, [note?.id]);
 
   useImperativeHandle(
     ref,
@@ -683,8 +849,16 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (headingReferenceMeasureFrameRef.current !== null) {
+        window.cancelAnimationFrame(headingReferenceMeasureFrameRef.current);
+      }
+    };
+  }, []);
+
   return (
-    <div className="note-editor">
+    <div ref={editorRef} className="note-editor">
       <div
         ref={bodyRef}
         className="note-editor__body"
@@ -758,16 +932,6 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
             return;
           }
 
-          const headingReferenceTarget =
-            event.target instanceof Element
-              ? event.target.closest<HTMLElement>("[data-heading-reference-indicator='true']")
-              : null;
-          if (headingReferenceTarget) {
-            event.preventDefault();
-            event.stopPropagation();
-            return;
-          }
-
           const target = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("[data-inline-type='page-link']") : null;
           if (!target) {
             if (selectedPageLinkIdRef.current) {
@@ -787,21 +951,6 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         }}
         onClick={(event) => {
           if (!bodyRef.current) {
-            return;
-          }
-
-          const headingReferenceTarget =
-            event.target instanceof Element
-              ? event.target.closest<HTMLElement>("[data-heading-reference-indicator='true']")
-              : null;
-          if (headingReferenceTarget) {
-            const block = headingReferenceTarget.closest<HTMLElement>("[data-block-id]");
-            const reference = block ? readSourceReference(block) : null;
-            if (reference) {
-              event.preventDefault();
-              event.stopPropagation();
-              onOpenHeadingReference(reference);
-            }
             return;
           }
 
@@ -985,6 +1134,10 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
             });
           }
         }}
+      />
+      <HeadingReferenceOverlay
+        decorations={headingReferenceDecorations}
+        onOpenReference={onOpenHeadingReference}
       />
     </div>
   );
