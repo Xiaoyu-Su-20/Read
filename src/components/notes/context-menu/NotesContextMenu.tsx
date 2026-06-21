@@ -4,6 +4,7 @@ import type { PanePoint } from "./menuPlacement";
 import type { NotesContextMenuState } from "./useContextMenuController";
 
 type NotesContextMenuProps = {
+  documentCapabilities: boolean;
   state: NotesContextMenuState | null;
   position: PanePoint | null;
   submenuOpen: boolean;
@@ -27,6 +28,7 @@ type NotesContextMenuProps = {
 };
 
 export default function NotesContextMenu({
+  documentCapabilities,
   state,
   position,
   submenuOpen,
@@ -54,6 +56,7 @@ export default function NotesContextMenu({
 
   const menuPosition = position ?? state.anchor;
   const isHeadingTarget =
+    documentCapabilities &&
     state.target === "body" &&
     (state.blockType === "heading1" || state.blockType === "heading2" || state.blockType === "heading3");
 
@@ -69,7 +72,7 @@ export default function NotesContextMenu({
         }}
         onClick={(event) => event.stopPropagation()}
       >
-        {state.target === "page-link" ? (
+        {state.target === "page-link" && documentCapabilities ? (
           <>
             <button className="editor-context-menu__item" type="button" onClick={onOpenPage}>
               Open Page
@@ -108,7 +111,7 @@ export default function NotesContextMenu({
             <button className="editor-context-menu__item" type="button" onClick={onCut}>
               Cut
             </button>
-            {state.target === "body" && state.canAddPageLink ? (
+            {state.target === "body" && documentCapabilities && state.canAddPageLink ? (
               <button className="editor-context-menu__item" type="button" onClick={onAddPageLink}>
                 Add PageLink
               </button>

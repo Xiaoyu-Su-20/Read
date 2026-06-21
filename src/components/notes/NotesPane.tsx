@@ -28,13 +28,16 @@ import {
   type NotesContextMenuState
 } from "./context-menu/useContextMenuController";
 import NoteEditor, { type NoteEditorHandle } from "./NoteEditor";
+import NoteTitleField from "./NoteTitleField";
 
 type NotesPaneProps = {
   note: NoteDocument | null;
   loading: boolean;
+  capabilityMode: "document" | "standalone";
   fullscreen: boolean;
   onToggleFullscreen: () => void | Promise<void>;
   headerActionsContainerId: string | null;
+  titleMode?: "hidden" | "standalone";
   navigationItems: NoteNavigationItem[];
   onChangeTitle: (title: string) => void;
   onChangeBlocks: (blocks: NoteDocument["blocks"]) => void;
@@ -48,6 +51,7 @@ type NotesPaneProps = {
   onSetBookmarks: (bookmarks: DocumentState["bookmarks"]) => void;
   currentPage: number | null;
   revealRequest: NoteRevealRequest | null;
+  navigationOpenRequest: number;
   commandPaletteOpen: boolean;
   onToggleCommandPalette: () => void;
   registerCommandPaletteAnchor: (node: HTMLButtonElement | null) => void;
@@ -231,9 +235,11 @@ function buildNoteNavigationTree(items: NoteNavigationItem[]): NoteNavigationTre
 const NotesPane = memo(function NotesPane({
   note,
   loading,
+  capabilityMode,
   fullscreen,
   onToggleFullscreen,
   headerActionsContainerId,
+  titleMode = "hidden",
   navigationItems,
   onChangeTitle,
   onChangeBlocks,
@@ -247,10 +253,12 @@ const NotesPane = memo(function NotesPane({
   onSetBookmarks,
   currentPage,
   revealRequest,
+  navigationOpenRequest,
   commandPaletteOpen,
   onToggleCommandPalette,
   registerCommandPaletteAnchor
 }: NotesPaneProps) {
+  const documentCapabilities = capabilityMode === "document";
   const editorRef = useRef<NoteEditorHandle | null>(null);
   const findInputRef = useRef<HTMLInputElement | null>(null);
   const pageLinkInputRef = useRef<HTMLInputElement | null>(null);
@@ -380,7 +388,13 @@ const NotesPane = memo(function NotesPane({
 
   useEffect(() => {
     if (revealRequest) editorRef.current?.scrollToBlock(revealRequest.blockId);
-  }, [revealRequest]);
+  }, [note?.id, revealRequest]);
+
+  useEffect(() => {
+    if (navigationOpenRequest > 0) {
+      setNavigationOpen(true);
+    }
+  }, [navigationOpenRequest]);
 
   useEffect(() => {
     if (!navigationOpen) {
@@ -601,6 +615,10 @@ const NotesPane = memo(function NotesPane({
   }
 
   function handlePageLinkOpen(node: NotePageLinkNode) {
+    if (!documentCapabilities) {
+      return;
+    }
+
     if (node.pdfPageIndex == null) {
       showToast("PageLink has no saved page.");
       return;
@@ -628,6 +646,11 @@ const NotesPane = memo(function NotesPane({
   }
 
   function addHeadingPagemark() {
+    if (!documentCapabilities) {
+      closeMenu();
+      return;
+    }
+
     if (contextMenuState?.target !== "body" || !documentId || !currentPage) {
       showToast("Open a document page before adding a pagemark.");
       closeMenu();
@@ -662,6 +685,11 @@ const NotesPane = memo(function NotesPane({
   }
 
   function removeHeadingReference() {
+    if (!documentCapabilities) {
+      closeMenu();
+      return;
+    }
+
     if (contextMenuState?.target !== "body" && contextMenuState?.target !== "heading-reference") {
       return;
     }
@@ -674,6 +702,10 @@ const NotesPane = memo(function NotesPane({
   function handleHeadingReferenceOpen(
     reference: NonNullable<NoteDocument["blocks"][number]["sourceReference"]>
   ) {
+    if (!documentCapabilities) {
+      return;
+    }
+
     const target = resolveSourceReferenceTarget(reference, outlineItems);
     if (!target) {
       showToast("This heading reference no longer has a page target.");
@@ -690,6 +722,10 @@ const NotesPane = memo(function NotesPane({
     clientY: number;
     reference: NonNullable<NoteDocument["blocks"][number]["sourceReference"]>;
   }) {
+    if (!documentCapabilities) {
+      return;
+    }
+
     const paneElement = paneRef.current;
     if (!paneElement) {
       return;
@@ -902,6 +938,12 @@ const NotesPane = memo(function NotesPane({
         null;
 
       if (!resolvedTarget) {
+        editorRef.current?.clearSelectedBlock();
+        closeMenu();
+        return;
+      }
+
+      if (!documentCapabilities && resolvedTarget.target === "page-link") {
         editorRef.current?.clearSelectedBlock();
         closeMenu();
         return;
@@ -1216,19 +1258,40 @@ const NotesPane = memo(function NotesPane({
       >
         <div ref={contentRef} className="notes-pane__content">
           {note ? (
-            <NoteEditor
-              ref={editorRef}
-              note={note}
-              loading={loading}
-              currentPage={currentPage}
-              onChangeBlocks={onChangeBlocks}
-            onBlur={() => {
-              void onFlush();
-            }}
-            onOpenPageLink={handlePageLinkOpen}
-            onOpenHeadingReference={handleHeadingReferenceOpen}
-            onOpenHeadingReferenceContextMenu={handleHeadingReferenceContextMenu}
-          />
+            <>
+              {titleMode === "standalone" ? (
+                <NoteTitleField
+                  note={note}
+                  loading={loading}
+                  variant="standalone"
+                  onChangeTitle={onChangeTitle}
+                  onBlur={() => {
+                    void onFlush();
+                  }}
+                  onEscape={() => {
+                    editorRef.current?.focus();
+                  }}
+                  onSubmit={() => {
+                    void onFlush();
+                    editorRef.current?.focus();
+                  }}
+                />
+              ) : null}
+              <NoteEditor
+                ref={editorRef}
+                note={note}
+                loading={loading}
+                currentPage={currentPage}
+                documentCapabilities={documentCapabilities}
+                onChangeBlocks={onChangeBlocks}
+                onBlur={() => {
+                  void onFlush();
+                }}
+                onOpenPageLink={handlePageLinkOpen}
+                onOpenHeadingReference={handleHeadingReferenceOpen}
+                onOpenHeadingReferenceContextMenu={handleHeadingReferenceContextMenu}
+              />
+            </>
           ) : (
             <div className="notes-pane__empty">
             </div>
@@ -1379,6 +1442,7 @@ const NotesPane = memo(function NotesPane({
       {toastMessage ? <div className="notes-pane__toast">{toastMessage}</div> : null}
 
       <NotesContextMenu
+        documentCapabilities={documentCapabilities}
         state={contextMenuState}
         position={contextMenuPosition}
         submenuOpen={submenuOpen}

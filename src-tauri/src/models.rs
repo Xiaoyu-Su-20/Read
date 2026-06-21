@@ -395,7 +395,19 @@ pub struct NoteIndexEntry {
     pub book_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub last_opened_at: Option<String>,
     pub excerpt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StandaloneNoteSearchHit {
+    pub note_id: String,
+    pub block_id: String,
+    pub title: String,
+    pub text: String,
+    pub match_index: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

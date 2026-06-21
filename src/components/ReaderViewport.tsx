@@ -5,16 +5,22 @@ import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import { debugAction } from "../lib/debugLog";
 import type { DocumentState, OutlineItem, ReaderSession, ViewerApi, ViewerSnapshot } from "../lib/types";
 
-function toViewEventName(view: "reader" | "collection") {
-  return view === "reader" ? "document" : "collection";
+function toViewEventName(view: "reader" | "collection" | "notes") {
+  if (view === "reader") {
+    return "document";
+  }
+  if (view === "notes") {
+    return "notes";
+  }
+  return "collection";
 }
 
 type ReaderViewportProps = {
   activeViewTransition: {
     clickStartedAtMs: number;
-    fromView: "reader" | "collection";
+    fromView: "reader" | "collection" | "notes";
     source: string;
-    toView: "reader" | "collection";
+    toView: "reader" | "collection" | "notes";
     viewTransitionId: string;
   } | null;
   readerSession: ReaderSession | null;

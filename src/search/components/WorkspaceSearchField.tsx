@@ -6,9 +6,10 @@ import type { SearchHighlightRange, SearchResult } from "../model/SearchResult";
 type WorkspaceSearchFieldProps = {
   controller: UnifiedSearchController;
   focusRequest: number;
+  placeholder?: string;
   onOpenDocument: (documentId: string) => Promise<void>;
   onGoToPage: (pageNumber: number) => void;
-  onRevealNoteBlock: (blockId: string) => void;
+  onOpenNoteResult: (noteId: string, blockId: string) => void | Promise<void>;
 };
 
 const INITIAL_LIMITS = {
@@ -82,9 +83,10 @@ function renderGroupLabel(label: string) {
 export default function WorkspaceSearchField({
   controller,
   focusRequest,
+  placeholder = "Search",
   onOpenDocument,
   onGoToPage,
-  onRevealNoteBlock
+  onOpenNoteResult
 }: WorkspaceSearchFieldProps) {
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -299,7 +301,7 @@ export default function WorkspaceSearchField({
       return;
     }
     if (result.kind === "note" && result.blockId) {
-      onRevealNoteBlock(result.blockId);
+      await onOpenNoteResult(result.noteId, result.blockId);
       return;
     }
     if (result.kind === "document" && result.available) {
@@ -327,6 +329,7 @@ export default function WorkspaceSearchField({
           ref={inputRef}
           value={state.inputQuery}
           aria-label="Search workspace"
+          placeholder={placeholder}
           spellCheck={false}
           onFocus={() => controller.open()}
           onChange={(event) => {

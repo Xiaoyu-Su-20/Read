@@ -77,7 +77,7 @@ function renderState(state: UnifiedSearchState) {
     focusRequest: 0,
     onOpenDocument: vi.fn(),
     onGoToPage: vi.fn(),
-    onRevealNoteBlock: vi.fn()
+    onOpenNoteResult: vi.fn()
   }));
 }
 
@@ -118,9 +118,9 @@ describe("WorkspaceSearchField", () => {
     expect(markup).not.toContain("workspace-search__dropdown");
   });
 
-  it("renders with no placeholder text", () => {
+  it("renders with the default search placeholder", () => {
     const markup = renderState(makeState());
-    expect(markup).not.toContain("placeholder=");
+    expect(markup).toContain('placeholder="Search"');
   });
 
   it("renders the trailing chevron on show-all actions", () => {

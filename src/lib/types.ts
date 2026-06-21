@@ -26,6 +26,11 @@ export type DocumentDeleteState = {
   reason: string | null;
 };
 
+export type NoteDeleteState = {
+  canDelete: boolean;
+  reason: string | null;
+};
+
 export type Bookmark = {
   id: string;
   page: number;
@@ -251,7 +256,16 @@ export type NoteIndexEntry = {
   bookId: string | null;
   createdAt: string;
   updatedAt: string;
+  lastOpenedAt: string | null;
   excerpt: string;
+};
+
+export type StandaloneNoteSearchHit = {
+  noteId: string;
+  blockId: string;
+  title: string;
+  text: string;
+  matchIndex: number;
 };
 
 export type NoteNavigationItem = {

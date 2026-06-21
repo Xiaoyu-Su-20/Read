@@ -25,9 +25,9 @@ import type { UnifiedSearchController } from "../search/controller/UnifiedSearch
 type ReaderWorkspaceProps = {
   activeViewTransition: {
     clickStartedAtMs: number;
-    fromView: "reader" | "collection";
+    fromView: "reader" | "collection" | "notes";
     source: string;
-    toView: "reader" | "collection";
+    toView: "reader" | "collection" | "notes";
     viewTransitionId: string;
   } | null;
   readerSession: ReaderSession | null;
@@ -66,7 +66,7 @@ type ReaderWorkspaceProps = {
   registerCommandPaletteAnchor: (node: HTMLButtonElement | null) => void;
   onSearchOpenDocument: (documentId: string) => Promise<void>;
   onSearchGoToPage: (pageNumber: number) => void;
-  onSearchRevealNoteBlock: (blockId: string) => void;
+  onSearchOpenNoteResult: (noteId: string, blockId: string) => void | Promise<void>;
   showHeaders: boolean;
   showFullscreenHint: boolean;
   fullscreen: boolean;
@@ -115,7 +115,7 @@ export default function ReaderWorkspace({
   registerCommandPaletteAnchor,
   onSearchOpenDocument,
   onSearchGoToPage,
-  onSearchRevealNoteBlock,
+  onSearchOpenNoteResult,
   showHeaders,
   showFullscreenHint,
   fullscreen,
@@ -304,9 +304,10 @@ export default function ReaderWorkspace({
                   <WorkspaceSearchField
                     controller={searchController}
                     focusRequest={searchFocusRequest}
+                    placeholder="Search"
                     onOpenDocument={onSearchOpenDocument}
                     onGoToPage={onSearchGoToPage}
-                    onRevealNoteBlock={onSearchRevealNoteBlock}
+                    onOpenNoteResult={onSearchOpenNoteResult}
                   />
                 </div>
               </div>
@@ -356,8 +357,11 @@ export default function ReaderWorkspace({
           <NotesViewport
             note={note}
             loading={notesLoading}
+            capabilityMode="document"
             fullscreen={fullscreen}
             onToggleFullscreen={onToggleFullscreen}
+            titleMode="hidden"
+            navigationOpenRequest={0}
             navigationItems={noteNavigationItems}
             onChangeTitle={onChangeNoteTitle}
             onChangeBlocks={onChangeNoteBlocks}

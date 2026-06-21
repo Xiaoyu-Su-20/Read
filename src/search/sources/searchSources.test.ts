@@ -15,6 +15,7 @@ describe("search sources", () => {
   it("returns one current-note result per matching block", async () => {
     const batches = await collect(notesSearch.search({
       sourceId: "notes",
+      mode: "current-note",
       stageId: "notes",
       query: "focus",
       normalizedQuery: "focus",

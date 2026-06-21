@@ -14,7 +14,7 @@ use crate::{
     models::{
         DocumentAvailability, DocumentDeleteState, DocumentPayload, DocumentRecord,
         DocumentState, FolderRecord, FolderTreeNode, LibraryIndex, NoteDocument, NoteIndex,
-        RenderedPagePayload, ROOT_FOLDER_ID,
+        NoteIndexEntry, RenderedPagePayload, StandaloneNoteSearchHit, ROOT_FOLDER_ID,
     },
     normalization::{ready_manifest_for, ManifestCache, NormalizationJob},
 };
@@ -369,6 +369,47 @@ impl LibraryStore {
         }
 
         self.notes.save(&self.paths, note)
+    }
+
+    pub fn list_standalone_notes(&self) -> AppResult<Vec<NoteIndexEntry>> {
+        self.ensure_ready()?;
+        self.notes.list_standalone_notes(&self.paths)
+    }
+
+    pub fn create_standalone_note(&self) -> AppResult<NoteDocument> {
+        self.ensure_ready()?;
+        self.notes.create_standalone_note(&self.paths)
+    }
+
+    pub fn open_standalone_note(&self, note_id: &str) -> AppResult<NoteDocument> {
+        self.ensure_ready()?;
+        self.notes.open_standalone_note(&self.paths, note_id)
+    }
+
+    pub fn rename_standalone_note(&self, note_id: &str, title: &str) -> AppResult<NoteDocument> {
+        self.ensure_ready()?;
+        self.notes.rename_standalone_note(&self.paths, note_id, title)
+    }
+
+    pub fn delete_standalone_note(&self, note_id: &str) -> AppResult<NoteDocument> {
+        self.ensure_ready()?;
+        self.notes.delete_standalone_note(&self.paths, note_id)
+    }
+
+    pub fn get_standalone_note_delete_state(
+        &self,
+        note_id: &str,
+    ) -> AppResult<DocumentDeleteState> {
+        self.ensure_ready()?;
+        self.notes.standalone_note_delete_state(&self.paths, note_id)
+    }
+
+    pub fn search_standalone_notes(
+        &self,
+        query: &str,
+    ) -> AppResult<Vec<StandaloneNoteSearchHit>> {
+        self.ensure_ready()?;
+        self.notes.search_standalone_notes(&self.paths, query)
     }
 
     pub fn list_recent_documents(&self) -> AppResult<Vec<DocumentRecord>> {

@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   filterPdfPaths,
@@ -14,7 +14,13 @@ import {
   type DocumentMenuView
 } from "../lib/collectionDocumentMenu";
 import { debugAction, debugLocalAction } from "../lib/debugLog";
-import type { DocumentDeleteState, DocumentRecord, FolderTreeNode } from "../lib/types";
+import type {
+  DocumentDeleteState,
+  DocumentRecord,
+  FolderTreeNode,
+  NoteDeleteState,
+  NoteIndexEntry
+} from "../lib/types";
 import { usePointerReorder, type PointerReorderSnapshot } from "../lib/usePointerReorder";
 
 function startupTrace(step: string, fields: Record<string, unknown> = {}) {
@@ -34,8 +40,17 @@ const appWindow = getCurrentWindow();
 
 type CollectionViewRefreshProps = {
   tree: FolderTreeNode | null;
+  selectedLibrarySection: "collections" | "notes";
   selectedCollectionId: string | null;
   onSelectCollection: (collectionId: string) => void;
+  standaloneNotes: NoteIndexEntry[];
+  activeStandaloneNoteId: string | null;
+  onSelectNotes: () => void;
+  onCreateStandaloneNote: () => void | Promise<void>;
+  onOpenStandaloneNote: (noteId: string) => void | Promise<void>;
+  onRenameStandaloneNote: (noteId: string, nextTitle: string) => void | Promise<void>;
+  onDeleteStandaloneNote: (noteId: string) => void | Promise<void>;
+  onGetStandaloneNoteDeleteState: (noteId: string) => Promise<NoteDeleteState>;
   onCreateCollection: () => void | Promise<void>;
   onRenameCollection: (collectionId: string, nextName: string) => void | Promise<void>;
   onDeleteCollection: (collectionId: string) => void | Promise<void>;
@@ -69,6 +84,10 @@ type FloatingMenuPosition = {
 type OpenDocumentMenuState = {
   documentId: string;
   view: DocumentMenuView;
+} | null;
+
+type OpenStandaloneNoteMenuState = {
+  noteId: string;
 } | null;
 
 type InternalPointerDragPayload =
@@ -187,8 +206,17 @@ function getVerticalLayouts(ids: string[], refs: Map<string, HTMLDivElement>): V
 
 export default function CollectionViewRefresh({
   tree,
+  selectedLibrarySection,
   selectedCollectionId,
   onSelectCollection,
+  standaloneNotes,
+  activeStandaloneNoteId,
+  onSelectNotes,
+  onCreateStandaloneNote,
+  onOpenStandaloneNote,
+  onRenameStandaloneNote,
+  onDeleteStandaloneNote,
+  onGetStandaloneNoteDeleteState,
   onCreateCollection,
   onRenameCollection,
   onDeleteCollection,
@@ -212,9 +240,16 @@ export default function CollectionViewRefresh({
   const [editingCollectionValue, setEditingCollectionValue] = useState("");
   const [editingDocumentId, setEditingDocumentId] = useState<string | null>(null);
   const [editingDocumentValue, setEditingDocumentValue] = useState("");
+  const [editingStandaloneNoteId, setEditingStandaloneNoteId] = useState<string | null>(null);
+  const [editingStandaloneNoteValue, setEditingStandaloneNoteValue] = useState("");
   const [openCollectionMenu, setOpenCollectionMenu] = useState<CollectionMenuAnchor>(null);
   const [openDocumentMenu, setOpenDocumentMenu] = useState<OpenDocumentMenuState>(null);
+  const [openNotesSectionMenu, setOpenNotesSectionMenu] = useState(false);
+  const [openStandaloneNoteMenu, setOpenStandaloneNoteMenu] =
+    useState<OpenStandaloneNoteMenuState>(null);
   const [documentDeleteState, setDocumentDeleteState] = useState<DocumentDeleteState | null>(null);
+  const [standaloneNoteDeleteState, setStandaloneNoteDeleteState] =
+    useState<NoteDeleteState | null>(null);
   const [optimisticCollectionOrder, setOptimisticCollectionOrder] = useState<string[] | null>(
     null
   );
@@ -235,9 +270,11 @@ export default function CollectionViewRefresh({
   const skipNextDocumentActivationRef = useRef(false);
   const collectionMenuButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const documentMenuButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const standaloneNoteMenuButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const collectionRowRefs = useRef(new Map<string, HTMLDivElement>());
   const bookRowRefs = useRef(new Map<string, HTMLDivElement>());
   const collectionRowsContainerRef = useRef<HTMLDivElement | null>(null);
+  const notesSectionMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const collectionSidebarScrollbarRef = useRef<HTMLDivElement | null>(null);
   const collectionSidebarScrollbarMetricsRef = useRef({
     thumbHeight: 0,
@@ -264,6 +301,8 @@ export default function CollectionViewRefresh({
   const collectionViewRef = useRef<HTMLElement | null>(null);
   const floatingCollectionMenuRef = useRef<HTMLDivElement | null>(null);
   const floatingDocumentMenuRef = useRef<HTMLDivElement | null>(null);
+  const floatingNotesSectionMenuRef = useRef<HTMLDivElement | null>(null);
+  const floatingStandaloneNoteMenuRef = useRef<HTMLDivElement | null>(null);
   const headerCollectionMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const bookListRef = useRef<HTMLDivElement | null>(null);
   const importPanelRef = useRef<HTMLDivElement | null>(null);
@@ -281,6 +320,10 @@ export default function CollectionViewRefresh({
     useState<FloatingMenuPosition>(null);
   const [floatingDocumentMenuPosition, setFloatingDocumentMenuPosition] =
     useState<FloatingMenuPosition>(null);
+  const [floatingNotesSectionMenuPosition, setFloatingNotesSectionMenuPosition] =
+    useState<FloatingMenuPosition>(null);
+  const [floatingStandaloneNoteMenuPosition, setFloatingStandaloneNoteMenuPosition] =
+    useState<FloatingMenuPosition>(null);
 
   const displayedCollections = applyOrder(
     collections,
@@ -291,6 +334,9 @@ export default function CollectionViewRefresh({
     displayedCollections.find((collection) => collection.folder.id === selectedCollectionId) ??
     displayedCollections[0] ??
     null;
+  const notesSectionSelected = selectedLibrarySection === "notes";
+  const activeStandaloneNote =
+    standaloneNotes.find((note) => note.id === activeStandaloneNoteId) ?? null;
   const optimisticSelectedBookOrderIds =
     optimisticBookOrder &&
     optimisticBookOrder.collectionId === selectedCollection?.folder.id
@@ -303,6 +349,10 @@ export default function CollectionViewRefresh({
   );
   const openMenuDocument =
     openDocumentMenu ? books.find((document) => document.id === openDocumentMenu.documentId) ?? null : null;
+  const openMenuStandaloneNote =
+    openStandaloneNoteMenu
+      ? standaloneNotes.find((note) => note.id === openStandaloneNoteMenu.noteId) ?? null
+      : null;
   const documentMenuEntries =
     openDocumentMenu && openMenuDocument
       ? buildDocumentMenuEntries({
@@ -352,6 +402,18 @@ export default function CollectionViewRefresh({
     return documentMenuButtonRefs.current.get(openDocumentMenu.documentId) ?? null;
   }
 
+  function getNotesSectionMenuAnchorElement() {
+    return notesSectionMenuButtonRef.current;
+  }
+
+  function getStandaloneNoteMenuAnchorElement() {
+    if (!openStandaloneNoteMenu) {
+      return null;
+    }
+
+    return standaloneNoteMenuButtonRefs.current.get(openStandaloneNoteMenu.noteId) ?? null;
+  }
+
   function closeCollectionMenu() {
     setOpenCollectionMenu(null);
     setFloatingCollectionMenuPosition(null);
@@ -361,6 +423,17 @@ export default function CollectionViewRefresh({
     setOpenDocumentMenu(null);
     setDocumentDeleteState(null);
     setFloatingDocumentMenuPosition(null);
+  }
+
+  function closeNotesSectionMenu() {
+    setOpenNotesSectionMenu(false);
+    setFloatingNotesSectionMenuPosition(null);
+  }
+
+  function closeStandaloneNoteMenu() {
+    setOpenStandaloneNoteMenu(null);
+    setStandaloneNoteDeleteState(null);
+    setFloatingStandaloneNoteMenuPosition(null);
   }
 
   function resolveFloatingMenuPosition(
@@ -391,7 +464,9 @@ export default function CollectionViewRefresh({
     const availableBelow =
       overlayRootRect.bottom - anchorRect.bottom - gap - viewportPadding;
     const availableAbove = anchorRect.top - overlayRootRect.top - gap - viewportPadding;
-    const placeAbove = availableBelow < menuHeight && availableAbove > availableBelow;
+    const fitsBelow = availableBelow >= menuHeight;
+    const fitsAbove = availableAbove >= menuHeight;
+    const placeAbove = !fitsBelow && (fitsAbove || availableAbove > availableBelow);
     const top = placeAbove
       ? Math.max(
           viewportPadding,
@@ -423,6 +498,24 @@ export default function CollectionViewRefresh({
       resolveFloatingMenuPosition(
         anchorOverride ?? getDocumentMenuAnchorElement(),
         floatingDocumentMenuRef.current
+      )
+    );
+  }
+
+  function updateFloatingNotesSectionMenuPosition(anchorOverride?: HTMLElement | null) {
+    setFloatingNotesSectionMenuPosition(
+      resolveFloatingMenuPosition(
+        anchorOverride ?? getNotesSectionMenuAnchorElement(),
+        floatingNotesSectionMenuRef.current
+      )
+    );
+  }
+
+  function updateFloatingStandaloneNoteMenuPosition(anchorOverride?: HTMLElement | null) {
+    setFloatingStandaloneNoteMenuPosition(
+      resolveFloatingMenuPosition(
+        anchorOverride ?? getStandaloneNoteMenuAnchorElement(),
+        floatingStandaloneNoteMenuRef.current
       )
     );
   }
@@ -549,7 +642,10 @@ export default function CollectionViewRefresh({
     displayedCollections.length,
     editingCollectionId,
     openCollectionMenu,
-    openDocumentMenu
+    openDocumentMenu,
+    openNotesSectionMenu,
+    openStandaloneNoteMenu,
+    standaloneNotes.length
   ]);
 
   useEffect(() => {
@@ -587,11 +683,15 @@ export default function CollectionViewRefresh({
       window.cancelAnimationFrame(frame);
     };
   }, [
+    selectedLibrarySection,
     selectedCollection?.folder.id,
     books.length,
+    standaloneNotes.length,
     editingDocumentId,
+    editingStandaloneNoteId,
     openCollectionMenu,
     openDocumentMenu,
+    openStandaloneNoteMenu,
     nativeDropTarget
   ]);
 
@@ -731,6 +831,26 @@ export default function CollectionViewRefresh({
       return;
     }
     await onRenameDocument(document.id, nextName);
+  }
+
+  async function commitStandaloneNoteRename(
+    note: NoteIndexEntry,
+    options?: { skipNextActivation?: boolean }
+  ) {
+    if (editingStandaloneNoteId !== note.id) {
+      return;
+    }
+
+    const nextTitle = editingStandaloneNoteValue.trim();
+    suppressBookActivation();
+    if (options?.skipNextActivation) {
+      skipNextDocumentActivationRef.current = true;
+    }
+    setEditingStandaloneNoteId(null);
+    if (!nextTitle || nextTitle === note.title) {
+      return;
+    }
+    await onRenameStandaloneNote(note.id, nextTitle);
   }
 
   function resetPointerFeedback() {
@@ -1068,11 +1188,38 @@ export default function CollectionViewRefresh({
   }, [onGetDocumentDeleteState, openDocumentMenu]);
 
   useEffect(() => {
+    if (!openStandaloneNoteMenu) {
+      return;
+    }
+
+    let cancelled = false;
+    setStandaloneNoteDeleteState(null);
+    void onGetStandaloneNoteDeleteState(openStandaloneNoteMenu.noteId)
+      .then((state) => {
+        if (!cancelled) {
+          setStandaloneNoteDeleteState(state);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setStandaloneNoteDeleteState({
+            canDelete: false,
+            reason: error instanceof Error ? error.message : "Unable to check note status."
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [onGetStandaloneNoteDeleteState, openStandaloneNoteMenu]);
+
+  useEffect(() => {
     function handleWindowPointerDown(event: PointerEvent) {
       const target = event.target as HTMLElement | null;
       if (
         target?.closest(
-          ".collection-row__actions, .collection-row__menu, .collection-header__actions, .book-row__actions, .book-row__menu"
+          ".collection-row__actions, .collection-row__menu, .collection-header__actions, .book-row__actions, .book-row__menu, .notes-row__actions, .notes-row__menu, .collection-sidebar__section-header"
         )
       ) {
         return;
@@ -1080,12 +1227,16 @@ export default function CollectionViewRefresh({
 
       closeCollectionMenu();
       closeDocumentMenu();
+      closeNotesSectionMenu();
+      closeStandaloneNoteMenu();
     }
 
     function handleWindowKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         closeCollectionMenu();
         closeDocumentMenu();
+        closeNotesSectionMenu();
+        closeStandaloneNoteMenu();
       }
     }
 
@@ -1097,15 +1248,13 @@ export default function CollectionViewRefresh({
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!openCollectionMenu) {
       setFloatingCollectionMenuPosition(null);
       return;
     }
 
-    const frame = window.requestAnimationFrame(() => {
-      updateFloatingCollectionMenuPosition();
-    });
+    updateFloatingCollectionMenuPosition();
 
     function handleViewportChange() {
       updateFloatingCollectionMenuPosition();
@@ -1115,21 +1264,18 @@ export default function CollectionViewRefresh({
     window.addEventListener("scroll", handleViewportChange, true);
 
     return () => {
-      window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", handleViewportChange);
       window.removeEventListener("scroll", handleViewportChange, true);
     };
   }, [openCollectionMenu, displayedCollections.length]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!openDocumentMenu) {
       setFloatingDocumentMenuPosition(null);
       return;
     }
 
-    const frame = window.requestAnimationFrame(() => {
-      updateFloatingDocumentMenuPosition();
-    });
+    updateFloatingDocumentMenuPosition();
 
     function handleViewportChange() {
       updateFloatingDocumentMenuPosition();
@@ -1139,21 +1285,64 @@ export default function CollectionViewRefresh({
     window.addEventListener("scroll", handleViewportChange, true);
 
     return () => {
-      window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", handleViewportChange);
       window.removeEventListener("scroll", handleViewportChange, true);
     };
   }, [documentDeleteState, documentMenuEntries.length, openDocumentMenu]);
 
+  useLayoutEffect(() => {
+    if (!openNotesSectionMenu) {
+      setFloatingNotesSectionMenuPosition(null);
+      return;
+    }
+
+    updateFloatingNotesSectionMenuPosition();
+
+    function handleViewportChange() {
+      updateFloatingNotesSectionMenuPosition();
+    }
+
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("scroll", handleViewportChange, true);
+
+    return () => {
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("scroll", handleViewportChange, true);
+    };
+  }, [openNotesSectionMenu]);
+
+  useLayoutEffect(() => {
+    if (!openStandaloneNoteMenu) {
+      setFloatingStandaloneNoteMenuPosition(null);
+      return;
+    }
+
+    updateFloatingStandaloneNoteMenuPosition();
+
+    function handleViewportChange() {
+      updateFloatingStandaloneNoteMenuPosition();
+    }
+
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("scroll", handleViewportChange, true);
+
+    return () => {
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("scroll", handleViewportChange, true);
+    };
+  }, [openStandaloneNoteMenu, standaloneNoteDeleteState]);
+
   useEffect(() => {
     closeCollectionMenu();
     closeDocumentMenu();
+    closeNotesSectionMenu();
+    closeStandaloneNoteMenu();
     cancelDrag();
     resetPointerFeedback();
     startupTrace("selected-collection-effect", {
       selectedCollectionId
     });
-  }, [cancelDrag, selectedCollectionId]);
+  }, [cancelDrag, selectedCollectionId, selectedLibrarySection]);
 
   useEffect(() => {
     let disposed = false;
@@ -1214,18 +1403,20 @@ export default function CollectionViewRefresh({
 
   function renderCollectionMenu(
     collection: FolderTreeNode,
-    position: Exclude<FloatingMenuPosition, null>
+    position: FloatingMenuPosition
   ) {
     const collectionHasDocuments = collection.documents.length > 0;
+    const placement = position?.placement ?? "below";
 
     return (
       <div
         ref={floatingCollectionMenuRef}
-        className={`notes-popover collection-row__menu collection-row__menu--overlay collection-row__menu--${position.placement}`}
+        className={`notes-popover collection-row__menu collection-row__menu--overlay collection-row__menu--${placement}`}
         role="menu"
+        data-positioned={position !== null}
         style={{
-          left: `${position.left}px`,
-          top: `${position.top}px`
+          left: `${position?.left ?? 0}px`,
+          top: `${position?.top ?? 0}px`
         }}
         onClick={(event) => event.stopPropagation()}
       >
@@ -1376,18 +1567,20 @@ export default function CollectionViewRefresh({
 
   function renderDocumentMenu(
     document: DocumentRecord,
-    position: Exclude<FloatingMenuPosition, null>
+    position: FloatingMenuPosition
   ) {
     const currentView = openDocumentMenu?.view ?? "actions";
+    const placement = position?.placement ?? "below";
 
     return (
       <div
         ref={floatingDocumentMenuRef}
-        className={`notes-popover collection-row__menu book-row__menu collection-row__menu--overlay collection-row__menu--${position.placement}`}
+        className={`notes-popover collection-row__menu book-row__menu collection-row__menu--overlay collection-row__menu--${placement}`}
         role="menu"
+        data-positioned={position !== null}
         style={{
-          left: `${position.left}px`,
-          top: `${position.top}px`
+          left: `${position?.left ?? 0}px`,
+          top: `${position?.top ?? 0}px`
         }}
         onClick={(event) => event.stopPropagation()}
       >
@@ -1451,6 +1644,132 @@ export default function CollectionViewRefresh({
     );
   }
 
+  function renderNotesSectionMenu(position: FloatingMenuPosition) {
+    const canOpenNotes = standaloneNotes.length > 0;
+    const placement = position?.placement ?? "below";
+
+    return (
+      <div
+        ref={floatingNotesSectionMenuRef}
+        className={`notes-popover collection-row__menu collection-row__menu--overlay collection-row__menu--${placement} notes-row__menu`}
+        role="menu"
+        data-positioned={position !== null}
+        style={{
+          left: `${position?.left ?? 0}px`,
+          top: `${position?.top ?? 0}px`
+        }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          className="notes-popover__action collection-row__menu-action"
+          type="button"
+          disabled={!canOpenNotes}
+          onClick={() => {
+            closeNotesSectionMenu();
+            if (!canOpenNotes) {
+              return;
+            }
+
+            void onOpenStandaloneNote(activeStandaloneNoteId ?? standaloneNotes[0]!.id);
+          }}
+        >
+          <span>Open</span>
+        </button>
+        <button
+          className="notes-popover__action collection-row__menu-action"
+          type="button"
+          onClick={() => {
+            closeNotesSectionMenu();
+            void onCreateStandaloneNote();
+          }}
+        >
+          <span>Create note</span>
+        </button>
+      </div>
+    );
+  }
+
+  function renderStandaloneNoteMenu(
+    note: NoteIndexEntry,
+    position: FloatingMenuPosition
+  ) {
+    const deleteDisabled = standaloneNoteDeleteState ? !standaloneNoteDeleteState.canDelete : true;
+    const placement = position?.placement ?? "below";
+    const deleteTooltip =
+      standaloneNoteDeleteState?.canDelete === false
+        ? standaloneNoteDeleteState.reason ?? "This note cannot be deleted."
+        : standaloneNoteDeleteState
+          ? undefined
+          : "Checking note status...";
+
+    return (
+      <div
+        ref={floatingStandaloneNoteMenuRef}
+        className={`notes-popover collection-row__menu collection-row__menu--overlay collection-row__menu--${placement} notes-row__menu`}
+        role="menu"
+        data-positioned={position !== null}
+        style={{
+          left: `${position?.left ?? 0}px`,
+          top: `${position?.top ?? 0}px`
+        }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          className="notes-popover__action collection-row__menu-action"
+          type="button"
+          onClick={() => {
+            closeStandaloneNoteMenu();
+            void onOpenStandaloneNote(note.id);
+          }}
+        >
+          <span>Open</span>
+        </button>
+        <button
+          className="notes-popover__action collection-row__menu-action"
+          type="button"
+          onClick={() => {
+            suppressBookActivation();
+            closeStandaloneNoteMenu();
+            setEditingStandaloneNoteId(note.id);
+            setEditingStandaloneNoteValue(note.title);
+          }}
+        >
+          <span>Rename</span>
+        </button>
+        {!deleteDisabled || !deleteTooltip ? (
+          <button
+            className="notes-popover__action collection-row__menu-action collection-row__menu-action--danger"
+            type="button"
+            disabled={deleteDisabled}
+            onClick={() => {
+              closeStandaloneNoteMenu();
+              if (deleteDisabled) {
+                return;
+              }
+
+              void onDeleteStandaloneNote(note.id);
+            }}
+          >
+            <span>Delete</span>
+          </button>
+        ) : (
+          <div className="collection-row__menu-disabled">
+            <button
+              className="notes-popover__action collection-row__menu-action collection-row__menu-action--danger"
+              type="button"
+              disabled
+            >
+              <span>Delete</span>
+            </button>
+            <div className="collection-row__menu-tooltip" role="note">
+              {deleteTooltip}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <section
       ref={collectionViewRef}
@@ -1459,19 +1778,6 @@ export default function CollectionViewRefresh({
       <aside className="collection-sidebar">
         <header className="collection-sidebar__header">
           <h2>Library</h2>
-          <button
-            className="collection-sidebar__add"
-            type="button"
-            aria-label="Add collection"
-            onClick={() => {
-              void onCreateCollection();
-            }}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-              <path d="M12 5v14" />
-              <path d="M5 12h14" />
-            </svg>
-          </button>
         </header>
 
         <div className="collection-sidebar__rows-shell">
@@ -1482,8 +1788,33 @@ export default function CollectionViewRefresh({
               updateCollectionSidebarScrollbar();
             }}
           >
+            <div className="collection-sidebar__section">
+              <div className="collection-sidebar__section-header">
+                <div className="collection-sidebar__section-label">
+                  <span className="collection-sidebar__section-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <path d="M3.75 7.25A2.25 2.25 0 0 1 6 5h3.1c.6 0 1.18.24 1.6.66l1.15 1.14c.42.42 1 .66 1.6.66H18A2.25 2.25 0 0 1 20.25 9.7v7.05A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25V7.25Z" />
+                    </svg>
+                  </span>
+                  <span>Collections</span>
+                </div>
+                <button
+                  className="collection-sidebar__add"
+                  type="button"
+                  aria-label="Add collection"
+                  onClick={() => {
+                    void onCreateCollection();
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                    <path d="M12 5v14" />
+                    <path d="M5 12h14" />
+                  </svg>
+                </button>
+              </div>
             {displayedCollections.map((collection) => {
-              const isActive = collection.folder.id === selectedCollection?.folder.id;
+              const isActive =
+                !notesSectionSelected && collection.folder.id === selectedCollection?.folder.id;
               const isEditing = collection.folder.id === editingCollectionId;
               const isNativeDropTarget =
                 nativeDropTarget?.kind === "collection-row" &&
@@ -1626,6 +1957,8 @@ export default function CollectionViewRefresh({
                           }}
                           onClick={(event) => {
                             event.stopPropagation();
+                            closeNotesSectionMenu();
+                            closeStandaloneNoteMenu();
                             const isClosing =
                               openCollectionMenu?.collectionId === collection.folder.id &&
                               openCollectionMenu.source === "row";
@@ -1665,6 +1998,93 @@ export default function CollectionViewRefresh({
                 </div>
               );
             })}
+            </div>
+
+            <div className="collection-sidebar__section collection-sidebar__section--notes">
+              <div className="collection-sidebar__section-header">
+                <div className="collection-sidebar__section-label">
+                  <span className="collection-sidebar__section-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <path d="M3.75 7.25A2.25 2.25 0 0 1 6 5h3.1c.6 0 1.18.24 1.6.66l1.15 1.14c.42.42 1 .66 1.6.66H18A2.25 2.25 0 0 1 20.25 9.7v7.05A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25V7.25Z" />
+                    </svg>
+                  </span>
+                  <span>Notes</span>
+                </div>
+                <button
+                  className="collection-sidebar__add"
+                  type="button"
+                  aria-label="Create note"
+                  onClick={() => {
+                    void onCreateStandaloneNote();
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                    <path d="M12 5v14" />
+                    <path d="M5 12h14" />
+                  </svg>
+                </button>
+              </div>
+
+              <div
+                className={`collection-row${notesSectionSelected ? " collection-row--active" : ""}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  onSelectNotes();
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelectNotes();
+                  }
+                }}
+              >
+                <span className="collection-row__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                    <path d="M3.75 7.25A2.25 2.25 0 0 1 6 5h3.1c.6 0 1.18.24 1.6.66l1.15 1.14c.42.42 1 .66 1.6.66H18A2.25 2.25 0 0 1 20.25 9.7v7.05A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25V7.25Z" />
+                  </svg>
+                </span>
+                <span className="collection-row__name">Notes</span>
+                <span className="collection-row__actions notes-row__actions">
+                  <span className="collection-row__count" aria-label={`${standaloneNotes.length} notes`}>
+                    {standaloneNotes.length}
+                  </span>
+                  <button
+                    className="row-action-button"
+                    type="button"
+                    ref={notesSectionMenuButtonRef}
+                    aria-label="Open notes actions"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeCollectionMenu();
+                      closeDocumentMenu();
+                      closeStandaloneNoteMenu();
+                      const isClosing = openNotesSectionMenu;
+                      setOpenNotesSectionMenu(!isClosing);
+                      if (isClosing) {
+                        setFloatingNotesSectionMenuPosition(null);
+                        return;
+                      }
+
+                      window.requestAnimationFrame(() => {
+                        updateFloatingNotesSectionMenuPosition(event.currentTarget);
+                      });
+                    }}
+                  >
+                    <svg
+                      className="row-action-button__icon"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <circle cx="6.5" cy="12" r="1.8" />
+                      <circle cx="12" cy="12" r="1.8" />
+                      <circle cx="17.5" cy="12" r="1.8" />
+                    </svg>
+                  </button>
+                </span>
+              </div>
+            </div>
           </div>
           <div
             ref={collectionSidebarScrollbarRef}
@@ -1722,7 +2142,166 @@ export default function CollectionViewRefresh({
           updateCollectionMainScrollbar();
         }}
       >
-        {selectedCollection ? (
+        {notesSectionSelected ? (
+          <div className="collection-main__body">
+            <header className="collection-header">
+              <div className="collection-header__details">
+                <h1>Notes</h1>
+              </div>
+              <div className="collection-header__actions">
+                <button
+                  className="collection-header__import-button"
+                  type="button"
+                  onClick={() => {
+                    void onCreateStandaloneNote();
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                    <path d="M12 5v14" />
+                    <path d="M5 12h14" />
+                  </svg>
+                  <span>Create note</span>
+                </button>
+              </div>
+            </header>
+
+            <div className="collection-note-list">
+              {standaloneNotes.map((note) => {
+                const isEditing = editingStandaloneNoteId === note.id;
+                const isActive = activeStandaloneNote?.id === note.id;
+
+                return (
+                  <div
+                    key={note.id}
+                    className={`book-row standalone-note-row${isActive ? " standalone-note-row--active" : ""}`}
+                    role="button"
+                    tabIndex={isEditing ? -1 : 0}
+                    onClick={(event) => {
+                      if (
+                        isEditing ||
+                        isInteractiveTarget(event.target) ||
+                        shouldSuppressBookActivation()
+                      ) {
+                        return;
+                      }
+                      if (skipNextDocumentActivationRef.current) {
+                        skipNextDocumentActivationRef.current = false;
+                        return;
+                      }
+                      void onOpenStandaloneNote(note.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (
+                        isEditing ||
+                        isInteractiveTarget(event.target) ||
+                        shouldSuppressBookActivation()
+                      ) {
+                        return;
+                      }
+                      if (skipNextDocumentActivationRef.current) {
+                        skipNextDocumentActivationRef.current = false;
+                        return;
+                      }
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        void onOpenStandaloneNote(note.id);
+                      }
+                    }}
+                  >
+                    {isEditing ? (
+                      <div className="book-row__rename">
+                        <input
+                          className="book-row__input"
+                          autoFocus
+                          value={editingStandaloneNoteValue}
+                          onChange={(event) => setEditingStandaloneNoteValue(event.target.value)}
+                          onBlur={() => {
+                            void commitStandaloneNoteRename(note, {
+                              skipNextActivation: true
+                            });
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                          onDoubleClick={(event) => event.stopPropagation()}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            event.stopPropagation();
+
+                            if (event.key !== "Enter" && event.key !== "Escape") {
+                              return;
+                            }
+
+                            event.preventDefault();
+                            event.nativeEvent.stopImmediatePropagation();
+
+                            if (event.key === "Escape") {
+                              suppressBookActivation();
+                              setEditingStandaloneNoteId(null);
+                              setEditingStandaloneNoteValue("");
+                              return;
+                            }
+
+                            void commitStandaloneNoteRename(note, {
+                              skipNextActivation: true
+                            });
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <span className="book-row__name">
+                          {note.title.trim() || "Untitled note"}
+                        </span>
+                        <span className="book-row__actions notes-row__actions">
+                          <button
+                            className="row-action-button"
+                            type="button"
+                            aria-label={`Open actions for ${note.title || "Untitled note"}`}
+                            ref={(element) => {
+                              if (element) {
+                                standaloneNoteMenuButtonRefs.current.set(note.id, element);
+                              } else {
+                                standaloneNoteMenuButtonRefs.current.delete(note.id);
+                              }
+                            }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              suppressBookActivation();
+                              closeCollectionMenu();
+                              closeDocumentMenu();
+                              closeNotesSectionMenu();
+                              const isClosing = openStandaloneNoteMenu?.noteId === note.id;
+                              setOpenStandaloneNoteMenu(isClosing ? null : { noteId: note.id });
+                              setStandaloneNoteDeleteState(null);
+                              if (isClosing) {
+                                setFloatingStandaloneNoteMenuPosition(null);
+                                return;
+                              }
+
+                              window.requestAnimationFrame(() => {
+                                updateFloatingStandaloneNoteMenuPosition(event.currentTarget);
+                              });
+                            }}
+                          >
+                            <svg
+                              className="row-action-button__icon"
+                              viewBox="0 0 24 24"
+                              fill="currentColor"
+                              aria-hidden="true"
+                            >
+                              <circle cx="6.5" cy="12" r="1.8" />
+                              <circle cx="12" cy="12" r="1.8" />
+                              <circle cx="17.5" cy="12" r="1.8" />
+                            </svg>
+                          </button>
+                        </span>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : selectedCollection ? (
           <div className="collection-main__body">
             <header className="collection-header">
               <div className="collection-header__details">
@@ -1751,6 +2330,8 @@ export default function CollectionViewRefresh({
                     ref={headerCollectionMenuButtonRef}
                     aria-label={`Open actions for ${selectedCollection.folder.name}`}
                     onClick={(event) => {
+                      closeNotesSectionMenu();
+                      closeStandaloneNoteMenu();
                       const isClosing =
                         openCollectionMenu?.collectionId === selectedCollection.folder.id &&
                         openCollectionMenu.source === "header";
@@ -1947,6 +2528,8 @@ export default function CollectionViewRefresh({
                               event.stopPropagation();
                               suppressBookActivation();
                               closeCollectionMenu();
+                              closeNotesSectionMenu();
+                              closeStandaloneNoteMenu();
                               setOpenDocumentMenu((current) =>
                                 current?.documentId === document.id
                                   ? null
@@ -2026,7 +2609,7 @@ export default function CollectionViewRefresh({
           />
         </div>
       </section>
-      {openCollectionMenu && floatingCollectionMenuPosition ? (
+      {openCollectionMenu ? (
         (() => {
           const menuCollection =
             displayedCollections.find(
@@ -2038,8 +2621,17 @@ export default function CollectionViewRefresh({
             : null;
         })()
       ) : null}
-      {openDocumentMenu && openMenuDocument && floatingDocumentMenuPosition
+      {openDocumentMenu && openMenuDocument
         ? renderDocumentMenu(openMenuDocument, floatingDocumentMenuPosition)
+        : null}
+      {openNotesSectionMenu
+        ? renderNotesSectionMenu(floatingNotesSectionMenuPosition)
+        : null}
+      {openStandaloneNoteMenu && openMenuStandaloneNote
+        ? renderStandaloneNoteMenu(
+            openMenuStandaloneNote,
+            floatingStandaloneNoteMenuPosition
+          )
         : null}
       {dragPreview ? (
         <div

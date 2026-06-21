@@ -20,7 +20,7 @@ import CollectionViewRefresh from "./components/CollectionViewRefresh";
 import DisplaySettingsPopover from "./components/DisplaySettingsPopover";
 import CollectionLibraryGlyph from "./components/icons/CollectionLibraryGlyph";
 import { createUnifiedSearchController } from "./search";
-import { openLibraryFolder } from "./lib/api";
+import { openLibraryFolder, searchStandaloneNotes } from "./lib/api";
 import {
   createNewCustomTheme,
   createViewerDisplayConfig,
@@ -34,7 +34,7 @@ import {
 import { useAppSettings } from "./lib/app/useAppSettings";
 import { useCommandRegistry } from "./lib/app/useCommandRegistry";
 import { useLibraryFlows } from "./lib/app/useLibraryFlows";
-import { useNotesController } from "./lib/app/useNotesController";
+import { useNotesController, type NoteTarget } from "./lib/app/useNotesController";
 import { usePaletteController } from "./lib/app/usePaletteController";
 import { useWorkspaceController } from "./lib/app/useWorkspaceController";
 import { debugAction, debugLocalAction } from "./lib/debugLog";
@@ -59,6 +59,7 @@ const COLLECTION_FIRST_FRAME_MARK = "collection-first-frame";
 const COLLECTION_CLICK_TO_FRAME_MEASURE = "collection-click-to-frame";
 const COLLECTION_SIDEBAR_CONTROL_ID = "sidebar-collection";
 const LazyCommandPalette = lazy(() => import("./components/CommandPalette"));
+const LazyNotesWorkspace = lazy(() => import("./components/NotesWorkspace"));
 const LazyOutlineOverlay = lazy(() => import("./components/OutlineOverlay"));
 const LazyReaderWorkspace = lazy(() => import("./components/ReaderWorkspace"));
 
@@ -68,7 +69,7 @@ type FullscreenState =
   | "fullscreen"
   | "exiting";
 
-type ViewMode = "reader" | "collection";
+type ViewMode = "reader" | "collection" | "notes";
 
 type PendingViewNavigationTrace = {
   clickStartedAtMs: number;
@@ -93,7 +94,13 @@ type SavedWindowState = {
 };
 
 function toViewEventName(view: ViewMode) {
-  return view === "reader" ? "document" : "collection";
+  if (view === "reader") {
+    return "document";
+  }
+  if (view === "notes") {
+    return "notes";
+  }
+  return "collection";
 }
 
 function shouldStartWindowDrag(target: EventTarget | null) {
@@ -138,8 +145,32 @@ function ChromeIcon({
 export default function App() {
   startupTrace("component-render-start");
   const workspace = useWorkspaceController();
+  const noteTarget: NoteTarget = useMemo(() => {
+    if (workspace.workspaceMode === "notes") {
+      return workspace.activeStandaloneNoteId
+        ? {
+            kind: "standalone",
+            noteId: workspace.activeStandaloneNoteId
+          }
+        : null;
+    }
+
+    if (workspace.workspaceMode === "reader" && workspace.activeDocument) {
+      return {
+        kind: "document",
+        documentId: workspace.activeDocument.document.id
+      };
+    }
+
+    return null;
+  }, [
+    workspace.activeDocument,
+    workspace.activeStandaloneNoteId,
+    workspace.workspaceMode
+  ]);
   const notes = useNotesController({
-    activeDocument: workspace.activeDocument,
+    target: noteTarget,
+    onStandaloneNoteChange: workspace.refreshStandaloneNotes,
     setStatusMessage: workspace.setStatusMessage
   });
   const { settings, selectors, setSetting, updateSettings } = useAppSettings();
@@ -152,6 +183,7 @@ export default function App() {
   );
   const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const [noteRevealRequest, setNoteRevealRequest] = useState<import("./lib/types").NoteRevealRequest | null>(null);
+  const [notesNavigationOpenRequest, setNotesNavigationOpenRequest] = useState(0);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [outlineAnchorElement, setOutlineAnchorElement] = useState<HTMLButtonElement | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -176,6 +208,14 @@ export default function App() {
     () => workspace.libraryTree ? collectDocuments(workspace.libraryTree) : [],
     [workspace.libraryTree]
   );
+  const searchStandaloneNotesInWorkspace = useCallback(async (query: string, signal: AbortSignal) => {
+    if (signal.aborted) {
+      return [];
+    }
+
+    const results = await searchStandaloneNotes(query);
+    return signal.aborted ? [] : results;
+  }, []);
   const [themePreview, setThemePreview] = useState<ThemeDefinition | null>(null);
   const activeTheme = selectors.activeTheme(settings);
   const themeList = selectors.themeList(settings);
@@ -208,13 +248,15 @@ export default function App() {
     : selectors.viewerDisplayConfig(settings);
   const readerPaneSplitRatio = selectors.readerPaneSplitRatio(settings);
   const readerFullscreenActive =
-    workspace.workspaceMode === "reader" &&
+    workspace.workspaceMode !== "collection" &&
     (fullscreenState === "entering" ||
       fullscreenState === "fullscreen" ||
       fullscreenState === "exiting");
   const shouldRenderReaderWorkspace =
-    workspace.workspaceMode === "reader" || workspace.activeReaderSession !== null;
+    workspace.workspaceMode === "reader" ||
+    (workspace.workspaceMode === "collection" && workspace.activeReaderSession !== null);
   const shouldRenderCollectionWorkspace = workspace.workspaceMode === "collection";
+  const shouldRenderNotesWorkspace = workspace.workspaceMode === "notes";
   const shouldStackWorkspacePanels =
     shouldRenderReaderWorkspace && shouldRenderCollectionWorkspace;
   const fullscreenTransitionActive =
@@ -496,8 +538,8 @@ export default function App() {
   );
 
   const enterFullscreen = useCallback(async () => {
-    if (workspace.workspaceMode !== "reader") {
-      workspace.setStatusMessage("Open the reader to enter fullscreen.");
+    if (workspace.workspaceMode !== "reader" && workspace.workspaceMode !== "notes") {
+      workspace.setStatusMessage("Open a document or note to enter fullscreen.");
       return;
     }
 
@@ -589,7 +631,11 @@ export default function App() {
   }, [fullscreenState, readerPreferences.fullscreenMode, setSetting]);
 
   useEffect(() => {
-    if (workspace.workspaceMode !== "reader" && fullscreenState === "fullscreen") {
+    if (
+      workspace.workspaceMode !== "reader" &&
+      workspace.workspaceMode !== "notes" &&
+      fullscreenState === "fullscreen"
+    ) {
       void exitFullscreen();
     }
   }, [exitFullscreen, fullscreenState, workspace.workspaceMode]);
@@ -624,18 +670,24 @@ export default function App() {
 
   useEffect(() => {
     searchController.setContext({
-      currentPage: workspace.viewerSnapshot.currentPage,
-      totalPages: workspace.viewerSnapshot.pageCount,
-      activeDocumentId: workspace.activeDocumentId,
-      currentNote: notes.note,
-      documents: searchableDocuments,
-      pdfPort: workspace.viewerApi?.searchPort ?? null
+      currentPage: workspace.workspaceMode === "reader" ? workspace.viewerSnapshot.currentPage : 1,
+      totalPages: workspace.workspaceMode === "reader" ? workspace.viewerSnapshot.pageCount : 0,
+      activeDocumentId: workspace.workspaceMode === "reader" ? workspace.activeDocumentId : null,
+      currentNote: workspace.workspaceMode === "reader" ? notes.note : null,
+      standaloneNoteSearch:
+        workspace.workspaceMode === "notes"
+          ? searchStandaloneNotesInWorkspace
+          : null,
+      documents: workspace.workspaceMode === "notes" ? [] : searchableDocuments,
+      pdfPort: workspace.workspaceMode === "reader" ? workspace.viewerApi?.searchPort ?? null : null
     });
   }, [
     notes.note,
+    searchStandaloneNotesInWorkspace,
     searchableDocuments,
     searchController,
     workspace.activeDocumentId,
+    workspace.workspaceMode,
     workspace.viewerApi,
     workspace.viewerSnapshot.currentPage,
     workspace.viewerSnapshot.pageCount
@@ -645,12 +697,20 @@ export default function App() {
     palette.closePalette();
     setOutlineOpen(false);
     setSettingsOpen(false);
-    if (workspace.workspaceMode !== "reader") {
-      workspace.setWorkspaceMode("reader");
+    if (workspace.workspaceMode === "collection") {
+      if (workspace.selectedLibrarySection === "notes") {
+        workspace.enterNotesMode();
+      } else {
+        workspace.setWorkspaceMode("reader");
+      }
     }
     searchController.open();
     setSearchFocusRequest((current) => current + 1);
   }
+
+  const openNotesNavigation = useCallback(() => {
+    setNotesNavigationOpenRequest((current) => current + 1);
+  }, []);
   const flows = useLibraryFlows({
     libraryTree: workspace.libraryTree,
     collectionOptions: workspace.collectionOptions,
@@ -671,6 +731,7 @@ export default function App() {
   });
 
   const commandRegistry = useCommandRegistry({
+    workspaceMode: workspace.workspaceMode,
     libraryRoot: workspace.libraryRoot,
     recentDocuments: workspace.recentDocuments,
     activeDocument: workspace.activeDocument,
@@ -694,6 +755,10 @@ export default function App() {
       await workspace.handleOpenDocument(documentId);
     },
     openSearch: openUnifiedSearch,
+    openNotesNavigation,
+    createStandaloneNote: async () => {
+      await workspace.createStandaloneNoteInWorkspace();
+    },
     renameNote: async (title) => {
       notes.updateTitle(title);
       await notes.flushNow("rename-note");
@@ -1049,7 +1114,7 @@ export default function App() {
               if (workspace.workspaceMode !== "collection") {
                 startViewNavigationTrace("collection", "sidebar");
               }
-              workspace.setWorkspaceMode("collection");
+              workspace.showCollectionsWorkspace();
             }}
           >
             <ChromeIcon label="Collections">
@@ -1075,7 +1140,20 @@ export default function App() {
               <path d="M12 7.45v12.58" />
             </ChromeIcon>
           </button>
-          <button className="sidebar__icon-button" type="button" aria-label="Annotate">
+          <button
+            className={`sidebar__icon-button${
+              workspace.workspaceMode === "notes" ? " sidebar__icon-button--active" : ""
+            }`}
+            type="button"
+            aria-label="Annotate"
+            onClick={() => {
+              setOutlineOpen(false);
+              if (workspace.workspaceMode !== "notes") {
+                startViewNavigationTrace("notes", "sidebar");
+              }
+              workspace.enterNotesMode();
+            }}
+          >
             <ChromeIcon label="Annotate">
               <path d="M4 20h4l10-10-4-4L4 16v4Z" />
               <path d="m12.5 7.5 4 4" />
@@ -1089,10 +1167,23 @@ export default function App() {
           </button>
           <button
             ref={setOutlineAnchorElement}
-            className={`sidebar__icon-button${outlineOpen ? " sidebar__icon-button--active" : ""}`}
+            className={`sidebar__icon-button${
+              workspace.workspaceMode === "notes"
+                ? ""
+                : outlineOpen
+                  ? " sidebar__icon-button--active"
+                  : ""
+            }`}
             type="button"
             aria-label="Marks"
-            onClick={() => setOutlineOpen((value) => !value)}
+            onClick={() => {
+              if (workspace.workspaceMode === "notes") {
+                openNotesNavigation();
+                return;
+              }
+
+              setOutlineOpen((value) => !value);
+            }}
           >
             <ChromeIcon label="Marks">
               <path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" />
@@ -1203,7 +1294,11 @@ export default function App() {
       ) : null}
 
       <section
-        className={`workspace${workspace.workspaceMode === "reader" ? " workspace--reader" : ""}${
+        className={`workspace${
+          workspace.workspaceMode === "reader" || workspace.workspaceMode === "notes"
+            ? " workspace--reader"
+            : ""
+        }${
           collectionModeActive ? " workspace--collection" : ""
         }${
           shouldStackWorkspacePanels ? " workspace--stacked" : ""
@@ -1218,8 +1313,34 @@ export default function App() {
           >
             <CollectionViewRefresh
               tree={workspace.libraryTree}
+              selectedLibrarySection={workspace.selectedLibrarySection}
               selectedCollectionId={workspace.selectedCollection?.folder.id ?? null}
               onSelectCollection={workspace.setSelectedCollectionId}
+              standaloneNotes={workspace.standaloneNotes}
+              activeStandaloneNoteId={workspace.activeStandaloneNoteId}
+              onSelectNotes={workspace.selectNotesLibrary}
+              onCreateStandaloneNote={async () => {
+                if (workspace.workspaceMode !== "notes") {
+                  startViewNavigationTrace("notes", "collection-notes-create");
+                }
+                await workspace.createStandaloneNoteInWorkspace();
+              }}
+              onOpenStandaloneNote={async (noteId) => {
+                setOutlineOpen(false);
+                startViewNavigationTrace("notes", "collection-note-open");
+                await workspace.openStandaloneNoteInWorkspace(noteId, {
+                  workspaceMode: "notes"
+                });
+              }}
+              onRenameStandaloneNote={async (noteId, nextTitle) => {
+                await workspace.renameStandaloneNoteInLibrary(noteId, nextTitle);
+              }}
+              onDeleteStandaloneNote={async (noteId) => {
+                await workspace.deleteStandaloneNoteInLibrary(noteId);
+              }}
+              onGetStandaloneNoteDeleteState={async (noteId) => {
+                return workspace.getStandaloneLibraryNoteDeleteState(noteId);
+              }}
               onCreateCollection={flows.createCollectionFlow}
               onRenameCollection={async (collectionId, nextName) => {
                 await workspace.renameCollection(collectionId, nextName);
@@ -1321,7 +1442,7 @@ export default function App() {
                   workspace.handleOpenDocument(documentId, { source: "search-result" })
                 }
                 onSearchGoToPage={workspace.goToReaderPage}
-                onSearchRevealNoteBlock={(blockId) => {
+                onSearchOpenNoteResult={async (_noteId: string, blockId: string) => {
                   setNoteRevealRequest((current) => ({ blockId, sequence: (current?.sequence ?? 0) + 1 }));
                 }}
                 showHeaders={!readerFullscreenActive}
@@ -1334,6 +1455,58 @@ export default function App() {
                 onChangeReaderPaneSplitRatio={(nextRatio) => {
                   setSetting("readerPaneSplitRatio", nextRatio);
                 }}
+              />
+            </Suspense>
+          </div>
+        ) : null}
+        {shouldRenderNotesWorkspace ? (
+          <div
+            className={`workspace__panel workspace__panel--notes${
+              workspace.workspaceMode === "notes"
+                ? " workspace__panel--active"
+                : " workspace__panel--hidden"
+            }`}
+            aria-hidden={workspace.workspaceMode !== "notes"}
+          >
+            <Suspense fallback={null}>
+              <LazyNotesWorkspace
+                note={notes.note}
+                notesLoading={notes.loading}
+                noteNavigationItems={notes.navigationItems}
+                noteRevealRequest={noteRevealRequest}
+                navigationOpenRequest={notesNavigationOpenRequest}
+                onChangeNoteTitle={notes.updateTitle}
+                onChangeNoteBlocks={notes.updateBlocks}
+                onFlushNote={() => notes.flushNow("editor-blur")}
+                onCopyAllNoteText={notes.copyAllText}
+                onCreateStandaloneNote={async () => {
+                  await workspace.createStandaloneNoteInWorkspace();
+                }}
+                onOpenStandaloneNoteResult={async (noteId, blockId) => {
+                  await workspace.openStandaloneNoteInWorkspace(noteId, {
+                    workspaceMode: "notes"
+                  });
+                  setNoteRevealRequest((current) => ({
+                    blockId,
+                    sequence: (current?.sequence ?? 0) + 1
+                  }));
+                }}
+                onHeaderMouseDown={handleTopbarMouseDown}
+                searchController={searchController}
+                searchFocusRequest={searchFocusRequest}
+                commandPaletteOpen={palette.paletteOpen}
+                onToggleCommandPalette={() => {
+                  if (palette.paletteOpen) {
+                    palette.closePalette();
+                    return;
+                  }
+                  palette.openCommands(commandRegistry);
+                }}
+                registerCommandPaletteAnchor={setPaletteAnchorElement}
+                showHeaders={!readerFullscreenActive}
+                showFullscreenHint={showFullscreenHint}
+                fullscreen={readerFullscreenActive}
+                onToggleFullscreen={toggleFullscreen}
               />
             </Suspense>
           </div>
@@ -1352,7 +1525,7 @@ export default function App() {
         </Suspense>
       ) : null}
 
-      {outlineOpen ? (
+      {workspace.workspaceMode === "reader" && outlineOpen ? (
         <Suspense fallback={null}>
           <LazyOutlineOverlay
             anchorElement={outlineAnchorElement}

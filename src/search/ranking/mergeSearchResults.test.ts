@@ -21,7 +21,7 @@ describe("search result ranking", () => {
     ]);
   });
 
-  it("merges current-page and nearby-page pdf hits into Nearby Page", () => {
+  it("merges current-page and nearby-page pdf hits into Near", () => {
     const results: SearchResult[] = [
       { ...common, id: "near", kind: "pdf", sourceId: "pdf-text", title: "Page 6", pageNumber: 6, matchIndex: 0, location: "nearby" },
       { ...common, id: "current", kind: "pdf", sourceId: "pdf-text", title: "Page 5", pageNumber: 5, matchIndex: 0, location: "current" }
@@ -31,7 +31,7 @@ describe("search result ranking", () => {
     );
     expect(groups).toHaveLength(1);
     expect(groups[0]?.id).toBe("nearby-page");
-    expect(groups[0]?.label).toBe("Document · Nearby Page");
+    expect(groups[0]?.label).toBe("Doc · Near");
     expect(groups[0]?.results.map((result) => result.id)).toEqual(["current", "near"]);
   });
 });

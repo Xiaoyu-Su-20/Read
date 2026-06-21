@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getOrCreateNoteForBook, saveNote } from "../api";
+import { getOrCreateNoteForBook, openStandaloneNote, saveNote } from "../api";
 import { runDebugProcess, startDebugProcess } from "../debugLog";
 import {
   NOTE_SAVE_DEBOUNCE_MS,
@@ -9,18 +9,30 @@ import {
   normalizeNoteDocument,
   noteToPlainText
 } from "../notes";
-import type { DocumentPayload, NoteBlock, NoteDocument } from "../types";
+import type { NoteBlock, NoteDocument } from "../types";
+
+export type NoteTarget =
+  | {
+      kind: "document";
+      documentId: string;
+    }
+  | {
+      kind: "standalone";
+      noteId: string;
+    }
+  | null;
 
 type UseNotesControllerArgs = {
-  activeDocument: DocumentPayload | null;
+  target: NoteTarget;
+  onStandaloneNoteChange?: () => unknown;
   setStatusMessage: (message: string) => void;
 };
 
 export function useNotesController({
-  activeDocument,
+  target,
+  onStandaloneNoteChange,
   setStatusMessage
 }: UseNotesControllerArgs) {
-  const activeDocumentId = activeDocument?.document.id ?? null;
   const [note, setNote] = useState<NoteDocument | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -29,6 +41,20 @@ export function useNotesController({
   const saveTimerRef = useRef<number | null>(null);
   const saveInFlightRef = useRef(false);
   const pendingFlushRef = useRef(false);
+  const activeTargetKeyRef = useRef<string | null>(null);
+
+  const targetKey = useMemo(() => {
+    if (!target) {
+      return null;
+    }
+    return target.kind === "document"
+      ? `document:${target.documentId}`
+      : `standalone:${target.noteId}`;
+  }, [
+    target?.kind,
+    target?.kind === "document" ? target.documentId : null,
+    target?.kind === "standalone" ? target.noteId : null
+  ]);
 
   const clearScheduledSave = useCallback(() => {
     if (saveTimerRef.current !== null) {
@@ -51,6 +77,9 @@ export function useNotesController({
           noteRef.current = savedNote;
           setNote(savedNote);
           dirtyRef.current = false;
+        }
+        if (savedNote.bookId === null) {
+          void Promise.resolve(onStandaloneNoteChange?.()).catch(() => undefined);
         }
         process.finish();
       } catch (error) {
@@ -103,16 +132,20 @@ export function useNotesController({
   }, [note]);
 
   useEffect(() => {
+    const previousTargetKey = activeTargetKeyRef.current;
+    const targetChanged = previousTargetKey !== targetKey;
+
     const previousNote = noteRef.current;
-    if (previousNote && dirtyRef.current) {
+    if (targetChanged && previousNote && dirtyRef.current) {
       void persistNote(previousNote, "document-switch");
     }
 
     clearScheduledSave();
     dirtyRef.current = false;
     pendingFlushRef.current = false;
+    activeTargetKeyRef.current = targetKey;
 
-    if (!activeDocumentId) {
+    if (!target) {
       noteRef.current = null;
       setNote(null);
       setLoading(false);
@@ -120,21 +153,36 @@ export function useNotesController({
     }
 
     let cancelled = false;
-    setNote(null);
     setLoading(true);
+    if (targetChanged) {
+      setNote(null);
+    }
     void runDebugProcess(
       "notes.load",
-      {
-        documentId: activeDocumentId
-      },
+      target.kind === "document"
+        ? {
+            documentId: target.documentId,
+            target: "document"
+          }
+        : {
+            noteId: target.noteId,
+            target: "standalone"
+          },
       async () => {
-        const loadedNote = normalizeNoteDocument(await getOrCreateNoteForBook(activeDocumentId));
+        const loadedNote = normalizeNoteDocument(
+          target.kind === "document"
+            ? await getOrCreateNoteForBook(target.documentId)
+            : await openStandaloneNote(target.noteId)
+        );
         if (cancelled) {
           return;
         }
         replaceNote(loadedNote);
         dirtyRef.current = false;
         setLoading(false);
+        if (target.kind === "standalone") {
+          void Promise.resolve(onStandaloneNoteChange?.()).catch(() => undefined);
+        }
       }
     ).catch((error) => {
       if (!cancelled) {
@@ -146,7 +194,14 @@ export function useNotesController({
     return () => {
       cancelled = true;
     };
-  }, [activeDocumentId, clearScheduledSave, persistNote, replaceNote, setStatusMessage]);
+  }, [
+    clearScheduledSave,
+    onStandaloneNoteChange,
+    persistNote,
+    replaceNote,
+    setStatusMessage,
+    targetKey
+  ]);
 
   useEffect(() => {
     function flushOnVisibilityChange() {

@@ -150,7 +150,7 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
     registerCommandPaletteAnchor: vi.fn(),
     onSearchOpenDocument: vi.fn(async () => undefined),
     onSearchGoToPage: vi.fn(),
-    onSearchRevealNoteBlock: vi.fn(),
+    onSearchOpenNoteResult: vi.fn(),
     showHeaders: true,
     showFullscreenHint: false,
     fullscreen: false,

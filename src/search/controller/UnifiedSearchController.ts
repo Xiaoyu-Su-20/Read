@@ -21,6 +21,7 @@ export type UnifiedSearchContext = {
   totalPages: number;
   activeDocumentId: string | null;
   currentNote: NoteDocument | null;
+  standaloneNoteSearch: ((query: string, signal: AbortSignal) => Promise<import("../../lib/types").StandaloneNoteSearchHit[]>) | null;
   documents: readonly DocumentRecord[];
   pdfPort: PdfSearchPort | null;
 };
@@ -45,16 +46,21 @@ const EMPTY_CONTEXT: UnifiedSearchContext = {
   totalPages: 0,
   activeDocumentId: null,
   currentNote: null,
+  standaloneNoteSearch: null,
   documents: [],
   pdfPort: null
 };
 
 function capabilitySignature(context: UnifiedSearchContext) {
-  return [Boolean(context.currentNote), Boolean(context.pdfPort && context.totalPages > 0), context.documents.length > 0].join(":");
+  return [
+    Boolean(context.currentNote || context.standaloneNoteSearch),
+    Boolean(context.pdfPort && context.totalPages > 0),
+    context.documents.length > 0
+  ].join(":");
 }
 
 function supportsGroup(context: UnifiedSearchContext, groupId: SearchGroupId) {
-  if (groupId === "notes") return Boolean(context.currentNote);
+  if (groupId === "notes") return Boolean(context.currentNote || context.standaloneNoteSearch);
   if (groupId === "pdf-names") return context.documents.length > 0;
   return Boolean(context.pdfPort && context.totalPages > 0);
 }
@@ -118,6 +124,7 @@ export class UnifiedSearchController {
       context.activeDocumentId !== this.context.activeDocumentId ||
       context.currentPage !== this.context.currentPage ||
       context.currentNote !== this.context.currentNote ||
+      context.standaloneNoteSearch !== this.context.standaloneNoteSearch ||
       context.pdfPort !== this.context.pdfPort;
     this.context = context;
 
@@ -286,7 +293,7 @@ export class UnifiedSearchController {
     const query = this.state.inputQuery;
     const extractedPages = this.context.pdfPort?.getExtractedPageNumbers() ?? new Set<number>();
     const availableSources = new Set<SearchSourceId>();
-    if (this.context.currentNote) availableSources.add("notes");
+    if (this.context.currentNote || this.context.standaloneNoteSearch) availableSources.add("notes");
     if (this.context.documents.length > 0) availableSources.add("document-name");
     if (this.context.pdfPort && this.context.totalPages > 0) availableSources.add("pdf-text");
     const plan = this.planner({
@@ -369,8 +376,18 @@ export class UnifiedSearchController {
   private makeRequest(generation: SearchGeneration, stage: SearchStage): SearchRequest | null {
     const normalizedQuery = analyzeQuery(generation.query).normalizedQuery;
     const base = { query: generation.query, normalizedQuery, stageId: stage.id };
-    if (stage.sourceId === "notes" && this.context.currentNote) {
-      return { ...base, sourceId: "notes", note: this.context.currentNote };
+    if (stage.sourceId === "notes") {
+      if (this.context.currentNote) {
+        return { ...base, sourceId: "notes", mode: "current-note", note: this.context.currentNote };
+      }
+      if (this.context.standaloneNoteSearch) {
+        return {
+          ...base,
+          sourceId: "notes",
+          mode: "standalone",
+          searchStandaloneNotes: this.context.standaloneNoteSearch
+        };
+      }
     }
     if (stage.sourceId === "document-name") {
       return { ...base, sourceId: "document-name", documents: this.context.documents };

@@ -2,27 +2,95 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createFolder,
+  createStandaloneNote,
   deleteDocument,
   deleteFolder,
+  deleteStandaloneNote,
   getDocumentDeleteState,
+  getStandaloneNoteDeleteState,
   getLibraryRoot,
   importPdf,
   listLibrary,
   listRecentDocuments,
+  listStandaloneNotes,
   moveDocument,
   openDocument,
+  openStandaloneNote,
   reorderCollectionDocuments,
   reorderCollections,
   removeFromLibrary,
   renameDocument,
   renameFolder,
+  renameStandaloneNote,
   rescanLibrary,
   showDocumentInExplorer
 } from "../api";
 import { sortRecentDocuments } from "../commands";
 import { debugAction, runDebugProcess } from "../debugLog";
-import { ROOT_FOLDER_ID, type DocumentPayload, type DocumentRecord, type DocumentState, type FolderTreeNode, type OutlineItem, type ReaderSession, type ViewerApi, type ViewerSnapshot } from "../types";
+import {
+  ROOT_FOLDER_ID,
+  type DocumentPayload,
+  type DocumentRecord,
+  type DocumentState,
+  type FolderTreeNode,
+  type NoteIndexEntry,
+  type OutlineItem,
+  type ReaderSession,
+  type ViewerApi,
+  type ViewerSnapshot
+} from "../types";
 import { toCollectionOptions } from "./helpers";
+
+type WorkspaceMode = "reader" | "collection" | "notes";
+type LibrarySelection = "collections" | "notes";
+
+type PersistedWorkspaceSession = {
+  activeStandaloneNoteId: string | null;
+  librarySelection: LibrarySelection;
+  workspaceMode: WorkspaceMode;
+};
+
+const WORKSPACE_SESSION_STORAGE_KEY = "calm-reader.workspace-session";
+
+function readPersistedWorkspaceSession(): PersistedWorkspaceSession {
+  if (typeof window === "undefined") {
+    return {
+      activeStandaloneNoteId: null,
+      librarySelection: "collections",
+      workspaceMode: "collection"
+    };
+  }
+
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_SESSION_STORAGE_KEY);
+    if (!raw) {
+      return {
+        activeStandaloneNoteId: null,
+        librarySelection: "collections",
+        workspaceMode: "collection"
+      };
+    }
+
+    const parsed = JSON.parse(raw) as Partial<PersistedWorkspaceSession>;
+    return {
+      activeStandaloneNoteId:
+        typeof parsed.activeStandaloneNoteId === "string" ? parsed.activeStandaloneNoteId : null,
+      librarySelection: parsed.librarySelection === "notes" ? "notes" : "collections",
+      workspaceMode:
+        parsed.workspaceMode === "reader" ||
+        parsed.workspaceMode === "collection" ||
+        parsed.workspaceMode === "notes"
+          ? parsed.workspaceMode
+          : "collection"
+    };
+  } catch {
+    return {
+      activeStandaloneNoteId: null,
+      librarySelection: "collections",
+      workspaceMode: "collection"
+    };
+  }
+}
 
 type OpenDocumentOptions = {
   refreshLibrary?: boolean;
@@ -49,9 +117,16 @@ function createReaderOpenSession(
 }
 
 export function useWorkspaceController() {
+  const initialWorkspaceSessionRef = useRef<PersistedWorkspaceSession | null>(null);
+  if (initialWorkspaceSessionRef.current === null) {
+    initialWorkspaceSessionRef.current = readPersistedWorkspaceSession();
+  }
+
+  const initialWorkspaceSession = initialWorkspaceSessionRef.current;
   const [libraryTree, setLibraryTree] = useState<FolderTreeNode | null>(null);
   const [libraryRoot, setLibraryRootPath] = useState("");
   const [recentDocuments, setRecentDocuments] = useState<DocumentRecord[]>([]);
+  const [standaloneNotes, setStandaloneNotes] = useState<NoteIndexEntry[]>([]);
   const [activeReaderSession, setActiveReaderSession] = useState<ReaderSession | null>(null);
   const [pendingReaderOpenSessionId, setPendingReaderOpenSessionId] = useState<string | null>(null);
   const [readerState, setReaderState] = useState<DocumentState | null>(null);
@@ -62,8 +137,16 @@ export function useWorkspaceController() {
   });
   const [outlineItems, setOutlineItems] = useState<OutlineItem[]>([]);
   const [statusMessage, setStatusMessage] = useState("Ready");
-  const [workspaceMode, setWorkspaceMode] = useState<"reader" | "collection">("collection");
+  const [workspaceMode, setWorkspaceModeState] = useState<WorkspaceMode>(
+    initialWorkspaceSession.workspaceMode
+  );
+  const [selectedLibrarySection, setSelectedLibrarySection] = useState<LibrarySelection>(
+    initialWorkspaceSession.librarySelection
+  );
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
+  const [activeStandaloneNoteId, setActiveStandaloneNoteIdState] = useState<string | null>(
+    initialWorkspaceSession.activeStandaloneNoteId
+  );
   const viewerApiRef = useRef<ViewerApi | null>(null);
   const [viewerApi, setViewerApi] = useState<ViewerApi | null>(null);
   const initialBootstrapStartedRef = useRef(false);
@@ -80,11 +163,50 @@ export function useWorkspaceController() {
   );
   const collectionOptions = useMemo(() => toCollectionOptions(collections), [collections]);
   const activeDocumentId = activeReaderSession?.documentId ?? null;
+  const activeStandaloneNote =
+    standaloneNotes.find((note) => note.id === activeStandaloneNoteId) ?? null;
+
+  const persistWorkspaceSession = useCallback(
+    (
+      nextWorkspaceMode: WorkspaceMode,
+      nextLibrarySelection: LibrarySelection,
+      nextActiveStandaloneNoteId: string | null
+    ) => {
+      if (typeof window === "undefined") {
+        return;
+      }
+
+      window.localStorage.setItem(
+        WORKSPACE_SESSION_STORAGE_KEY,
+        JSON.stringify({
+          activeStandaloneNoteId: nextActiveStandaloneNoteId,
+          librarySelection: nextLibrarySelection,
+          workspaceMode: nextWorkspaceMode
+        } satisfies PersistedWorkspaceSession)
+      );
+    },
+    []
+  );
+
+  useEffect(() => {
+    persistWorkspaceSession(workspaceMode, selectedLibrarySection, activeStandaloneNoteId);
+  }, [activeStandaloneNoteId, persistWorkspaceSession, selectedLibrarySection, workspaceMode]);
 
   const refreshRecentDocuments = useCallback(async () => {
     return runDebugProcess("app.refresh-recent-documents", {}, async () => {
       const recents = await listRecentDocuments();
       setRecentDocuments(sortRecentDocuments(recents));
+    });
+  }, []);
+
+  const refreshStandaloneNotes = useCallback(async () => {
+    return runDebugProcess("app.refresh-standalone-notes", {}, async () => {
+      const notes = await listStandaloneNotes();
+      setStandaloneNotes(notes);
+      setActiveStandaloneNoteIdState((current) =>
+        current && notes.some((note) => note.id === current) ? current : current ? null : current
+      );
+      return notes;
     });
   }, []);
 
@@ -95,11 +217,19 @@ export function useWorkspaceController() {
         rescan: Boolean(options?.rescan)
         },
         async () => {
-          const tree = await (options?.rescan ? rescanLibrary() : listLibrary());
-          const [recents, root] = await Promise.all([listRecentDocuments(), getLibraryRoot()]);
+          const [tree, recents, root, notes] = await Promise.all([
+            options?.rescan ? rescanLibrary() : listLibrary(),
+            listRecentDocuments(),
+            getLibraryRoot(),
+            listStandaloneNotes()
+          ]);
           setLibraryTree(tree);
           setRecentDocuments(sortRecentDocuments(recents));
           setLibraryRootPath(root);
+          setStandaloneNotes(notes);
+          setActiveStandaloneNoteIdState((current) =>
+            current && notes.some((note) => note.id === current) ? current : current ? null : current
+          );
         }
       );
   }, []);
@@ -110,7 +240,8 @@ export function useWorkspaceController() {
     setPendingReaderOpenSessionId(null);
     setReaderState(null);
     setOutlineItems([]);
-    setWorkspaceMode("collection");
+    setSelectedLibrarySection("collections");
+    setWorkspaceModeState("collection");
     setViewerSnapshot({
       currentPage: 1,
       pageCount: 0,
@@ -219,8 +350,9 @@ export function useWorkspaceController() {
           });
           setReaderState(payload.state);
           setSelectedCollectionId(payload.document.folderId);
+          setSelectedLibrarySection("collections");
           setStatusMessage(`Opened ${payload.document.title}.`);
-          setWorkspaceMode("reader");
+          setWorkspaceModeState("reader");
           debugAction("reader.open:active-document-committed", {
             documentId: payload.document.id,
             openSessionId: openSession.openSessionId,
@@ -288,6 +420,63 @@ export function useWorkspaceController() {
     }
   }, [activeDocument, activeReaderSession?.openSessionId, refreshRecentDocuments, resetOpenDocument]);
 
+  const setWorkspaceMode = useCallback((nextMode: WorkspaceMode) => {
+    setWorkspaceModeState(nextMode);
+  }, []);
+
+  const showCollectionsWorkspace = useCallback(() => {
+    setSelectedLibrarySection("collections");
+    setWorkspaceModeState("collection");
+  }, []);
+
+  const selectCollectionInLibrary = useCallback((collectionId: string) => {
+    setSelectedLibrarySection("collections");
+    setSelectedCollectionId(collectionId);
+    setWorkspaceModeState("collection");
+  }, []);
+
+  const selectNotesLibrary = useCallback(() => {
+    setSelectedLibrarySection("notes");
+    if (standaloneNotes.length === 0) {
+      setWorkspaceModeState("notes");
+      return;
+    }
+
+    setWorkspaceModeState("collection");
+  }, [standaloneNotes.length]);
+
+  const enterNotesMode = useCallback(() => {
+    setSelectedLibrarySection("notes");
+    if (standaloneNotes.length === 0) {
+      setActiveStandaloneNoteIdState(null);
+      setWorkspaceModeState("notes");
+      return null;
+    }
+
+    const nextStandaloneNoteId =
+      activeStandaloneNoteId && standaloneNotes.some((note) => note.id === activeStandaloneNoteId)
+        ? activeStandaloneNoteId
+        : standaloneNotes[0]?.id ?? null;
+    setActiveStandaloneNoteIdState(nextStandaloneNoteId);
+    setWorkspaceModeState("notes");
+    return nextStandaloneNoteId;
+  }, [activeStandaloneNoteId, standaloneNotes]);
+
+  const openStandaloneNoteInWorkspace = useCallback(
+    async (
+      noteId: string,
+      options?: {
+        workspaceMode?: "collection" | "notes";
+      }
+    ) => {
+      setSelectedLibrarySection("notes");
+      setActiveStandaloneNoteIdState(noteId);
+      setWorkspaceModeState(options?.workspaceMode ?? "notes");
+      return noteId;
+    },
+    []
+  );
+
   const createCollection = useCallback(
     async (name: string) => {
       debugAction("library.create-collection-flow", {
@@ -296,6 +485,7 @@ export function useWorkspaceController() {
       const folder = await createFolder(name, ROOT_FOLDER_ID);
       await refreshLibraryState();
       setSelectedCollectionId(folder.id);
+      setSelectedLibrarySection("collections");
       setWorkspaceMode("collection");
       setStatusMessage(`Created ${folder.name}.`);
       return folder;
@@ -352,6 +542,7 @@ export function useWorkspaceController() {
       }
       await refreshLibraryState();
       setSelectedCollectionId(destinationFolderId);
+      setSelectedLibrarySection("collections");
       setWorkspaceMode("collection");
       if (imported.length === 1) {
         setStatusMessage(`Imported ${imported[0].title}.`);
@@ -424,6 +615,7 @@ export function useWorkspaceController() {
       const deleted = await deleteFolder(collectionId);
       await refreshLibraryState({ rescan: true });
       setSelectedCollectionId(nextSelectedCollectionId);
+      setSelectedLibrarySection("collections");
       setWorkspaceMode("collection");
       setStatusMessage(`Deleted collection ${deleted.name}.`);
       return deleted;
@@ -453,6 +645,7 @@ export function useWorkspaceController() {
       const deleted = await deleteDocument(documentId);
       await refreshLibraryState({ rescan: true });
       if (deletingActiveDocument) {
+        setSelectedLibrarySection("collections");
         setWorkspaceMode("collection");
       }
       setStatusMessage(`Deleted ${deleted.title}.`);
@@ -467,6 +660,52 @@ export function useWorkspaceController() {
 
   const getLibraryDocumentDeleteState = useCallback(async (documentId: string) => {
     return getDocumentDeleteState(documentId);
+  }, []);
+
+  const createStandaloneNoteInWorkspace = useCallback(async () => {
+    const note = await createStandaloneNote();
+    await refreshStandaloneNotes();
+    setSelectedLibrarySection("notes");
+    setActiveStandaloneNoteIdState(note.id);
+    setWorkspaceModeState("notes");
+    setStatusMessage(`Created ${note.title}.`);
+    return note;
+  }, [refreshStandaloneNotes]);
+
+  const renameStandaloneNoteInLibrary = useCallback(
+    async (noteId: string, title: string) => {
+      const renamed = await renameStandaloneNote(noteId, title);
+      await refreshStandaloneNotes();
+      setStatusMessage(`Renamed note to ${renamed.title}.`);
+      return renamed;
+    },
+    [refreshStandaloneNotes]
+  );
+
+  const deleteStandaloneNoteInLibrary = useCallback(
+    async (noteId: string) => {
+      const deletingActiveStandaloneNote = activeStandaloneNoteId === noteId;
+      const deleted = await deleteStandaloneNote(noteId);
+      const nextNotes = await refreshStandaloneNotes();
+      const nextActiveStandaloneNoteId =
+        deletingActiveStandaloneNote && nextNotes.length > 0
+          ? nextNotes[0]?.id ?? null
+          : deletingActiveStandaloneNote
+            ? null
+            : activeStandaloneNoteId;
+
+      setActiveStandaloneNoteIdState(nextActiveStandaloneNoteId);
+      if (selectedLibrarySection === "notes" && nextNotes.length === 0) {
+        setWorkspaceModeState("notes");
+      }
+      setStatusMessage(`Deleted ${deleted.title}.`);
+      return deleted;
+    },
+    [activeStandaloneNoteId, refreshStandaloneNotes, selectedLibrarySection]
+  );
+
+  const getStandaloneLibraryNoteDeleteState = useCallback(async (noteId: string) => {
+    return getStandaloneNoteDeleteState(noteId);
   }, []);
 
   const removeActiveDocument = useCallback(
@@ -517,12 +756,16 @@ export function useWorkspaceController() {
     libraryTree,
     libraryRoot,
     recentDocuments,
+    standaloneNotes,
     activeDocument,
+    activeStandaloneNote,
+    activeStandaloneNoteId,
     readerState,
     viewerSnapshot,
     outlineItems,
     statusMessage,
     workspaceMode,
+    selectedLibrarySection,
     activeReaderSession,
     pendingReaderOpenSessionId,
     selectedCollectionId,
@@ -532,7 +775,8 @@ export function useWorkspaceController() {
     viewerApiRef,
     viewerApi,
     setWorkspaceMode,
-    setSelectedCollectionId,
+    showCollectionsWorkspace,
+    setSelectedCollectionId: selectCollectionInLibrary,
     setStatusMessage,
     handleViewerSnapshotChange,
     handleViewerOutlineChange,
@@ -541,21 +785,29 @@ export function useWorkspaceController() {
     registerViewerApi,
     refreshLibraryState,
     refreshRecentDocuments,
+    refreshStandaloneNotes,
     resetOpenDocument,
     handleOpenDocument,
     syncActiveDocument,
     createCollection,
+    createStandaloneNoteInWorkspace,
+    deleteStandaloneNoteInLibrary,
+    enterNotesMode,
+    getStandaloneLibraryNoteDeleteState,
     importDocumentToCollection,
     importDocumentsToCollection,
     moveActiveDocument,
     moveDocumentInLibrary,
+    openStandaloneNoteInWorkspace,
     renameActiveDocument,
     renameCollection,
+    renameStandaloneNoteInLibrary,
     reorderLibraryCollections,
     reorderDocumentsInCollection,
     deleteCollection,
     renameDocumentInLibrary,
     deleteDocumentInLibrary,
+    selectNotesLibrary,
     showDocumentInFolder,
     getLibraryDocumentDeleteState,
     removeActiveDocument,

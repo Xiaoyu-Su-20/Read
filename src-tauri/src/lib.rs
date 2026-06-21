@@ -15,7 +15,8 @@ use std::{
 use debug::process as debug_process;
 use models::{
     DocumentDeleteState, DocumentPayload, DocumentRecord, DocumentState, FolderRecord,
-    FolderTreeNode, NativeTextPagePayload, NoteDocument, PdfOutlineItem, RenderedPagePayload,
+    FolderTreeNode, NativeTextPagePayload, NoteDocument, NoteIndexEntry, PdfOutlineItem,
+    RenderedPagePayload, StandaloneNoteSearchHit,
 };
 use normalization::{new_manifest_cache, ManifestCache, NormalizationWorker};
 use serde::Deserialize;
@@ -638,6 +639,140 @@ fn get_or_create_note_for_book(
             with_store(&app, state, |store| {
                 store
                     .get_or_create_note_for_book(&document_id)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
+}
+
+#[tauri::command]
+fn list_standalone_notes(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<NoteIndexEntry>, String> {
+    run_logged_command("list_standalone_notes", json!({}), || {
+        with_store(&app, state, |store| {
+            store
+                .list_standalone_notes()
+                .map_err(|error| error.to_string())
+        })
+    })
+}
+
+#[tauri::command]
+fn create_standalone_note(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<NoteDocument, String> {
+    run_logged_command("create_standalone_note", json!({}), || {
+        with_store(&app, state, |store| {
+            store
+                .create_standalone_note()
+                .map_err(|error| error.to_string())
+        })
+    })
+}
+
+#[tauri::command]
+fn open_standalone_note(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    note_id: String,
+) -> Result<NoteDocument, String> {
+    run_logged_command(
+        "open_standalone_note",
+        json!({
+            "noteId": note_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .open_standalone_note(&note_id)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
+}
+
+#[tauri::command]
+fn rename_standalone_note(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    note_id: String,
+    title: String,
+) -> Result<NoteDocument, String> {
+    run_logged_command(
+        "rename_standalone_note",
+        json!({
+            "noteId": note_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .rename_standalone_note(&note_id, &title)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
+}
+
+#[tauri::command]
+fn delete_standalone_note(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    note_id: String,
+) -> Result<NoteDocument, String> {
+    run_logged_command(
+        "delete_standalone_note",
+        json!({
+            "noteId": note_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .delete_standalone_note(&note_id)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
+}
+
+#[tauri::command]
+fn get_standalone_note_delete_state(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    note_id: String,
+) -> Result<DocumentDeleteState, String> {
+    run_logged_command(
+        "get_standalone_note_delete_state",
+        json!({
+            "noteId": note_id,
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .get_standalone_note_delete_state(&note_id)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
+}
+
+#[tauri::command]
+fn search_standalone_notes(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<StandaloneNoteSearchHit>, String> {
+    run_logged_command(
+        "search_standalone_notes",
+        json!({
+            "queryLength": query.len(),
+        }),
+        || {
+            with_store(&app, state, |store| {
+                store
+                    .search_standalone_notes(&query)
                     .map_err(|error| error.to_string())
             })
         },
@@ -1311,6 +1446,13 @@ pub fn run() {
             open_document,
             save_document_state,
             get_or_create_note_for_book,
+            list_standalone_notes,
+            create_standalone_note,
+            open_standalone_note,
+            rename_standalone_note,
+            delete_standalone_note,
+            get_standalone_note_delete_state,
+            search_standalone_notes,
             save_note,
             log_note_debug_event,
             list_recent_documents,

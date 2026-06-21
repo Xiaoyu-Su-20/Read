@@ -64,6 +64,7 @@ describe("UnifiedSearchController", () => {
       totalPages: 0,
       activeDocumentId: null,
       currentNote: null,
+      standaloneNoteSearch: null,
       pdfPort: null,
       documents: [documentRecord]
     });
@@ -115,6 +116,7 @@ describe("UnifiedSearchController", () => {
       totalPages: 10,
       activeDocumentId: "d1",
       currentNote: null,
+      standaloneNoteSearch: null,
       documents: [documentRecord],
       pdfPort: {
         getExtractedPageNumbers: () => new Set(),
@@ -153,6 +155,7 @@ describe("UnifiedSearchController", () => {
       totalPages: 10,
       activeDocumentId: "d1",
       currentNote: null,
+      standaloneNoteSearch: null,
       documents: [],
       pdfPort: {
         getExtractedPageNumbers: () => new Set([1]),
@@ -186,6 +189,7 @@ describe("UnifiedSearchController", () => {
       totalPages: 10,
       activeDocumentId: "d1",
       currentNote: null,
+      standaloneNoteSearch: null,
       documents: [],
       pdfPort: {
         getExtractedPageNumbers: () => new Set(),
@@ -208,6 +212,7 @@ describe("UnifiedSearchController", () => {
       currentNote: {
         id: "n", title: "Note", bookId: "d1", createdAt: "now", updatedAt: "now", version: 1, blocks: []
       },
+      standaloneNoteSearch: null,
       documents: [documentRecord],
       pdfPort: {
         getExtractedPageNumbers: () => new Set(),
@@ -243,7 +248,7 @@ describe("UnifiedSearchController", () => {
     };
     const controller = new UnifiedSearchController(createSearchPlan, new Map([[source.id, source]]));
     controller.setContext({
-      currentPage: 1, totalPages: 0, activeDocumentId: null, currentNote: null, pdfPort: null,
+      currentPage: 1, totalPages: 0, activeDocumentId: null, currentNote: null, standaloneNoteSearch: null, pdfPort: null,
       documents: [documentRecord]
     });
     let notifications = 0;
@@ -266,6 +271,7 @@ describe("UnifiedSearchController", () => {
       totalPages: 0,
       activeDocumentId: null,
       currentNote: null,
+      standaloneNoteSearch: null,
       pdfPort: null,
       documents: [documentRecord]
     });
@@ -287,6 +293,7 @@ describe("UnifiedSearchController", () => {
       totalPages: 0,
       activeDocumentId: null,
       currentNote: null,
+      standaloneNoteSearch: null,
       pdfPort: null,
       documents: [documentRecord]
     });
@@ -346,6 +353,7 @@ describe("UnifiedSearchController", () => {
       totalPages: 20,
       activeDocumentId: "d1",
       currentNote: null,
+      standaloneNoteSearch: null,
       documents: [],
       pdfPort: {
         getExtractedPageNumbers: () => new Set(),

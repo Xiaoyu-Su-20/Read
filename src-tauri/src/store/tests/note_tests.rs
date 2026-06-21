@@ -1,3 +1,5 @@
+use std::{thread, time::Duration};
+
 use tempfile::tempdir;
 
 use super::{
@@ -5,6 +7,32 @@ use super::{
     support::write_sample_pdf,
 };
 use crate::models::{NoteBlock, NoteDocument, NoteInlineNode, NoteSpan, NoteTextNode};
+
+fn note_block(text: &str) -> NoteBlock {
+    NoteBlock {
+        id: "body".to_string(),
+        r#type: crate::models::NoteBlockType::Paragraph,
+        children: vec![NoteInlineNode::Text(NoteTextNode {
+            text: text.to_string(),
+            bold: false,
+            italic: false,
+        })],
+        source_reference: None,
+        spans: Vec::new(),
+    }
+}
+
+fn standalone_note(title: &str, text: &str) -> NoteDocument {
+    NoteDocument {
+        id: uuid::Uuid::new_v4().to_string(),
+        title: title.to_string(),
+        book_id: None,
+        created_at: timestamp(),
+        updated_at: timestamp(),
+        version: NOTE_DOCUMENT_VERSION,
+        blocks: vec![note_block(text)],
+    }
+}
 
 #[test]
 fn get_or_create_note_for_book_creates_note_file_and_index_entry() {
@@ -210,4 +238,122 @@ fn save_note_migrates_legacy_spans_into_children() {
         _ => panic!("expected migrated text node"),
     }
     assert!(saved.blocks[0].spans.is_empty());
+}
+
+#[test]
+fn list_standalone_notes_excludes_document_notes_and_sorts_by_last_opened() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("attached.pdf");
+    write_sample_pdf(&source, "attached");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let linked_note = store.get_or_create_note_for_book(&record.id).unwrap();
+
+    let older = store.save_note(standalone_note("Older", "")).unwrap();
+    thread::sleep(Duration::from_millis(1100));
+    let newer = store.save_note(standalone_note("Newer", "")).unwrap();
+    thread::sleep(Duration::from_millis(1100));
+    let _ = store.open_standalone_note(&older.id).unwrap();
+
+    let notes = store.list_standalone_notes().unwrap();
+    let ids = notes.iter().map(|note| note.id.clone()).collect::<Vec<_>>();
+
+    assert_eq!(ids, vec![older.id.clone(), newer.id.clone()]);
+    assert!(notes.iter().all(|note| note.book_id.is_none()));
+    assert!(notes.iter().all(|note| note.id != linked_note.id));
+}
+
+#[test]
+fn standalone_note_delete_state_is_body_driven() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("linked.pdf");
+    write_sample_pdf(&source, "linked");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+
+    let created = store.create_standalone_note().unwrap();
+    let initial_state = store.get_standalone_note_delete_state(&created.id).unwrap();
+    assert!(initial_state.can_delete);
+    assert_eq!(initial_state.reason, None);
+
+    let renamed = store
+        .rename_standalone_note(&created.id, "Custom standalone title")
+        .unwrap();
+    let renamed_state = store.get_standalone_note_delete_state(&renamed.id).unwrap();
+    assert!(renamed_state.can_delete);
+    assert_eq!(renamed_state.reason, None);
+
+    let saved = store
+        .save_note(NoteDocument {
+            blocks: vec![note_block("Actual body content")],
+            ..renamed
+        })
+        .unwrap();
+    let blocked_state = store.get_standalone_note_delete_state(&saved.id).unwrap();
+    assert!(!blocked_state.can_delete);
+    assert_eq!(
+        blocked_state.reason.as_deref(),
+        Some("Clear the note before deleting it.")
+    );
+
+    let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+    let linked_note = store.get_or_create_note_for_book(&record.id).unwrap();
+    let linked_state = store
+        .get_standalone_note_delete_state(&linked_note.id)
+        .unwrap();
+    assert!(!linked_state.can_delete);
+    assert_eq!(
+        linked_state.reason.as_deref(),
+        Some("Only standalone notes can be deleted here.")
+    );
+}
+
+#[test]
+fn delete_standalone_note_removes_note_file_and_index_entry() {
+    let temp = tempdir().unwrap();
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+
+    let note = store.create_standalone_note().unwrap();
+    let note_path = app_dir.join("notes").join(format!("{}.json", note.id));
+    assert!(note_path.exists());
+
+    let deleted = store.delete_standalone_note(&note.id).unwrap();
+    assert_eq!(deleted.id, note.id);
+    assert!(!note_path.exists());
+
+    let index = store.notes.load_notes_index(&store.paths).unwrap();
+    assert!(index.notes.iter().all(|entry| entry.id != note.id));
+}
+
+#[test]
+fn search_standalone_notes_excludes_pdf_linked_notes() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("linked-search.pdf");
+    write_sample_pdf(&source, "linked-search");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+
+    let standalone = store
+        .save_note(standalone_note("Standalone focus", "Focus only lives here"))
+        .unwrap();
+
+    let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+    let linked_note = store.get_or_create_note_for_book(&record.id).unwrap();
+    let _ = store
+        .save_note(NoteDocument {
+            blocks: vec![note_block("Focus also appears here")],
+            ..linked_note
+        })
+        .unwrap();
+
+    let results = store.search_standalone_notes("focus").unwrap();
+    assert!(!results.is_empty());
+    assert!(results.iter().all(|result| result.note_id == standalone.id));
 }

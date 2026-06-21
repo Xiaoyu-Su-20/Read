@@ -13,9 +13,12 @@ import type {
 type NotesViewportProps = {
   note: NoteDocument | null;
   loading: boolean;
+  capabilityMode: "document" | "standalone";
   fullscreen: boolean;
   onToggleFullscreen: () => void | Promise<void>;
   headerActionsContainerId: string | null;
+  titleMode?: "hidden" | "standalone";
+  navigationOpenRequest: number;
   commandPaletteOpen: boolean;
   onToggleCommandPalette: () => void;
   registerCommandPaletteAnchor: (node: HTMLButtonElement | null) => void;
@@ -37,9 +40,12 @@ type NotesViewportProps = {
 const NotesViewport = memo(function NotesViewport({
   note,
   loading,
+  capabilityMode,
   fullscreen,
   onToggleFullscreen,
   headerActionsContainerId,
+  titleMode = "hidden",
+  navigationOpenRequest,
   commandPaletteOpen,
   onToggleCommandPalette,
   registerCommandPaletteAnchor,
@@ -65,9 +71,12 @@ const NotesViewport = memo(function NotesViewport({
       <NotesPane
         note={note}
         loading={loading}
+        capabilityMode={capabilityMode}
         fullscreen={fullscreen}
         onToggleFullscreen={onToggleFullscreen}
         headerActionsContainerId={headerActionsContainerId}
+        titleMode={titleMode}
+        navigationOpenRequest={navigationOpenRequest}
         commandPaletteOpen={commandPaletteOpen}
         onToggleCommandPalette={onToggleCommandPalette}
         registerCommandPaletteAnchor={registerCommandPaletteAnchor}

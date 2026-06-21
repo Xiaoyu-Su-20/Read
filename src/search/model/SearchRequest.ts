@@ -1,4 +1,4 @@
-import type { DocumentRecord, NoteDocument } from "../../lib/types";
+import type { DocumentRecord, NoteDocument, StandaloneNoteSearchHit } from "../../lib/types";
 
 export type SearchSourceId = "notes" | "pdf-text" | "document-name";
 
@@ -13,10 +13,20 @@ type SearchRequestBase = {
   stageId: string;
 };
 
-export type NotesSearchRequest = SearchRequestBase & {
-  sourceId: "notes";
-  note: NoteDocument;
-};
+export type NotesSearchRequest =
+  | (SearchRequestBase & {
+      sourceId: "notes";
+      mode: "current-note";
+      note: NoteDocument;
+    })
+  | (SearchRequestBase & {
+      sourceId: "notes";
+      mode: "standalone";
+      searchStandaloneNotes: (
+        query: string,
+        signal: AbortSignal
+      ) => Promise<StandaloneNoteSearchHit[]>;
+    });
 
 export type DocumentNameSearchRequest = SearchRequestBase & {
   sourceId: "document-name";
@@ -36,4 +46,3 @@ export type SearchRequest =
   | NotesSearchRequest
   | DocumentNameSearchRequest
   | PdfTextSearchRequest;
-

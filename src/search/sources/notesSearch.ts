@@ -6,6 +6,36 @@ export const notesSearch: SearchSource = {
   id: "notes",
   async *search(request, signal) {
     if (request.sourceId !== "notes") return;
+
+    if (request.mode === "standalone") {
+      const hits = await request.searchStandaloneNotes(request.query, signal);
+      const results = hits.flatMap((hit) => {
+        if (signal.aborted) {
+          return [];
+        }
+
+        const preview = makeSnippet(hit.text, hit.matchIndex, request.normalizedQuery.length);
+        if (!preview) {
+          return [];
+        }
+
+        return [{
+          id: `note:${hit.noteId}:${hit.blockId}:${hit.matchIndex}`,
+          kind: "note" as const,
+          sourceId: "notes" as const,
+          title: hit.title,
+          noteId: hit.noteId,
+          blockId: hit.blockId,
+          ...preview
+        }];
+      }).slice(0, 51);
+
+      if (!signal.aborted) {
+        yield { sourceId: "notes", stageId: request.stageId, results, completed: true };
+      }
+      return;
+    }
+
     const results = [];
     const titleIndex = request.note.title.toLocaleLowerCase().indexOf(request.normalizedQuery);
     if (titleIndex >= 0) {

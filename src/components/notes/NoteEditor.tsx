@@ -111,6 +111,7 @@ type NoteEditorProps = {
   note: NoteDocument | null;
   loading: boolean;
   currentPage: number | null;
+  documentCapabilities: boolean;
   onChangeBlocks: (blocks: NoteDocument["blocks"]) => void;
   onBlur: () => void | Promise<void>;
   onOpenPageLink: (node: NotePageLinkNode) => void;
@@ -177,6 +178,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     note,
     loading,
     currentPage,
+    documentCapabilities,
     onChangeBlocks,
     onBlur,
     onOpenPageLink,
@@ -851,7 +853,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         return performRedo();
       }
     }),
-    [currentPage, note, onChangeBlocks, onOpenHeadingReference, onOpenPageLink]
+    [currentPage, documentCapabilities, note, onChangeBlocks, onOpenHeadingReference, onOpenPageLink]
   );
 
   useEffect(() => {
@@ -930,7 +932,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           syncBlocksFromDom(inferHistoryMergeKeyFromInputType(inputEvent.inputType));
         }}
         onDoubleClick={(event) => {
-          if (!bodyRef.current) {
+          if (!documentCapabilities || !bodyRef.current) {
             return;
           }
 
@@ -944,7 +946,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           updateSelectedPageLink(pageLinkId);
         }}
         onMouseDown={(event) => {
-          if (!bodyRef.current) {
+          if (!documentCapabilities || !bodyRef.current) {
             return;
           }
 
@@ -966,7 +968,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           }
         }}
         onClick={(event) => {
-          if (!bodyRef.current) {
+          if (!documentCapabilities || !bodyRef.current) {
             return;
           }
 
@@ -1151,11 +1153,13 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           }
         }}
       />
-      <HeadingReferenceOverlay
-        decorations={headingReferenceDecorations}
-        onOpenReference={onOpenHeadingReference}
-        onOpenContextMenu={onOpenHeadingReferenceContextMenu}
-      />
+      {documentCapabilities ? (
+        <HeadingReferenceOverlay
+          decorations={headingReferenceDecorations}
+          onOpenReference={onOpenHeadingReference}
+          onOpenContextMenu={onOpenHeadingReferenceContextMenu}
+        />
+      ) : null}
     </div>
   );
 });

@@ -10,6 +10,7 @@ export type NoteTitleFieldHandle = {
 type NoteTitleFieldProps = {
   note: NoteDocument | null;
   loading: boolean;
+  variant?: "compact" | "standalone";
   onChangeTitle: (title: string) => void;
   onBlur: () => void | Promise<void>;
   onEscape: () => void;
@@ -17,7 +18,7 @@ type NoteTitleFieldProps = {
 };
 
 const NoteTitleField = forwardRef<NoteTitleFieldHandle, NoteTitleFieldProps>(function NoteTitleField(
-  { note, loading, onChangeTitle, onBlur, onEscape, onSubmit },
+  { note, loading, onChangeTitle, onBlur, onEscape, onSubmit, variant = "compact" },
   ref
 ) {
   const titleRef = useRef<HTMLDivElement | null>(null);
@@ -63,10 +64,12 @@ const NoteTitleField = forwardRef<NoteTitleFieldHandle, NoteTitleFieldProps>(fun
   }));
 
   return (
-    <div className="notes-title-row">
+    <div className={`notes-title-row${variant === "standalone" ? " notes-title-row--standalone" : ""}`}>
       <div
         ref={titleRef}
-        className="notes-title-row__input"
+        className={`notes-title-row__input${
+          variant === "standalone" ? " notes-title-row__input--standalone" : ""
+        }`}
         contentEditable={!loading}
         suppressContentEditableWarning
         spellCheck={false}

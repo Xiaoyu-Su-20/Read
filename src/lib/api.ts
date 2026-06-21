@@ -8,10 +8,13 @@ import type {
   RenderedPagePayload,
   DocumentState,
   NoteDocument,
+  NoteDeleteState,
+  NoteIndexEntry,
   FolderRecord,
   FolderTreeNode,
   NativeTextPagePayload,
-  PdfOutlineItem
+  PdfOutlineItem,
+  StandaloneNoteSearchHit
 } from "./types";
 
 function invokeLogged<T>(command: string, args?: Record<string, unknown>) {
@@ -196,6 +199,45 @@ export function saveDocumentState(documentId: string, readerState: DocumentState
 export function getOrCreateNoteForBook(documentId: string) {
   return invokeLogged<NoteDocument>("get_or_create_note_for_book", {
     documentId
+  });
+}
+
+export function listStandaloneNotes() {
+  return invokeLogged<NoteIndexEntry[]>("list_standalone_notes");
+}
+
+export function createStandaloneNote() {
+  return invokeLogged<NoteDocument>("create_standalone_note");
+}
+
+export function openStandaloneNote(noteId: string) {
+  return invokeLogged<NoteDocument>("open_standalone_note", {
+    noteId
+  });
+}
+
+export function renameStandaloneNote(noteId: string, title: string) {
+  return invokeLogged<NoteDocument>("rename_standalone_note", {
+    noteId,
+    title
+  });
+}
+
+export function deleteStandaloneNote(noteId: string) {
+  return invokeLogged<NoteDocument>("delete_standalone_note", {
+    noteId
+  });
+}
+
+export function getStandaloneNoteDeleteState(noteId: string) {
+  return invokeLogged<NoteDeleteState>("get_standalone_note_delete_state", {
+    noteId
+  });
+}
+
+export function searchStandaloneNotes(query: string) {
+  return invokeLogged<StandaloneNoteSearchHit[]>("search_standalone_notes", {
+    query
   });
 }
 

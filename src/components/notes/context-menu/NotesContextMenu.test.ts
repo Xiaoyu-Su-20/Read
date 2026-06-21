@@ -8,6 +8,7 @@ describe("NotesContextMenu", () => {
   it("renders the pagemark actions for heading blocks without the old PDF section actions", () => {
     const markup = renderToStaticMarkup(
       createElement(NotesContextMenu, {
+        documentCapabilities: true,
         state: {
           target: "body",
           blockId: "heading-1",

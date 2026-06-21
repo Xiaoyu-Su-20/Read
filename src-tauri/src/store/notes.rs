@@ -3,11 +3,12 @@ use std::fs;
 use uuid::Uuid;
 
 use crate::{
-    error::AppResult,
+    error::{AppError, AppResult},
     models::{
         DocumentDeleteState, DocumentRecord, DocumentSourceReference,
         DocumentSourceReferenceKind, NoteBlock, NoteBlockType, NoteDocument, NoteIndex,
         NoteIndexEntry, NoteInlineNode, NotePageLinkNode, NoteTextNode,
+        StandaloneNoteSearchHit,
     },
 };
 
@@ -15,6 +16,9 @@ use super::{paths::StorePaths, timestamp, NOTE_DOCUMENT_VERSION};
 
 #[derive(Debug, Clone, Default)]
 pub struct NoteStore;
+
+const NON_STANDALONE_NOTE_DELETE_REASON: &str = "Only standalone notes can be deleted here.";
+const STANDALONE_NOTE_DELETE_BLOCKED_REASON: &str = "Clear the note before deleting it.";
 
 impl NoteStore {
     pub fn document_delete_state(
@@ -97,6 +101,168 @@ impl NoteStore {
         self.save(paths, note)
     }
 
+    pub fn list_standalone_notes(&self, paths: &StorePaths) -> AppResult<Vec<NoteIndexEntry>> {
+        let mut notes = self
+            .load_notes_index(paths)?
+            .notes
+            .into_iter()
+            .filter(|entry| entry.book_id.is_none())
+            .collect::<Vec<_>>();
+
+        notes.sort_by(|left, right| {
+            self.note_sort_at(right)
+                .cmp(self.note_sort_at(left))
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+                .then_with(|| left.title.cmp(&right.title))
+        });
+
+        Ok(notes)
+    }
+
+    pub fn create_standalone_note(&self, paths: &StorePaths) -> AppResult<NoteDocument> {
+        let created_at = timestamp();
+        let saved = self.save(
+            paths,
+            NoteDocument {
+                id: Uuid::new_v4().to_string(),
+                title: "Untitled note".to_string(),
+                book_id: None,
+                created_at: created_at.clone(),
+                updated_at: created_at,
+                version: NOTE_DOCUMENT_VERSION,
+                blocks: vec![self.empty_note_block()],
+            },
+        )?;
+        self.touch_note_last_opened_at(paths, &saved.id, Some(saved.updated_at.clone()))?;
+        Ok(saved)
+    }
+
+    pub fn open_standalone_note(
+        &self,
+        paths: &StorePaths,
+        note_id: &str,
+    ) -> AppResult<NoteDocument> {
+        let note = self.load_note_document(paths, note_id)?;
+        self.ensure_standalone_note(note_id, &note)?;
+        self.touch_note_last_opened_at(paths, note_id, Some(timestamp()))?;
+        Ok(note)
+    }
+
+    pub fn rename_standalone_note(
+        &self,
+        paths: &StorePaths,
+        note_id: &str,
+        title: &str,
+    ) -> AppResult<NoteDocument> {
+        let mut note = self.load_note_document(paths, note_id)?;
+        self.ensure_standalone_note(note_id, &note)?;
+        note.title = title.to_string();
+        self.save(paths, note)
+    }
+
+    pub fn standalone_note_delete_state(
+        &self,
+        paths: &StorePaths,
+        note_id: &str,
+    ) -> AppResult<DocumentDeleteState> {
+        let note = self.load_note_document(paths, note_id)?;
+        if note.book_id.is_some() {
+            return Ok(DocumentDeleteState {
+                can_delete: false,
+                reason: Some(NON_STANDALONE_NOTE_DELETE_REASON.to_string()),
+            });
+        }
+
+        let has_note_content = !self.note_excerpt(&note).trim().is_empty();
+        Ok(DocumentDeleteState {
+            can_delete: !has_note_content,
+            reason: has_note_content.then(|| STANDALONE_NOTE_DELETE_BLOCKED_REASON.to_string()),
+        })
+    }
+
+    pub fn delete_standalone_note(
+        &self,
+        paths: &StorePaths,
+        note_id: &str,
+    ) -> AppResult<NoteDocument> {
+        let state = self.standalone_note_delete_state(paths, note_id)?;
+        if !state.can_delete {
+            return Err(AppError::InvalidInput(
+                state
+                    .reason
+                    .unwrap_or_else(|| STANDALONE_NOTE_DELETE_BLOCKED_REASON.to_string()),
+            ));
+        }
+
+        let note = self.load_note_document(paths, note_id)?;
+        self.ensure_standalone_note(note_id, &note)?;
+
+        let mut index = self.load_notes_index(paths)?;
+        index.notes.retain(|entry| entry.id != note_id);
+        self.save_notes_index(paths, &index)?;
+
+        let path = paths.note_path(note_id);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+
+        Ok(note)
+    }
+
+    pub fn search_standalone_notes(
+        &self,
+        paths: &StorePaths,
+        query: &str,
+    ) -> AppResult<Vec<StandaloneNoteSearchHit>> {
+        let normalized_query = self.normalize_search_text(query).to_lowercase();
+        if normalized_query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut results = Vec::new();
+        for entry in self.list_standalone_notes(paths)? {
+            let note = match self.load_note_document(paths, &entry.id) {
+                Ok(note) if note.book_id.is_none() => note,
+                Ok(_) => continue,
+                Err(_) => continue,
+            };
+
+            let title_text = self.normalize_search_text(&note.title);
+            if let Some(match_index) = title_text.to_lowercase().find(&normalized_query) {
+                results.push(StandaloneNoteSearchHit {
+                    note_id: note.id.clone(),
+                    block_id: note
+                        .blocks
+                        .first()
+                        .map(|block| block.id.clone())
+                        .unwrap_or_default(),
+                    title: note.title.clone(),
+                    text: title_text,
+                    match_index,
+                });
+            }
+
+            for block in &note.blocks {
+                let block_text = self.normalize_search_text(&self.note_block_text(block));
+                if block_text.is_empty() {
+                    continue;
+                }
+
+                if let Some(match_index) = block_text.to_lowercase().find(&normalized_query) {
+                    results.push(StandaloneNoteSearchHit {
+                        note_id: note.id.clone(),
+                        block_id: block.id.clone(),
+                        title: note.title.clone(),
+                        text: block_text,
+                        match_index,
+                    });
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     pub fn save(&self, paths: &StorePaths, mut note: NoteDocument) -> AppResult<NoteDocument> {
         self.normalize_note_document(&mut note);
         note.updated_at = timestamp();
@@ -104,10 +270,16 @@ impl NoteStore {
             note.created_at = note.updated_at.clone();
         }
 
+        let mut index = self.load_notes_index(paths)?;
+        let previous_last_opened_at = index
+            .notes
+            .iter()
+            .find(|entry| entry.id == note.id)
+            .and_then(|entry| entry.last_opened_at.clone());
+
         paths.write_json_atomically(&paths.note_path(&note.id), &note)?;
 
-        let mut index = self.load_notes_index(paths)?;
-        let metadata = self.note_index_entry(&note);
+        let metadata = self.note_index_entry(&note, previous_last_opened_at);
         if let Some(existing) = index.notes.iter_mut().find(|entry| entry.id == note.id) {
             *existing = metadata;
         } else {
@@ -134,13 +306,18 @@ impl NoteStore {
         Ok(note)
     }
 
-    fn note_index_entry(&self, note: &NoteDocument) -> NoteIndexEntry {
+    fn note_index_entry(
+        &self,
+        note: &NoteDocument,
+        last_opened_at: Option<String>,
+    ) -> NoteIndexEntry {
         NoteIndexEntry {
             id: note.id.clone(),
             title: note.title.clone(),
             book_id: note.book_id.clone(),
             created_at: note.created_at.clone(),
             updated_at: note.updated_at.clone(),
+            last_opened_at,
             excerpt: self.note_excerpt(note),
         }
     }
@@ -213,6 +390,55 @@ impl NoteStore {
             );
             block.spans.clear();
         }
+    }
+
+    fn note_sort_at<'a>(&self, entry: &'a NoteIndexEntry) -> &'a str {
+        match entry.last_opened_at.as_deref() {
+            Some(last_opened_at) if last_opened_at > entry.updated_at.as_str() => last_opened_at,
+            _ => entry.updated_at.as_str(),
+        }
+    }
+
+    fn ensure_standalone_note(&self, note_id: &str, note: &NoteDocument) -> AppResult<()> {
+        if note.book_id.is_some() {
+            return Err(AppError::InvalidInput(format!(
+                "Note {note_id} is attached to a PDF and cannot be managed as a standalone note."
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn note_block_text(&self, block: &NoteBlock) -> String {
+        block
+            .children
+            .iter()
+            .map(|child| match child {
+                NoteInlineNode::Text(text) => text.text.as_str(),
+                NoteInlineNode::PageLink(page_link) => page_link.text.as_str(),
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn normalize_search_text(&self, text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn touch_note_last_opened_at(
+        &self,
+        paths: &StorePaths,
+        note_id: &str,
+        last_opened_at: Option<String>,
+    ) -> AppResult<()> {
+        let mut index = self.load_notes_index(paths)?;
+        let entry = index
+            .notes
+            .iter_mut()
+            .find(|entry| entry.id == note_id)
+            .ok_or_else(|| AppError::DocumentNotFound(note_id.to_string()))?;
+        entry.last_opened_at = last_opened_at;
+        self.save_notes_index(paths, &index)
     }
 
     fn normalize_source_reference(

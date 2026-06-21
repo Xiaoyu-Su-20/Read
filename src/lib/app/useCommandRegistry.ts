@@ -16,6 +16,7 @@ import type {
 import { makeBookmark } from "./helpers";
 
 type UseCommandRegistryArgs = {
+  workspaceMode: "reader" | "collection" | "notes";
   libraryRoot: string;
   recentDocuments: DocumentRecord[];
   activeDocument: DocumentPayload | null;
@@ -42,11 +43,14 @@ type UseCommandRegistryArgs = {
   openLibraryFolder: () => Promise<void>;
   openDocumentById: (documentId: string) => Promise<void>;
   openSearch: () => void;
+  openNotesNavigation: () => void;
+  createStandaloneNote: () => Promise<void>;
   renameNote: (title: string) => void | Promise<void>;
   copyAllNoteText: () => Promise<void>;
 };
 
 export function useCommandRegistry({
+  workspaceMode,
   libraryRoot,
   recentDocuments,
   activeDocument,
@@ -67,6 +71,8 @@ export function useCommandRegistry({
   openLibraryFolder,
   openDocumentById,
   openSearch,
+  openNotesNavigation,
+  createStandaloneNote,
   renameNote,
   copyAllNoteText
 }: UseCommandRegistryArgs) {
@@ -139,6 +145,122 @@ export function useCommandRegistry({
       savedMarks,
       viewerSnapshot.currentPage
     );
+
+    const libraryCommands = [
+      {
+        id: "import-pdf",
+        title: "Import PDF",
+        subtitle: "Copy a local PDF into a collection",
+        glyph: "file-plus",
+        group: "library",
+        keywords: ["open file add pdf import"],
+        onSelect: async () => {
+          closePalette();
+          await promptImportFlow();
+        }
+      },
+      {
+        id: "open-library-folder",
+        title: "Open library folder",
+        subtitle: libraryRoot || "Open the Reader library in File Explorer",
+        glyph: "folder-open",
+        group: "library",
+        keywords: ["library explorer folder root open"],
+        onSelect: async () => {
+          closePalette();
+          await openLibraryFolder();
+        }
+      },
+      {
+        id: "rescan-library",
+        title: "Rescan library",
+        subtitle: "Refresh the app index from the current folder structure",
+        glyph: "refresh",
+        group: "library",
+        keywords: ["rescan refresh sync explorer"],
+        onSelect: async () => {
+          closePalette();
+          await rescanLibraryFlow();
+        }
+      }
+    ] satisfies PaletteItem[];
+
+    const noteCommands = [
+      {
+        id: "rename-note",
+        title: "Rename note",
+        subtitle: noteTitle?.trim().length ? noteTitle : "Rename the current note",
+        glyph: "page",
+        group: "view",
+        keywords: ["note rename title"],
+        onSelect: () => {
+          openPrompt(
+            "Rename note",
+            "Note title",
+            "Rename",
+            async (value) => {
+              await renameNote(value);
+            },
+            noteTitle ?? ""
+          );
+        }
+      },
+      {
+        id: "copy-note-text",
+        title: "Copy all text",
+        subtitle: "Copy the entire current note",
+        glyph: "book",
+        group: "view",
+        keywords: ["copy note text clipboard"],
+        onSelect: async () => {
+          closePalette();
+          await copyAllNoteText();
+        }
+      }
+    ] satisfies PaletteItem[];
+
+    if (workspaceMode === "notes") {
+      return [
+        {
+          id: "find-notes",
+          title: "Search notes",
+          subtitle: "Search standalone notes",
+          glyph: "search",
+          group: "navigation",
+          keywords: ["search find notes standalone"],
+          onSelect: () => {
+            closePalette();
+            openSearch();
+          }
+        },
+        {
+          id: "open-note-navigation",
+          title: "Open note navigation",
+          subtitle: "Jump between headings in the current note",
+          glyph: "panel",
+          group: "navigation",
+          keywords: ["note headings outline navigation"],
+          onSelect: () => {
+            closePalette();
+            openNotesNavigation();
+          }
+        },
+        {
+          id: "create-note",
+          title: "Create note",
+          subtitle: "Start a new standalone note",
+          glyph: "file-plus",
+          group: "view",
+          keywords: ["new create note standalone"],
+          onSelect: async () => {
+            closePalette();
+            await createStandaloneNote();
+          }
+        },
+        ...noteCommands,
+        ...libraryCommands
+      ] satisfies PaletteItem[];
+    }
 
     return [
       {
@@ -272,79 +394,16 @@ export function useCommandRegistry({
           openSelection("Marks", markItems, "No marks in this document yet.");
         }
       },
-      {
-        id: "rename-note",
-        title: "Rename note",
-        subtitle: noteTitle?.trim().length ? noteTitle : "Rename the current note",
-        glyph: "page",
-        group: "view",
-        keywords: ["note rename title"],
-        onSelect: () => {
-          openPrompt(
-            "Rename note",
-            "Note title",
-            "Rename",
-            async (value) => {
-              await renameNote(value);
-            },
-            noteTitle ?? ""
-          );
-        }
-      },
-      {
-        id: "copy-note-text",
-        title: "Copy all text",
-        subtitle: "Copy the entire current note",
-        glyph: "book",
-        group: "view",
-        keywords: ["copy note text clipboard"],
-        onSelect: async () => {
-          closePalette();
-          await copyAllNoteText();
-        }
-      },
-      {
-        id: "import-pdf",
-        title: "Import PDF",
-        subtitle: "Copy a local PDF into a collection",
-        glyph: "file-plus",
-        group: "library",
-        keywords: ["open file add pdf import"],
-        onSelect: async () => {
-          closePalette();
-          await promptImportFlow();
-        }
-      },
-      {
-        id: "open-library-folder",
-        title: "Open library folder",
-        subtitle: libraryRoot || "Open the Reader library in File Explorer",
-        glyph: "folder-open",
-        group: "library",
-        keywords: ["library explorer folder root open"],
-        onSelect: async () => {
-          closePalette();
-          await openLibraryFolder();
-        }
-      },
-      {
-        id: "rescan-library",
-        title: "Rescan library",
-        subtitle: "Refresh the app index from the current folder structure",
-        glyph: "refresh",
-        group: "library",
-        keywords: ["rescan refresh sync explorer"],
-        onSelect: async () => {
-          closePalette();
-          await rescanLibraryFlow();
-        }
-      }
+      ...noteCommands,
+      ...libraryCommands
     ] satisfies PaletteItem[];
   }, [
     closePalette,
     copyAllNoteText,
+    createStandaloneNote,
     libraryRoot,
     noteTitle,
+    openNotesNavigation,
     openDocumentById,
     openLibraryFolder,
     openPrompt,
@@ -360,6 +419,7 @@ export function useCommandRegistry({
     setStatusMessage,
     viewerApiRef,
     viewerOrStatus,
-    viewerSnapshot
+    viewerSnapshot,
+    workspaceMode
   ]);
 }
