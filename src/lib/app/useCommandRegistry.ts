@@ -16,7 +16,7 @@ import type {
 import { makeBookmark } from "./helpers";
 
 type UseCommandRegistryArgs = {
-  workspaceMode: "reader" | "collection" | "notes";
+  workspaceMode: "reader" | "collection" | "notes" | "book";
   libraryRoot: string;
   recentDocuments: DocumentRecord[];
   activeDocument: DocumentPayload | null;
@@ -262,7 +262,7 @@ export function useCommandRegistry({
       ] satisfies PaletteItem[];
     }
 
-    return [
+    const documentCommands = [
       {
         id: "go-to-page",
         title: "Go to page",
@@ -394,6 +394,15 @@ export function useCommandRegistry({
           openSelection("Marks", markItems, "No marks in this document yet.");
         }
       },
+      ...libraryCommands
+    ] satisfies PaletteItem[];
+
+    if (workspaceMode === "book") {
+      return documentCommands;
+    }
+
+    return [
+      ...documentCommands.slice(0, -libraryCommands.length),
       ...noteCommands,
       ...libraryCommands
     ] satisfies PaletteItem[];

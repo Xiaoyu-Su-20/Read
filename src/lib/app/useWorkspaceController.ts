@@ -41,7 +41,7 @@ import {
 } from "../types";
 import { toCollectionOptions } from "./helpers";
 
-type WorkspaceMode = "reader" | "collection" | "notes";
+type WorkspaceMode = "reader" | "collection" | "notes" | "book";
 type LibrarySelection = "collections" | "notes";
 
 type PersistedWorkspaceSession = {
@@ -79,7 +79,8 @@ function readPersistedWorkspaceSession(): PersistedWorkspaceSession {
       workspaceMode:
         parsed.workspaceMode === "reader" ||
         parsed.workspaceMode === "collection" ||
-        parsed.workspaceMode === "notes"
+        parsed.workspaceMode === "notes" ||
+        parsed.workspaceMode === "book"
           ? parsed.workspaceMode
           : "collection"
     };
@@ -95,6 +96,7 @@ function readPersistedWorkspaceSession(): PersistedWorkspaceSession {
 type OpenDocumentOptions = {
   refreshLibrary?: boolean;
   source?: ReaderSession["source"];
+  targetMode?: "reader" | "book";
 };
 
 type ReaderOpenSession = {
@@ -352,7 +354,7 @@ export function useWorkspaceController() {
           setSelectedCollectionId(payload.document.folderId);
           setSelectedLibrarySection("collections");
           setStatusMessage(`Opened ${payload.document.title}.`);
-          setWorkspaceModeState("reader");
+          setWorkspaceModeState(options?.targetMode ?? "reader");
           debugAction("reader.open:active-document-committed", {
             documentId: payload.document.id,
             openSessionId: openSession.openSessionId,
@@ -422,6 +424,11 @@ export function useWorkspaceController() {
 
   const setWorkspaceMode = useCallback((nextMode: WorkspaceMode) => {
     setWorkspaceModeState(nextMode);
+  }, []);
+
+  const enterBookMode = useCallback(() => {
+    setSelectedLibrarySection("collections");
+    setWorkspaceModeState("book");
   }, []);
 
   const showCollectionsWorkspace = useCallback(() => {
@@ -514,10 +521,13 @@ export function useWorkspaceController() {
       });
 
       const moved = await moveDocument(activeDocument.document.id, destinationFolderId);
-      await handleOpenDocument(moved.id, { refreshLibrary: true });
+      await handleOpenDocument(moved.id, {
+        refreshLibrary: true,
+        targetMode: workspaceMode === "book" ? "book" : "reader"
+      });
       return moved;
     },
-    [activeDocument, handleOpenDocument]
+    [activeDocument, handleOpenDocument, workspaceMode]
   );
 
   const moveDocumentInLibrary = useCallback(
@@ -581,11 +591,14 @@ export function useWorkspaceController() {
       });
 
       const renamed = await renameDocument(activeDocument.document.id, newName);
-      await handleOpenDocument(renamed.id, { refreshLibrary: true });
+      await handleOpenDocument(renamed.id, {
+        refreshLibrary: true,
+        targetMode: workspaceMode === "book" ? "book" : "reader"
+      });
       setStatusMessage(`Renamed to ${renamed.fileName}.`);
       return renamed;
     },
-    [activeDocument, handleOpenDocument]
+    [activeDocument, handleOpenDocument, workspaceMode]
   );
 
   const renameCollection = useCallback(
@@ -629,11 +642,14 @@ export function useWorkspaceController() {
       await refreshLibraryState({ rescan: true });
       setSelectedCollectionId(renamed.folderId);
       if (activeDocumentId === documentId) {
-        await handleOpenDocument(renamed.id, { refreshLibrary: false });
+        await handleOpenDocument(renamed.id, {
+          refreshLibrary: false,
+          targetMode: workspaceMode === "book" ? "book" : "reader"
+        });
       }
       return renamed;
     },
-    [activeDocumentId, handleOpenDocument, refreshLibraryState]
+    [activeDocumentId, handleOpenDocument, refreshLibraryState, workspaceMode]
   );
 
   const deleteDocumentInLibrary = useCallback(
@@ -775,6 +791,7 @@ export function useWorkspaceController() {
     viewerApiRef,
     viewerApi,
     setWorkspaceMode,
+    enterBookMode,
     showCollectionsWorkspace,
     setSelectedCollectionId: selectCollectionInLibrary,
     setStatusMessage,

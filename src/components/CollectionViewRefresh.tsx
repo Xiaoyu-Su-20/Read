@@ -54,7 +54,7 @@ type CollectionViewRefreshProps = {
   onCreateCollection: () => void | Promise<void>;
   onRenameCollection: (collectionId: string, nextName: string) => void | Promise<void>;
   onDeleteCollection: (collectionId: string) => void | Promise<void>;
-  onOpenDocument: (documentId: string) => void | Promise<void>;
+  onOpenDocument: (documentId: string, targetMode?: "reader" | "book") => void | Promise<void>;
   onRenameDocument: (documentId: string, nextName: string) => void | Promise<void>;
   onPromptImportCollection: (collectionId: string) => void | Promise<void>;
   onImportDocuments: (collectionId: string, sourcePaths: string[]) => void | Promise<void>;
@@ -1514,8 +1514,11 @@ export default function CollectionViewRefresh({
 
           closeDocumentMenu();
           switch (resolution.effect) {
-            case "open":
-              void onOpenDocument(document.id);
+            case "open-reader":
+              void onOpenDocument(document.id, "reader");
+              return;
+            case "open-book":
+              void onOpenDocument(document.id, "book");
               return;
             case "rename":
               suppressBookActivation();
@@ -2432,7 +2435,7 @@ export default function CollectionViewRefresh({
                         skipNextDocumentActivationRef.current = false;
                         return;
                       }
-                      void onOpenDocument(document.id);
+                      void onOpenDocument(document.id, "reader");
                     }}
                     onKeyDown={(event) => {
                       if (
@@ -2449,7 +2452,7 @@ export default function CollectionViewRefresh({
 
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        void onOpenDocument(document.id);
+                        void onOpenDocument(document.id, "reader");
                       }
                     }}
                   >

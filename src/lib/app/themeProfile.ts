@@ -512,13 +512,13 @@ export const builtinThemeDefinitions: ThemeDefinition[] = [
     name: "Sepia",
     kind: "builtin",
     source: {
-      chrome: "#2b241d",
-      uiText: "#2d241a",
-      documentPaper: "#e7d9bb",
-      documentInk: "#3c2d1b",
-      accent: "#9d7646",
-      interactive: "#7e95c4",
-      danger: "#b16255"
+      chrome: "#211b16",
+      uiText: "#d7c5a8",
+      documentPaper: "#eadcbd",
+      documentInk: "#3a2c1d",
+      accent: "#c28a45",
+      interactive: "#a87945",
+      danger: "#bd6758"
     },
     document: {
       surfaceTone: "light"
@@ -713,10 +713,13 @@ export function createViewerDisplayConfig(themeDefinition: ThemeDefinition): Vie
     mode: themeDefinition.document.surfaceTone,
     paperColor: themeDefinition.source.documentPaper,
     inkColor: themeDefinition.source.documentInk,
-    imageFilter: createViewerFilterRecipe(
-      themeDefinition.source,
-      themeDefinition.document.surfaceTone
-    ),
+    imageFilter:
+      themeDefinition.document.surfaceTone === "light"
+        ? "none"
+        : createViewerFilterRecipe(
+            themeDefinition.source,
+            themeDefinition.document.surfaceTone
+          ),
     blendMode: themeDefinition.document.surfaceTone === "dark" ? "screen" : "multiply"
   };
 }
@@ -724,18 +727,18 @@ export function createViewerDisplayConfig(themeDefinition: ThemeDefinition): Vie
 export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
   const { source } = themeDefinition;
   const workspaceBase = source.chrome;
+  const textPrimary = ensureReadableTextColor(source.uiText, workspaceBase, 4.5);
   const workspaceElevated = darken(lighten(source.chrome, 0.02), 0.02);
-  const raisedSurfaceFamily = createRaisedSurfaceFamily(workspaceBase, source.uiText);
+  const raisedSurfaceFamily = createRaisedSurfaceFamily(workspaceBase, textPrimary);
   const chromeSurface = withAlpha(source.chrome, 0.9);
   const chromeSurfaceStrong = withAlpha(darken(source.chrome, 0.06), 0.96);
   const chromeBorder = lighten(source.chrome, 0.08);
-  const textPrimary = source.uiText;
-  const textSecondary = withAlpha(source.uiText, 0.72);
-  const textMuted = withAlpha(source.uiText, 0.52);
-  const iconColor = withAlpha(source.uiText, 0.86);
+  const textSecondary = withAlpha(textPrimary, 0.72);
+  const textMuted = withAlpha(textPrimary, 0.52);
+  const iconColor = withAlpha(textPrimary, 0.86);
   const accentPrimary = source.accent;
   const accentSoft = withAlpha(source.accent, 0.18);
-  const interactiveHover = withAlpha(source.uiText, 0.05);
+  const interactiveHover = withAlpha(textPrimary, 0.05);
   const interactiveActive = withAlpha(source.interactive, 0.22);
   const switchOn = withAlpha(source.interactive, 0.9);
   const focusRing = withAlpha(lighten(source.interactive, 0.22), 0.62);
@@ -748,18 +751,18 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
   const overlaySurfaceSelected = raisedSurfaceFamily.selected;
   const overlayShadow = raisedSurfaceFamily.shadow;
   const selectionBackground = withAlpha(source.interactive, 0.32);
-  const selectionText = ensureReadableTextColor(source.uiText, source.interactive, 4);
+  const selectionText = ensureReadableTextColor(textPrimary, source.interactive, 4);
   const pageLinkBackground = withAlpha(source.interactive, 0.13);
   const pageLinkBorder = withAlpha(source.interactive, 0.2);
-  const pageLinkText = withAlpha(source.uiText, 0.86);
+  const pageLinkText = withAlpha(textPrimary, 0.88);
   const pageLinkHoverBackground = withAlpha(source.interactive, 0.2);
   const pageLinkHoverBorder = withAlpha(source.interactive, 0.24);
   const pageLinkSelectedBackground = withAlpha(source.interactive, 0.28);
   const pageLinkSelectedBorder = withAlpha(source.interactive, 0.38);
-  const pageLinkSelectedText = withAlpha(source.uiText, 0.94);
+  const pageLinkSelectedText = withAlpha(textPrimary, 0.96);
   const readerStatusSurface = withAlpha(mixColors(source.chrome, darken(source.chrome, 0.18), 0.42), 0.88);
-  const readerStatusBorder = withAlpha(lighten(source.uiText, 0.08), 0.12);
-  const readerStatusText = withAlpha(source.uiText, 0.74);
+  const readerStatusBorder = withAlpha(lighten(textPrimary, 0.08), 0.12);
+  const readerStatusText = withAlpha(textPrimary, 0.74);
   const readerStatusErrorBase = mixColors(source.danger, source.chrome, 0.42);
   const readerStatusErrorSurface = withAlpha(readerStatusErrorBase, 0.9);
   const readerStatusErrorBorder = withAlpha(lighten(source.danger, 0.2), 0.22);
@@ -767,84 +770,84 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
   const readerStatusDebugBase = mixColors(source.interactive, source.chrome, 0.34);
   const readerStatusDebugSurface = withAlpha(readerStatusDebugBase, 0.92);
   const readerStatusDebugBorder = withAlpha(lighten(source.interactive, 0.16), 0.2);
-  const readerStatusDebugText = ensureReadableTextColor(lighten(source.uiText, 0.08), readerStatusDebugBase, 4.2);
+  const readerStatusDebugText = ensureReadableTextColor(lighten(textPrimary, 0.08), readerStatusDebugBase, 4.2);
   const rapidTurnSurfaceBase = darken(source.chrome, themeDefinition.document.surfaceTone === "light" ? 0.18 : 0.1);
   const rapidTurnSurface = withAlpha(rapidTurnSurfaceBase, 0.9);
-  const rapidTurnBorder = withAlpha(lighten(source.uiText, 0.1), 0.14);
-  const rapidTurnText = ensureReadableTextColor(lighten(source.uiText, 0.18), rapidTurnSurfaceBase, 4.5);
+  const rapidTurnBorder = withAlpha(lighten(textPrimary, 0.1), 0.14);
+  const rapidTurnText = ensureReadableTextColor(lighten(textPrimary, 0.18), rapidTurnSurfaceBase, 4.5);
   const rapidTurnTrack = withAlpha(rapidTurnText, 0.14);
   const rapidTurnProgressStart = lighten(source.accent, 0.04);
   const rapidTurnProgressEnd = mixColors(lighten(source.accent, 0.08), lighten(source.interactive, 0.12), 0.44);
   const rapidTurnMetaText = withAlpha(rapidTurnText, 0.78);
   const rapidTurnShadow = `0 18px 44px ${withAlpha(darken(source.chrome, 0.32), 0.26)}`;
-  const searchPlaceholderText = withAlpha(lighten(source.uiText, 0.02), 0.58);
+  const searchPlaceholderText = withAlpha(lighten(textPrimary, 0.02), 0.58);
   const searchActionText = withAlpha(lighten(source.interactive, 0.1), 0.96);
-  const searchActionMuted = withAlpha(lighten(source.uiText, 0.06), 0.72);
-  const searchEmptyText = withAlpha(lighten(source.uiText, 0.04), 0.6);
+  const searchActionMuted = withAlpha(lighten(textPrimary, 0.06), 0.72);
+  const searchEmptyText = withAlpha(lighten(textPrimary, 0.04), 0.6);
   const collectionPanelSurface = withAlpha(lighten(source.chrome, 0.02), 0.34);
   const collectionCardSurface = withAlpha(lighten(source.chrome, 0.03), 0.24);
-  const collectionCardBorder = withAlpha(lighten(source.uiText, 0.08), 0.08);
+  const collectionCardBorder = withAlpha(lighten(textPrimary, 0.08), 0.08);
   const collectionAddBorder = withAlpha(lighten(source.interactive, 0.12), 0.18);
   const collectionAddBorderHover = withAlpha(lighten(source.interactive, 0.16), 0.26);
   const collectionAddSurfaceStart = withAlpha(mixColors(source.interactive, source.chrome, 0.26), 0.34);
   const collectionAddSurfaceEnd = withAlpha(mixColors(darken(source.chrome, 0.04), source.interactive, 0.12), 0.22);
   const collectionAddSurfaceHoverStart = withAlpha(mixColors(source.interactive, source.chrome, 0.32), 0.42);
   const collectionAddSurfaceHoverEnd = withAlpha(mixColors(darken(source.chrome, 0.06), source.interactive, 0.16), 0.28);
-  const collectionAddInset = withAlpha(lighten(source.uiText, 0.14), 0.04);
+  const collectionAddInset = withAlpha(lighten(textPrimary, 0.14), 0.04);
   const collectionAddShadow = `0 10px 24px ${withAlpha(darken(source.chrome, 0.3), 0.16)}`;
-  const collectionRowSeparator = withAlpha(lighten(source.uiText, 0.04), 0.05);
-  const collectionRowHover = withAlpha(lighten(source.uiText, 0.04), 0.03);
+  const collectionRowSeparator = withAlpha(lighten(textPrimary, 0.04), 0.05);
+  const collectionRowHover = withAlpha(lighten(textPrimary, 0.04), 0.03);
   const collectionRowActive = withAlpha(source.interactive, 0.22);
-  const collectionRowIcon = withAlpha(mixColors(lighten(source.interactive, 0.1), source.uiText, 0.4), 0.9);
-  const collectionRowCount = withAlpha(lighten(source.uiText, 0.08), 0.72);
-  const collectionActionHover = withAlpha(lighten(source.uiText, 0.08), 0.06);
-  const collectionActionDisabled = withAlpha(lighten(source.uiText, 0.14), 0.42);
+  const collectionRowIcon = withAlpha(mixColors(lighten(source.interactive, 0.1), textPrimary, 0.4), 0.9);
+  const collectionRowCount = withAlpha(lighten(textPrimary, 0.08), 0.72);
+  const collectionActionHover = withAlpha(lighten(textPrimary, 0.08), 0.06);
+  const collectionActionDisabled = withAlpha(lighten(textPrimary, 0.14), 0.42);
   const collectionDangerText = ensureReadableTextColor(lighten(source.danger, 0.36), source.danger, 3.8);
   const collectionDangerHover = withAlpha(source.danger, 0.14);
   const collectionTooltipSurface = overlaySurfaceStrong;
   const collectionTooltipBorder = overlayBorder;
-  const collectionTooltipText = withAlpha(lighten(source.uiText, 0.08), 0.84);
-  const collectionTooltipTitle = withAlpha(lighten(source.uiText, 0.14), 0.96);
-  const collectionTooltipHelp = withAlpha(lighten(source.uiText, 0.08), 0.68);
+  const collectionTooltipText = withAlpha(lighten(textPrimary, 0.08), 0.84);
+  const collectionTooltipTitle = withAlpha(lighten(textPrimary, 0.14), 0.96);
+  const collectionTooltipHelp = withAlpha(lighten(textPrimary, 0.08), 0.68);
   const collectionTooltipShadow = `0 18px 36px ${withAlpha(darken(source.chrome, 0.34), 0.34)}`;
-  const collectionMenuButtonSurface = withAlpha(lighten(source.uiText, 0.08), 0.08);
-  const collectionMenuButtonHover = withAlpha(lighten(source.uiText, 0.12), 0.13);
-  const collectionMenuButtonGhost = withAlpha(lighten(source.uiText, 0.06), 0.05);
+  const collectionMenuButtonSurface = withAlpha(lighten(textPrimary, 0.08), 0.08);
+  const collectionMenuButtonHover = withAlpha(lighten(textPrimary, 0.12), 0.13);
+  const collectionMenuButtonGhost = withAlpha(lighten(textPrimary, 0.06), 0.05);
   const collectionMenuButtonDanger = withAlpha(source.danger, 0.18);
   const collectionMenuButtonDangerHover = withAlpha(source.danger, 0.28);
-  const collectionBookRowSeparator = withAlpha(lighten(source.uiText, 0.02), 0.035);
-  const collectionBookRowHover = withAlpha(lighten(source.uiText, 0.04), 0.03);
-  const settingsNavText = withAlpha(lighten(source.uiText, 0.08), 0.72);
-  const settingsNavTextActive = lighten(source.uiText, 0.16);
-  const settingsLabelText = withAlpha(lighten(source.uiText, 0.06), 0.88);
-  const settingsMutedText = withAlpha(lighten(source.uiText, 0.08), 0.68);
-  const settingsControlBg = withAlpha(source.uiText, 0.04);
-  const settingsControlBgHover = withAlpha(source.uiText, 0.07);
-  const settingsControlBorder = withAlpha(source.uiText, 0.09);
-  const settingsControlText = withAlpha(lighten(source.uiText, 0.12), 0.92);
+  const collectionBookRowSeparator = withAlpha(lighten(textPrimary, 0.02), 0.035);
+  const collectionBookRowHover = withAlpha(lighten(textPrimary, 0.04), 0.03);
+  const settingsNavText = withAlpha(lighten(textPrimary, 0.08), 0.72);
+  const settingsNavTextActive = lighten(textPrimary, 0.16);
+  const settingsLabelText = withAlpha(lighten(textPrimary, 0.06), 0.88);
+  const settingsMutedText = withAlpha(lighten(textPrimary, 0.08), 0.68);
+  const settingsControlBg = withAlpha(textPrimary, 0.04);
+  const settingsControlBgHover = withAlpha(textPrimary, 0.07);
+  const settingsControlBorder = withAlpha(textPrimary, 0.09);
+  const settingsControlText = withAlpha(lighten(textPrimary, 0.12), 0.92);
   const settingsAccentSurface = withAlpha(source.interactive, 0.22);
   const settingsAccentSurfaceStrong = withAlpha(source.interactive, 0.24);
   const settingsAccentBorder = withAlpha(lighten(source.interactive, 0.16), 0.28);
   const settingsAccentFocus = focusRing;
   const settingsAccentFocusRing = withAlpha(lighten(source.interactive, 0.24), 0.16);
-  const settingsSwitchOff = withAlpha(source.uiText, 0.18);
-  const settingsSwitchHandle = lighten(source.uiText, 0.18);
-  const splitterLine = withAlpha(lighten(source.uiText, 0.1), 0.18);
-  const splitterLineActive = withAlpha(lighten(source.uiText, 0.16), 0.34);
-  const splitterGripBorder = withAlpha(lighten(source.uiText, 0.12), 0.18);
-  const splitterGripBorderActive = withAlpha(lighten(source.uiText, 0.16), 0.3);
+  const settingsSwitchOff = withAlpha(textPrimary, 0.18);
+  const settingsSwitchHandle = lighten(textPrimary, 0.18);
+  const splitterLine = withAlpha(lighten(textPrimary, 0.1), 0.18);
+  const splitterLineActive = withAlpha(lighten(textPrimary, 0.16), 0.34);
+  const splitterGripBorder = withAlpha(lighten(textPrimary, 0.12), 0.18);
+  const splitterGripBorderActive = withAlpha(lighten(textPrimary, 0.16), 0.3);
   const splitterGripSurfaceStart = withAlpha(lighten(source.chrome, 0.12), 0.98);
   const splitterGripSurfaceEnd = withAlpha(darken(source.chrome, 0.02), 0.98);
   const splitterGripShadow = `0 4px 12px ${withAlpha(darken(source.chrome, 0.28), 0.22)}`;
   const splitterGripShadowActive = `0 6px 14px ${withAlpha(darken(source.chrome, 0.34), 0.28)}`;
-  const splitterGripInset = `inset 0 1px 0 ${withAlpha(lighten(source.uiText, 0.14), 0.04)}`;
-  const splitterGripInsetActive = `inset 0 1px 0 ${withAlpha(lighten(source.uiText, 0.18), 0.06)}`;
-  const splitterDot = withAlpha(lighten(source.uiText, 0.04), 0.55);
-  const splitterDotActive = withAlpha(lighten(source.uiText, 0.14), 0.82);
-  const readerHeaderDivider = withAlpha(lighten(source.uiText, 0.08), 0.2);
+  const splitterGripInset = `inset 0 1px 0 ${withAlpha(lighten(textPrimary, 0.14), 0.04)}`;
+  const splitterGripInsetActive = `inset 0 1px 0 ${withAlpha(lighten(textPrimary, 0.18), 0.06)}`;
+  const splitterDot = withAlpha(lighten(textPrimary, 0.04), 0.55);
+  const splitterDotActive = withAlpha(lighten(textPrimary, 0.14), 0.82);
+  const readerHeaderDivider = withAlpha(lighten(textPrimary, 0.08), 0.2);
   const notesSurface = withAlpha(source.chrome, 0.9);
-  const notesText = lighten(source.uiText, 0.1);
-  const notesMuted = withAlpha(lighten(source.uiText, 0.12), 0.76);
+  const notesText = lighten(textPrimary, 0.1);
+  const notesMuted = withAlpha(lighten(textPrimary, 0.12), 0.76);
   const dangerSurface = withAlpha(source.danger, 0.18);
   const dangerSurfaceStrong = withAlpha(source.danger, 0.85);
   const dangerText = lighten(source.danger, 0.36);
@@ -874,14 +877,14 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
     cssVariables: {
       "--theme-workspace": workspaceBase,
       "--theme-chrome": source.chrome,
-      "--theme-ui-text": source.uiText,
+      "--theme-ui-text": textPrimary,
       "--theme-document-paper": source.documentPaper,
       "--theme-document-ink": source.documentInk,
       "--theme-accent": source.accent,
       "--theme-interactive": source.interactive,
       "--theme-danger": source.danger,
       "--theme-paper": source.documentPaper,
-      "--theme-text": source.uiText,
+      "--theme-text": textPrimary,
       "--workspace-base": workspaceBase,
       "--workspace-elevated": workspaceElevated,
       "--chrome-surface": chromeSurface,

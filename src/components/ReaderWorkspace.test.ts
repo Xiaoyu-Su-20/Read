@@ -177,6 +177,18 @@ function collectElements(node: unknown): Array<ReactElement<{ [key: string]: unk
   }
 
   const element = node as ReactElement<{ [key: string]: unknown }>;
+  const componentType = element.type as {
+    name?: string;
+    displayName?: string;
+    (props: { [key: string]: unknown }): unknown;
+  };
+  if (
+    typeof element.type === "function" &&
+    (componentType.name === "DocumentWorkspaceHeader" ||
+      componentType.displayName === "DocumentWorkspaceHeader")
+  ) {
+    return collectElements(componentType(element.props));
+  }
   return [element, ...collectElements(element.props.children)];
 }
 

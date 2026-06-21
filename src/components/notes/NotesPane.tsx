@@ -29,6 +29,7 @@ import {
 } from "./context-menu/useContextMenuController";
 import NoteEditor, { type NoteEditorHandle } from "./NoteEditor";
 import NoteTitleField from "./NoteTitleField";
+import WorkspaceHeaderTools from "../WorkspaceHeaderTools";
 
 type NotesPaneProps = {
   note: NoteDocument | null;
@@ -75,60 +76,6 @@ function NavigationButton({
         <path d="M5 7h14" />
         <path d="M5 12h10" />
         <path d="M5 17h14" />
-      </svg>
-    </button>
-  );
-}
-
-function NotesMoreMenuButton({
-  open,
-  onToggle,
-  buttonRef
-}: {
-  open: boolean;
-  onToggle: () => void;
-  buttonRef: (node: HTMLButtonElement | null) => void;
-}) {
-  return (
-    <button
-      ref={buttonRef}
-      className={`notes-header-action${open ? " notes-header-action--active" : ""}`}
-      type="button"
-      aria-label="Open command palette"
-      aria-expanded={open}
-      onClick={onToggle}
-    >
-      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-        <circle cx="6.5" cy="12" r="1.4" />
-        <circle cx="12" cy="12" r="1.4" />
-        <circle cx="17.5" cy="12" r="1.4" />
-      </svg>
-    </button>
-  );
-}
-
-function FullscreenButton({
-  fullscreen,
-  onToggle
-}: {
-  fullscreen: boolean;
-  onToggle: () => void | Promise<void>;
-}) {
-  return (
-    <button
-      className={`notes-header-action notes-header-action--fullscreen${fullscreen ? " notes-header-action--active" : ""}`}
-      type="button"
-      aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-      aria-pressed={fullscreen}
-      onClick={() => {
-        void onToggle();
-      }}
-    >
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
-        <path d="M9 5.75H5.75V9" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M15 5.75h3.25V9" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M9 18.25H5.75V15" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M15 18.25h3.25V15" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     </button>
   );
@@ -1035,17 +982,28 @@ const NotesPane = memo(function NotesPane({
   }, []);
 
   const notesHeaderTools = (
-    <div className="notes-header-tools">
-      <div className="notes-header-tools__item">
-        <NavigationButton
-          open={navigationOpen}
-          onToggle={() => {
-            closeMenu();
-            setPageLinkDialog(null);
-            setNavigationOpen((current) => !current);
-          }}
-        />
-        {navigationOpen ? (
+    <WorkspaceHeaderTools
+      commandPaletteOpen={commandPaletteOpen}
+      registerCommandPaletteAnchor={registerCommandPaletteAnchor}
+      onToggleCommandPalette={() => {
+        closeMenu();
+        setNavigationOpen(false);
+        setPageLinkDialog(null);
+        onToggleCommandPalette();
+      }}
+      fullscreen={fullscreen}
+      onToggleFullscreen={onToggleFullscreen}
+      leading={
+        <>
+          <NavigationButton
+            open={navigationOpen}
+            onToggle={() => {
+              closeMenu();
+              setPageLinkDialog(null);
+              setNavigationOpen((current) => !current);
+            }}
+          />
+          {navigationOpen ? (
           <div className="notes-popover notes-popover--navigation">
             <div className="notes-popover__header notes-popover__header--navigation">
               <span className="notes-popover__header-icon" aria-hidden="true">
@@ -1120,26 +1078,10 @@ const NotesPane = memo(function NotesPane({
               </div>
             )}
           </div>
-        ) : null}
-      </div>
-
-      <div className="notes-header-tools__item">
-        <NotesMoreMenuButton
-          open={commandPaletteOpen}
-          buttonRef={registerCommandPaletteAnchor}
-          onToggle={() => {
-            closeMenu();
-            setNavigationOpen(false);
-            setPageLinkDialog(null);
-            onToggleCommandPalette();
-          }}
-        />
-      </div>
-
-      <div className="notes-header-tools__item notes-header-tools__item--fullscreen">
-        <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
-      </div>
-    </div>
+          ) : null}
+        </>
+      }
+    />
   );
 
   return (

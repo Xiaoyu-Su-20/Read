@@ -72,6 +72,29 @@
   --rapid-turn-meta-text: rgba(216, 216, 216, 0.76);
   --rapid-turn-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
   --search-placeholder-text: #84909a;
+  --search-field-border: color-mix(
+    in srgb,
+    var(--overlay-border) 58%,
+    var(--text-secondary)
+  );
+  --search-field-background: color-mix(
+    in srgb,
+    var(--overlay-surface) 24%,
+    transparent
+  );
+  --search-field-shadow:
+    0 8px 22px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --search-field-focus-border: color-mix(
+    in srgb,
+    var(--theme-interactive) 55%,
+    rgba(255, 255, 255, 0.32)
+  );
+  --search-field-focus-shadow: 0 0 0 1px color-mix(
+    in srgb,
+    var(--theme-interactive) 18%,
+    transparent
+  );
   --search-action-text: #79b9ff;
   --search-action-muted: #aab3bb;
   --search-empty-text: #929ca5;
@@ -2066,6 +2089,7 @@ button {
 
 .reader-workspace__toolbar-side--right {
   justify-self: end;
+  overflow: visible;
 }
 
 .reader-workspace__header-left {
@@ -2171,8 +2195,8 @@ button {
 }
 
 .reader-workspace__header-center .workspace-search__field svg {
-  width: 1.0625rem;
-  height: 1.0625rem;
+  width: 1.275rem;
+  height: 1.275rem;
 }
 
 .reader-workspace__notes-header-tools {
@@ -2182,6 +2206,7 @@ button {
   flex: 0 0 auto;
   gap: 1.5rem;
   min-width: 0;
+  overflow: visible;
   padding-right: calc(var(--app-window-controls-width) + 0.4rem);
 }
 
@@ -2223,15 +2248,15 @@ button {
 }
 
 .reader-workspace__header-button svg {
-  width: 1.0625rem;
-  height: 1.0625rem;
+  width: 1.275rem;
+  height: 1.275rem;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .reader-workspace__header-button.reader-workspace__header-button--lock svg {
-  width: 1.0625rem;
-  height: 1.0625rem;
+  width: 1.275rem;
+  height: 1.275rem;
 }
 
 @media (max-width: 1200px) {
@@ -2783,13 +2808,13 @@ body.reader-pane-resizing .notes-pane img {
 }
 
 .notes-header-action svg {
-  width: 1.0625rem;
-  height: 1.0625rem;
+  width: 1.275rem;
+  height: 1.275rem;
 }
 
 .notes-header-action--fullscreen svg {
-  width: 1.0625rem;
-  height: 1.0625rem;
+  width: 1.4rem;
+  height: 1.4rem;
 }
 
 .notes-popover {
@@ -3517,6 +3542,14 @@ body.reader-pane-resizing .notes-pane img {
 
 .reader-workspace__body--notes-only {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.reader-workspace__body--book-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.reader-workspace__document--only {
+  grid-column: 1;
 }
 
 .reader-workspace__notes--only {
@@ -4418,10 +4451,10 @@ body.reader-pane-resizing .notes-pane img {
   width: 100%;
   padding: 0 0.9rem;
   color: var(--text-secondary);
-  background: transparent;
-  border: 1px solid rgba(210, 222, 232, 0.72);
+  background: var(--search-field-background);
+  border: 1px solid var(--search-field-border);
   border-radius: 0.65rem;
-  box-shadow: none;
+  box-shadow: var(--search-field-shadow);
   transition:
     border-color 140ms ease,
     box-shadow 140ms ease,
@@ -4431,14 +4464,14 @@ body.reader-pane-resizing .notes-pane img {
 
 .workspace-search__field:focus-within {
   color: var(--text-primary);
-  border-color: color-mix(in srgb, var(--theme-interactive) 55%, rgba(255, 255, 255, 0.32));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-interactive) 18%, transparent);
+  border-color: var(--search-field-focus-border);
+  box-shadow: var(--search-field-focus-shadow);
 }
 
 .workspace-search__field--active {
   color: var(--text-primary);
-  border-color: color-mix(in srgb, var(--theme-interactive) 55%, rgba(255, 255, 255, 0.32));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-interactive) 18%, transparent);
+  border-color: var(--search-field-focus-border);
+  box-shadow: var(--search-field-focus-shadow);
 }
 
 .workspace-search__field--pulse {
@@ -4832,19 +4865,6 @@ body.reader-pane-resizing .notes-pane img {
   height: 3rem;
   padding: 0 1.15rem;
   border-radius: 1rem;
-  border-color: color-mix(
-    in srgb,
-    var(--overlay-border) 58%,
-    var(--text-secondary)
-  );
-  background: color-mix(
-    in srgb,
-    var(--overlay-surface) 24%,
-    transparent
-  );
-  box-shadow:
-    0 8px 22px rgba(0, 0, 0, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .workspace-search__field svg {

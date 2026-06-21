@@ -5,9 +5,12 @@ import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import { debugAction } from "../lib/debugLog";
 import type { DocumentState, OutlineItem, ReaderSession, ViewerApi, ViewerSnapshot } from "../lib/types";
 
-function toViewEventName(view: "reader" | "collection" | "notes") {
+function toViewEventName(view: "reader" | "collection" | "notes" | "book") {
   if (view === "reader") {
     return "document";
+  }
+  if (view === "book") {
+    return "book";
   }
   if (view === "notes") {
     return "notes";
@@ -18,9 +21,9 @@ function toViewEventName(view: "reader" | "collection" | "notes") {
 type ReaderViewportProps = {
   activeViewTransition: {
     clickStartedAtMs: number;
-    fromView: "reader" | "collection" | "notes";
+    fromView: "reader" | "collection" | "notes" | "book";
     source: string;
-    toView: "reader" | "collection" | "notes";
+    toView: "reader" | "collection" | "notes" | "book";
     viewTransitionId: string;
   } | null;
   readerSession: ReaderSession | null;

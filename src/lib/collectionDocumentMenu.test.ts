@@ -21,7 +21,8 @@ describe("collectionDocumentMenu", () => {
     });
 
     expect(entries.map((entry) => `${entry.kind}:${entry.id}`)).toEqual([
-      "action:open",
+      "action:open-reader",
+      "action:open-book",
       "action:rename",
       "action:move",
       "action:show-in-folder",
@@ -73,6 +74,32 @@ describe("collectionDocumentMenu", () => {
   });
 
   it("enters delete confirmation before invoking deletion", () => {
+    const openReader = resolveDocumentMenuAction({
+      view: "actions",
+      actionId: "open-reader",
+      deleteState: {
+        canDelete: true,
+        reason: null
+      }
+    });
+    expect(openReader).toEqual({
+      effect: "open-reader",
+      nextView: null
+    });
+
+    const openBook = resolveDocumentMenuAction({
+      view: "actions",
+      actionId: "open-book",
+      deleteState: {
+        canDelete: true,
+        reason: null
+      }
+    });
+    expect(openBook).toEqual({
+      effect: "open-book",
+      nextView: null
+    });
+
     const promptDelete = resolveDocumentMenuAction({
       view: "actions",
       actionId: "delete",

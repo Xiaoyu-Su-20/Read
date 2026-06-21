@@ -27,6 +27,12 @@ function relativeLuminance(color: string) {
   );
 }
 
+function contrastRatio(left: string, right: string) {
+  const lighter = Math.max(relativeLuminance(left), relativeLuminance(right));
+  const darker = Math.min(relativeLuminance(left), relativeLuminance(right));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 describe("themeProfile resolver", () => {
   it("derives semantic overlay, selection, and page-link tokens from theme sources", () => {
     const resolvedTheme = resolveTheme({
@@ -68,7 +74,7 @@ describe("themeProfile resolver", () => {
 
     expect(lightTheme.mode).toBe("light");
     expect(lightTheme.blendMode).toBe("multiply");
-    expect(lightTheme.imageFilter).not.toContain("invert(1)");
+    expect(lightTheme.imageFilter).toBe("none");
     expect(darkTheme.mode).toBe("dark");
     expect(darkTheme.blendMode).toBe("screen");
     expect(darkTheme.imageFilter).toContain("invert(1)");
@@ -84,5 +90,15 @@ describe("themeProfile resolver", () => {
     expect(relativeLuminance(darkResolved.overlaySurface)).toBeGreaterThan(
       relativeLuminance(builtinThemeDefinitions[1].source.chrome)
     );
+  });
+
+  it("keeps sepia workspace text readable against its chrome surface", () => {
+    const sepiaTheme = resolveTheme(
+      builtinThemeDefinitions.find((theme) => theme.id === "builtin-sepia")!
+    );
+
+    expect(contrastRatio(sepiaTheme.cssVariables["--theme-ui-text"], sepiaTheme.cssVariables["--theme-chrome"]))
+      .toBeGreaterThanOrEqual(4.5);
+    expect(sepiaTheme.viewerDisplayConfig.imageFilter).toBe("none");
   });
 });

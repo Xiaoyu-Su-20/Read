@@ -11,7 +11,8 @@ export type DocumentMenuEntry =
   | {
       kind: "action";
       id:
-        | "open"
+        | "open-reader"
+        | "open-book"
         | "rename"
         | "move"
         | "show-in-folder"
@@ -31,7 +32,8 @@ export type DocumentMenuEntry =
 export type DocumentMenuResolution = {
   effect:
     | "none"
-    | "open"
+    | "open-reader"
+    | "open-book"
     | "rename"
     | "show-in-folder"
     | "delete"
@@ -85,8 +87,13 @@ export function buildDocumentMenuEntries(options: {
   return [
     {
       kind: "action",
-      id: "open",
-      label: "Open"
+      id: "open-reader",
+      label: "Open in reader mode"
+    },
+    {
+      kind: "action",
+      id: "open-book",
+      label: "Open in book mode"
     },
     {
       kind: "action",
@@ -123,7 +130,8 @@ export function buildDocumentMenuEntries(options: {
 export function resolveDocumentMenuAction(options: {
   view: DocumentMenuView;
   actionId:
-    | "open"
+    | "open-reader"
+    | "open-book"
     | "rename"
     | "move"
     | "show-in-folder"
@@ -166,8 +174,10 @@ export function resolveDocumentMenuAction(options: {
   }
 
   switch (actionId) {
-    case "open":
-      return { effect: "open", nextView: null };
+    case "open-reader":
+      return { effect: "open-reader", nextView: null };
+    case "open-book":
+      return { effect: "open-book", nextView: null };
     case "rename":
       return { effect: "rename", nextView: null };
     case "move":
