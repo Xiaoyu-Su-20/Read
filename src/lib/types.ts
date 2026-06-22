@@ -212,7 +212,12 @@ export type ViewerSnapshot = {
   zoom: number;
 };
 
-export type NoteBlockType = "paragraph" | "heading1" | "heading2" | "heading3";
+export type NoteBlockType =
+  | "paragraph"
+  | "heading1"
+  | "heading2"
+  | "heading3"
+  | "sectionBreak";
 
 export type NoteSpan = {
   text: string;

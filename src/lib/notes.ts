@@ -32,6 +32,26 @@ export function createEmptyNoteBlock(id = crypto.randomUUID()): NoteBlock {
   };
 }
 
+export function createSectionBreakBlock(id = crypto.randomUUID()): NoteBlock {
+  return {
+    id,
+    type: "sectionBreak",
+    children: []
+  };
+}
+
+export function isSectionBreakBlockType(type: NoteBlockType) {
+  return type === "sectionBreak";
+}
+
+export function isSectionBreakBlock(block: NoteBlock) {
+  return isSectionBreakBlockType(block.type);
+}
+
+export function sectionBreakPlainText() {
+  return "---";
+}
+
 function normalizeNavigationTarget(target: PdfNavigationTarget | null | undefined): PdfNavigationTarget | null {
   if (!target || !target.documentId || !Number.isInteger(target.pageIndex) || target.pageIndex < 0) {
     return null;
@@ -90,16 +110,26 @@ export function noteInlineText(node: NoteInlineNode) {
 }
 
 export function noteBlockText(block: NoteBlock) {
+  if (isSectionBreakBlock(block)) {
+    return "";
+  }
+
   return block.children.map(noteInlineText).join("");
 }
 
 export function noteToPlainText(note: NoteDocument) {
-  const lines = [note.title.trim(), ...note.blocks.map(noteBlockText).map((text) => text.trim())];
+  const lines = [
+    note.title.trim(),
+    ...note.blocks.map((block) =>
+      isSectionBreakBlock(block) ? sectionBreakPlainText() : noteBlockText(block).trim()
+    )
+  ];
   return lines.filter((line) => line.length > 0).join("\n");
 }
 
 export function noteExcerpt(note: NoteDocument) {
   const excerpt = note.blocks
+    .filter((block) => !isSectionBreakBlock(block))
     .map(noteBlockText)
     .map((text) => text.trim())
     .filter(Boolean)
@@ -210,7 +240,9 @@ export function normalizeNoteInlineNodes(nodes: NoteInlineNode[], fallbackDocume
 
 export function normalizeNoteBlocks(blocks: NoteBlock[], fallbackDocumentId?: string | null): NoteBlock[] {
   const seenIds = new Set<string>();
-  const normalized = blocks.map((block) => {
+  const normalized: NoteBlock[] = [];
+
+  for (const block of blocks) {
     let blockId = block.id;
 
     if (!blockId || seenIds.has(blockId)) {
@@ -219,12 +251,26 @@ export function normalizeNoteBlocks(blocks: NoteBlock[], fallbackDocumentId?: st
 
     seenIds.add(blockId);
 
+    if (isSectionBreakBlockType(block.type)) {
+      if (normalized.length > 0 && isSectionBreakBlock(normalized[normalized.length - 1] as NoteBlock)) {
+        continue;
+      }
+
+      normalized.push({
+        id: blockId,
+        type: block.type,
+        children: [],
+        sourceReference: null
+      });
+      continue;
+    }
+
     const children =
       Array.isArray(block.children) && block.children.length > 0
         ? block.children
         : spansToChildren(block.spans ?? []);
 
-    return {
+    normalized.push({
       id: blockId,
       type: block.type,
       children: normalizeNoteInlineNodes(children, fallbackDocumentId),
@@ -232,8 +278,8 @@ export function normalizeNoteBlocks(blocks: NoteBlock[], fallbackDocumentId?: st
         block.type === "paragraph"
           ? null
           : normalizeDocumentSourceReference(block.sourceReference, fallbackDocumentId)
-    };
-  });
+    });
+  }
 
   return normalized.length > 0 ? normalized : [createEmptyNoteBlock()];
 }
@@ -248,7 +294,7 @@ export function normalizeNoteDocument(note: NoteDocument): NoteDocument {
 
 export function deriveNoteNavigationItems(blocks: NoteBlock[]): NoteNavigationItem[] {
   return blocks.flatMap((block) => {
-    if (block.type === "paragraph") {
+    if (block.type === "paragraph" || isSectionBreakBlock(block)) {
       return [];
     }
 
@@ -276,7 +322,13 @@ export function replaceBlockType(
         ? {
             ...block,
             type: nextType,
-            sourceReference: nextType === "paragraph" ? null : block.sourceReference ?? null
+            children: isSectionBreakBlockType(nextType)
+              ? []
+              : block.children,
+            sourceReference:
+              nextType === "paragraph" || isSectionBreakBlockType(nextType)
+                ? null
+                : block.sourceReference ?? null
           }
         : block
     )
@@ -295,7 +347,7 @@ export function replaceBlockSourceReference(
         ? {
             ...block,
             sourceReference:
-              block.type === "paragraph"
+              block.type === "paragraph" || isSectionBreakBlockType(block.type)
                 ? null
                 : normalizeDocumentSourceReference(sourceReference, fallbackDocumentId)
           }

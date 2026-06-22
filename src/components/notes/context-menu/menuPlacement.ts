@@ -14,6 +14,10 @@ export type MenuSize = {
 };
 
 export type SubmenuDirection = "right" | "left";
+export type SubmenuPlacement = {
+  direction: SubmenuDirection;
+  offsetY: number;
+};
 
 const MENU_PADDING = 8;
 const SUBMENU_OVERLAP = 4;
@@ -49,4 +53,28 @@ export function getSubmenuDirection(
   const fitsLeft = menuPosition.x - submenuWidth + SUBMENU_OVERLAP >= MENU_PADDING;
 
   return fitsRight || !fitsLeft ? "right" : "left";
+}
+
+export function getSubmenuPlacement(
+  triggerRect: DOMRect,
+  paneRect: DOMRect,
+  submenuSize: MenuSize
+): SubmenuPlacement {
+  const fitsRight =
+    triggerRect.right + submenuSize.width - SUBMENU_OVERLAP <=
+    paneRect.right - MENU_PADDING;
+
+  const fitsLeft =
+    triggerRect.left - submenuSize.width + SUBMENU_OVERLAP >=
+    paneRect.left + MENU_PADDING;
+
+  const direction = fitsRight || !fitsLeft ? "right" : "left";
+  const desiredTop = triggerRect.top;
+  const maximumTop = paneRect.bottom - submenuSize.height - MENU_PADDING;
+  const clampedTop = clamp(desiredTop, paneRect.top + MENU_PADDING, maximumTop);
+
+  return {
+    direction,
+    offsetY: clampedTop - triggerRect.top
+  };
 }

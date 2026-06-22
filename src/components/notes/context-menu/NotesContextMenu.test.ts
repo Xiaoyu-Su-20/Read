@@ -32,13 +32,18 @@ describe("NotesContextMenu", () => {
         },
         position: null,
         submenuOpen: false,
-        submenuDirection: "right",
+        submenuPlacement: {
+          direction: "right",
+          offsetY: 0
+        },
         menuRef: { current: null },
         submenuRef: { current: null },
+        submenuAnchorRef: { current: null },
         onCopy: vi.fn(),
         onCut: vi.fn(),
         onPaste: vi.fn(),
         onTurnInto: vi.fn(),
+        onInsertSectionBreak: vi.fn(),
         onAddPageLink: vi.fn(),
         onAddHeadingPagemark: vi.fn(),
         onRemoveHeadingReference: vi.fn(),
@@ -53,6 +58,7 @@ describe("NotesContextMenu", () => {
     );
 
     expect(markup).toContain("Add PageLink");
+    expect(markup).toContain("Insert Section Break");
     expect(markup).toContain("Add pagemark");
     expect(markup).toContain("Remove pagemark");
     expect(markup).not.toContain("Link heading to current page");

@@ -359,6 +359,8 @@ pub enum NoteBlockType {
     Heading1,
     Heading2,
     Heading3,
+    #[serde(alias = "sectionBreakShort", alias = "sectionBreakFull")]
+    SectionBreak,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -8,10 +8,10 @@ import {
   type RefObject
 } from "react";
 import {
-  getSubmenuDirection,
+  getSubmenuPlacement,
   placeMenu,
   type PanePoint,
-  type SubmenuDirection
+  type SubmenuPlacement
 } from "./menuPlacement";
 
 export type NotesContextMenuState =
@@ -49,10 +49,14 @@ export function useContextMenuController({ paneRef }: UseContextMenuControllerAr
   const [state, setState] = useState<NotesContextMenuState | null>(null);
   const [position, setPosition] = useState<PanePoint | null>(null);
   const [submenuOpen, setSubmenuOpen] = useState(false);
-  const [submenuDirection, setSubmenuDirection] = useState<SubmenuDirection>("right");
+  const [submenuPlacement, setSubmenuPlacement] = useState<SubmenuPlacement>({
+    direction: "right",
+    offsetY: 0
+  });
   const closeTimerRef = useRef<number | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const submenuRef = useRef<HTMLDivElement | null>(null);
+  const submenuAnchorRef = useRef<HTMLDivElement | null>(null);
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current !== null) {
@@ -131,29 +135,22 @@ export function useContextMenuController({ paneRef }: UseContextMenuControllerAr
   }, [paneRef, state]);
 
   useLayoutEffect(() => {
-    if (!submenuOpen || !paneRef.current || !menuRef.current) {
-      setSubmenuDirection("right");
+    if (!submenuOpen || !paneRef.current || !submenuAnchorRef.current || !submenuRef.current) {
+      setSubmenuPlacement({
+        direction: "right",
+        offsetY: 0
+      });
       return;
     }
 
-    const menuPosition = position ?? state?.anchor;
-    if (!menuPosition) {
-      setSubmenuDirection("right");
-      return;
-    }
-
-    setSubmenuDirection(
-      getSubmenuDirection(
-        menuPosition,
+    setSubmenuPlacement(
+      getSubmenuPlacement(
+        submenuAnchorRef.current.getBoundingClientRect(),
+        paneRef.current.getBoundingClientRect(),
         {
-          width: paneRef.current.clientWidth,
-          height: paneRef.current.clientHeight
-        },
-        {
-          width: menuRef.current.offsetWidth,
-          height: menuRef.current.offsetHeight
-        },
-        submenuRef.current?.offsetWidth ?? 176
+          width: submenuRef.current.offsetWidth,
+          height: submenuRef.current.offsetHeight
+        }
       )
     );
   }, [paneRef, position, state, submenuOpen]);
@@ -162,9 +159,10 @@ export function useContextMenuController({ paneRef }: UseContextMenuControllerAr
     state,
     position,
     submenuOpen,
-    submenuDirection,
+    submenuPlacement,
     menuRef,
     submenuRef,
+    submenuAnchorRef,
     openMenu,
     closeMenu,
     openSubmenu,

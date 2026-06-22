@@ -8,13 +8,18 @@ type NotesContextMenuProps = {
   state: NotesContextMenuState | null;
   position: PanePoint | null;
   submenuOpen: boolean;
-  submenuDirection: "right" | "left";
+  submenuPlacement: {
+    direction: "right" | "left";
+    offsetY: number;
+  };
   menuRef: { current: HTMLDivElement | null };
   submenuRef: { current: HTMLDivElement | null };
+  submenuAnchorRef: { current: HTMLDivElement | null };
   onCopy: () => void;
   onCut: () => void;
   onPaste: () => void | Promise<void>;
   onTurnInto: (type: NoteBlockType) => void;
+  onInsertSectionBreak: () => void;
   onAddPageLink: () => void;
   onAddHeadingPagemark: () => void;
   onRemoveHeadingReference: () => void;
@@ -32,13 +37,15 @@ export default function NotesContextMenu({
   state,
   position,
   submenuOpen,
-  submenuDirection,
+  submenuPlacement,
   menuRef,
   submenuRef,
+  submenuAnchorRef,
   onCopy,
   onCut,
   onPaste,
   onTurnInto,
+  onInsertSectionBreak,
   onAddPageLink,
   onAddHeadingPagemark,
   onRemoveHeadingReference,
@@ -59,6 +66,8 @@ export default function NotesContextMenu({
     documentCapabilities &&
     state.target === "body" &&
     (state.blockType === "heading1" || state.blockType === "heading2" || state.blockType === "heading3");
+  const isSectionBreakTarget =
+    state.target === "body" && state.blockType === "sectionBreak";
 
   return (
     <div className="notes-context-menu-layer" role="presentation">
@@ -116,6 +125,11 @@ export default function NotesContextMenu({
                 Add PageLink
               </button>
             ) : null}
+            {state.target === "body" && !isSectionBreakTarget ? (
+              <button className="editor-context-menu__item" type="button" onClick={onInsertSectionBreak}>
+                Insert Section Break
+              </button>
+            ) : null}
             {isHeadingTarget ? (
               <>
                 <button className="editor-context-menu__item" type="button" onClick={onAddHeadingPagemark}>
@@ -130,6 +144,7 @@ export default function NotesContextMenu({
             ) : null}
             {state.target === "body" ? (
               <div
+                ref={submenuAnchorRef}
                 className="editor-context-menu__group editor-context-menu__group--has-submenu"
                 onMouseEnter={onOpenSubmenu}
                 onMouseLeave={onScheduleCloseSubmenu}
@@ -150,7 +165,8 @@ export default function NotesContextMenu({
                 </button>
                 {submenuOpen ? (
                   <BlockTypeSubmenu
-                    direction={submenuDirection}
+                    direction={submenuPlacement.direction}
+                    offsetY={submenuPlacement.offsetY}
                     innerRef={submenuRef}
                     onMouseEnter={onOpenSubmenu}
                     onMouseLeave={onScheduleCloseSubmenu}

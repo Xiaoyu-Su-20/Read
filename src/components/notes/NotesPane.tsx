@@ -372,9 +372,10 @@ const NotesPane = memo(function NotesPane({
     state: contextMenuState,
     position: contextMenuPosition,
     submenuOpen,
-    submenuDirection,
+    submenuPlacement,
     menuRef,
     submenuRef,
+    submenuAnchorRef,
     openMenu,
     closeMenu,
     openSubmenu,
@@ -1388,9 +1389,10 @@ const NotesPane = memo(function NotesPane({
         state={contextMenuState}
         position={contextMenuPosition}
         submenuOpen={submenuOpen}
-        submenuDirection={submenuDirection}
+        submenuPlacement={submenuPlacement}
         menuRef={menuRef}
         submenuRef={submenuRef}
+        submenuAnchorRef={submenuAnchorRef}
         onOpenSubmenu={openSubmenu}
         onScheduleCloseSubmenu={scheduleCloseSubmenu}
         onCopy={() => {
@@ -1415,6 +1417,16 @@ const NotesPane = memo(function NotesPane({
             value: "",
             error: null
           });
+          closeMenu();
+        }}
+        onInsertSectionBreak={() => {
+          if (contextMenuState?.target === "body") {
+            editorRef.current?.insertSectionBreak({
+              referenceBlockId: contextMenuState.blockId,
+              position: "after"
+            });
+          }
+          editorRef.current?.clearSelectedBlock();
           closeMenu();
         }}
         onAddHeadingPagemark={addHeadingPagemark}

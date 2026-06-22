@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { renderNoteBlocksHtml } from "./noteEditorDom";
 import {
+  createSectionBreakBlock,
   createPageLinkNode,
   createTextNode
 } from "./notes";
@@ -95,5 +96,22 @@ describe("noteEditorDom accessibility behavior", () => {
     expect(markup.match(/tabindex="-1"/g)).toHaveLength(1);
     expect(markup).toContain('data-source-reference=');
     expect(markup).not.toContain('data-heading-reference-indicator="true"');
+  });
+
+  it("renders section breaks as non-editable separator blocks", () => {
+    const markup = renderNoteBlocksHtml([
+      createSectionBreakBlock(),
+      {
+        id: "body-between",
+        type: "paragraph",
+        children: [createTextNode("Between")]
+      },
+      createSectionBreakBlock()
+    ]);
+
+    expect(markup).toContain('data-block-type="sectionBreak"');
+    expect(markup).toContain('class="note-section-break note-section-break--short"');
+    expect(markup).toContain('contenteditable="false"');
+    expect(markup).toContain('role="separator"');
   });
 });

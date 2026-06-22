@@ -3882,10 +3882,48 @@ body.reader-pane-resizing .notes-pane img {
   border-radius: 0.45rem;
 }
 
+.note-editor__body [data-block-id][data-selected="true"] {
+  outline: 1px solid color-mix(in srgb, var(--focus-ring) 52%, transparent);
+  outline-offset: 2px;
+}
+
 .note-editor__body > div {
   font-size: 0.98rem;
   font-weight: 410;
   color: var(--note-text-muted);
+}
+
+.note-editor__body > .note-section-break {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 0;
+  padding: 22px 0 18px;
+  flex: none;
+  user-select: none;
+  caret-color: transparent;
+  background: transparent;
+  cursor: default;
+}
+
+.note-section-break--short {
+}
+
+.note-section-break--short::before {
+  content: "";
+  display: block;
+  width: 64px;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--text-primary) 18%, transparent),
+    color-mix(in srgb, var(--text-primary) 4%, transparent)
+  );
+}
+
+.note-editor__body > .note-section-break[data-selected="true"] {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--focus-ring) 40%, transparent);
 }
 
 .note-editor__body > h1 {

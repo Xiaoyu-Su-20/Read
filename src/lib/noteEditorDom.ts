@@ -1,8 +1,10 @@
 import {
   createEmptyNoteBlock,
+  createSectionBreakBlock,
   createPageLinkNode,
   createTextNode,
   formatPageLinkText,
+  isSectionBreakBlockType,
   normalizeDocumentSourceReference,
   normalizeNoteBlocks,
   normalizeNoteInlineNodes,
@@ -22,6 +24,7 @@ import type {
 
 const NOTE_CLIPBOARD_MIME = "application/x-calmreader-note-fragment";
 const PAGE_LINK_CARET_ANCHOR = "\u200B";
+const SECTION_BREAK_TEXT = "---";
 
 type CaretRangeDocument = Document & {
   caretRangeFromPoint?: (x: number, y: number) => Range | null;
@@ -40,6 +43,7 @@ type MarkState = {
 
 type NoteClipboardPayload = {
   html: string;
+  internalHtml: string;
   text: string;
 };
 
@@ -121,7 +125,21 @@ function blockTypeFromTagName(tagName: string): NoteBlockType {
 }
 
 function blockTypeFromElement(element: HTMLElement): NoteBlockType {
+  const datasetType = element.dataset.blockType as NoteBlockType | undefined;
+  if (datasetType && isSectionBreakBlockType(datasetType)) {
+    return datasetType;
+  }
+
   return blockTypeFromTagName(element.tagName);
+}
+
+function configureSectionBreakElement(element: HTMLElement, type: Extract<NoteBlockType, "sectionBreak">) {
+  element.className = "note-section-break note-section-break--short";
+  element.dataset.blockType = type;
+  element.contentEditable = "false";
+  element.setAttribute("role", "separator");
+  element.setAttribute("aria-orientation", "horizontal");
+  element.replaceChildren();
 }
 
 function nextUniqueBlockId(existingId: string | undefined, seenIds: Set<string>) {
@@ -172,6 +190,10 @@ export function renderNoteInlineNodesHtml(children: NoteInlineNode[]) {
 export function renderNoteBlocksHtml(blocks: NoteBlock[]) {
   return normalizeNoteBlocks(blocks)
     .map((block) => {
+      if (isSectionBreakBlockType(block.type)) {
+        return `<div data-block-id="${escapeHtml(block.id)}" data-block-type="${block.type}" class="note-section-break note-section-break--short" contenteditable="false" role="separator" aria-orientation="horizontal"></div>`;
+      }
+
       const tagName = blockTagName(block.type);
       const sourceReference = block.sourceReference
         ? ` data-source-reference="${escapeHtml(encodeDataJson(block.sourceReference))}"`
@@ -265,14 +287,16 @@ export function parseNoteBlocksFromEditor(root: HTMLElement): NoteBlock[] {
     }
 
     const element = childNode as HTMLElement;
-    const type = blockTypeFromTagName(element.tagName);
+    const type = blockTypeFromElement(element);
     return [
       {
         id: element.dataset.blockId || crypto.randomUUID(),
         type,
-        children: normalizeNoteInlineNodes(inlineNodesFromNode(element, { bold: false, italic: false })),
+        children: isSectionBreakBlockType(type)
+          ? []
+          : normalizeNoteInlineNodes(inlineNodesFromNode(element, { bold: false, italic: false })),
         sourceReference:
-          type === "paragraph"
+          type === "paragraph" || isSectionBreakBlockType(type)
             ? null
             : decodeSourceReference(element.dataset.sourceReference)
       }
@@ -394,6 +418,14 @@ export function normalizeNoteEditorDom(root: HTMLElement) {
 
     child.dataset.blockId = nextUniqueBlockId(child.dataset.blockId, seenBlockIds);
     child.dataset.blockType = blockTypeFromElement(child);
+
+    if (isSectionBreakBlockType(child.dataset.blockType as NoteBlockType)) {
+      configureSectionBreakElement(
+        child,
+        child.dataset.blockType as Extract<NoteBlockType, "sectionBreak">
+      );
+      continue;
+    }
 
     child.querySelectorAll<HTMLElement>("[data-inline-type='page-link']").forEach((pageLink) => {
       configurePageLinkElement(pageLink);
@@ -755,6 +787,67 @@ export function getBlockFromSelection(root: HTMLElement) {
   return null;
 }
 
+function isCollapsedSelectionAtBoundary(
+  root: HTMLElement,
+  direction: "start" | "end"
+) {
+  const selection = getSelectionInRoot(root);
+  if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) {
+    return false;
+  }
+
+  const block = getBlockFromSelection(root);
+  if (!block) {
+    return false;
+  }
+
+  const blockRange = root.ownerDocument.createRange();
+  blockRange.selectNodeContents(block);
+  blockRange.collapse(direction === "start");
+
+  const selectionRange = selection.getRangeAt(0).cloneRange();
+  return direction === "start"
+    ? selectionRange.compareBoundaryPoints(Range.START_TO_START, blockRange) === 0
+    : selectionRange.compareBoundaryPoints(Range.END_TO_END, blockRange) === 0;
+}
+
+function getSectionBreakAtCaretBoundary(
+  root: HTMLElement,
+  direction: "backward" | "forward"
+) {
+  const block = getBlockFromSelection(root);
+  if (!block) {
+    return null;
+  }
+
+  const atBoundary =
+    direction === "backward"
+      ? isCollapsedSelectionAtBoundary(root, "start")
+      : isCollapsedSelectionAtBoundary(root, "end");
+  if (!atBoundary) {
+    return null;
+  }
+
+  const adjacent =
+    direction === "backward"
+      ? block.previousElementSibling
+      : block.nextElementSibling;
+  if (!(adjacent instanceof HTMLElement)) {
+    return null;
+  }
+
+  const blockType = blockTypeFromElement(adjacent);
+  return isSectionBreakBlockType(blockType) ? adjacent : null;
+}
+
+export function getSectionBreakBeforeCaret(root: HTMLElement) {
+  return getSectionBreakAtCaretBoundary(root, "backward");
+}
+
+export function getSectionBreakAfterCaret(root: HTMLElement) {
+  return getSectionBreakAtCaretBoundary(root, "forward");
+}
+
 export function getPageLinkFromSelection(root: HTMLElement) {
   const selection = getSelectionInRoot(root);
   if (!selection) {
@@ -834,7 +927,14 @@ export function replaceBlockElementType(root: HTMLElement, blockId: string, next
   const replacement = document.createElement(blockTagName(nextType));
   replacement.dataset.blockId = blockId;
   replacement.dataset.blockType = nextType;
-  replacement.innerHTML = current.innerHTML;
+  if (isSectionBreakBlockType(nextType)) {
+    configureSectionBreakElement(
+      replacement,
+      nextType as Extract<NoteBlockType, "sectionBreak">
+    );
+  } else {
+    replacement.innerHTML = current.innerHTML;
+  }
   current.replaceWith(replacement);
   return true;
 }
@@ -852,7 +952,7 @@ export function updateBlockSourceReference(
 
   const blockType = blockTypeFromElement(block);
   const normalized =
-    blockType === "paragraph"
+    blockType === "paragraph" || isSectionBreakBlockType(blockType)
       ? null
       : normalizeDocumentSourceReference(sourceReference, fallbackDocumentId);
 
@@ -863,6 +963,67 @@ export function updateBlockSourceReference(
 
   block.dataset.sourceReference = encodeDataJson(normalized);
   return true;
+}
+
+function createParagraphBlockElement(blockId: string) {
+  const element = document.createElement("div");
+  element.dataset.blockId = blockId;
+  element.dataset.blockType = "paragraph";
+  element.appendChild(document.createElement("br"));
+  return element;
+}
+
+export function insertSectionBreak(
+  root: HTMLElement,
+  args: {
+    referenceBlockId: string;
+    position: "before" | "after";
+  }
+) {
+  normalizeNoteEditorDom(root);
+  const referenceBlock = findBlockElement(root, args.referenceBlockId);
+  if (!referenceBlock) {
+    return null;
+  }
+
+  const adjacentSibling =
+    args.position === "after"
+      ? referenceBlock.nextElementSibling
+      : referenceBlock.previousElementSibling;
+  if (adjacentSibling instanceof HTMLElement) {
+    const adjacentType = blockTypeFromElement(adjacentSibling);
+    if (isSectionBreakBlockType(adjacentType)) {
+      return null;
+    }
+  }
+
+  const breakBlock = createSectionBreakBlock();
+  const paragraphBlock = createEmptyNoteBlock();
+  const breakElement = document.createElement("div");
+  breakElement.dataset.blockId = breakBlock.id;
+  configureSectionBreakElement(breakElement, "sectionBreak");
+  const paragraphElement = createParagraphBlockElement(paragraphBlock.id);
+
+  if (args.position === "after") {
+    referenceBlock.after(breakElement, paragraphElement);
+  } else {
+    referenceBlock.before(breakElement, paragraphElement);
+  }
+
+  focusElementWithoutScroll(root);
+  const selection = window.getSelection();
+  if (selection) {
+    const range = document.createRange();
+    range.selectNodeContents(paragraphElement);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  return {
+    sectionBreakId: breakBlock.id,
+    paragraphId: paragraphBlock.id
+  };
 }
 
 function createPageLinkElement(node: NotePageLinkNode) {
@@ -1170,8 +1331,77 @@ export function clearSelectedPageLink(root: HTMLElement) {
   selectPageLinkToken(root, null);
 }
 
+export function selectBlockElement(root: HTMLElement, blockId: string | null) {
+  root.querySelectorAll<HTMLElement>("[data-block-id]").forEach((element) => {
+    if (!blockId || element.dataset.blockId !== blockId) {
+      delete element.dataset.selected;
+      return;
+    }
+
+    element.dataset.selected = "true";
+  });
+}
+
 export function textFromEditable(root: HTMLElement) {
   return stripPageLinkCaretAnchors(root.textContent ?? "");
+}
+
+function serializeBlockForClipboard(block: HTMLElement): NoteClipboardPayload | null {
+  const blockType = blockTypeFromElement(block);
+  if (!isSectionBreakBlockType(blockType)) {
+    return null;
+  }
+
+  return {
+    internalHtml: block.outerHTML,
+    html: "<hr />",
+    text: SECTION_BREAK_TEXT
+  };
+}
+
+export function removeBlock(root: HTMLElement, blockId: string, options?: { preserveSelection?: boolean }) {
+  normalizeNoteEditorDom(root);
+  const block = findBlockElement(root, blockId);
+  if (!block) {
+    return false;
+  }
+
+  const currentSelection = options?.preserveSelection ? captureEditorSelection(root) : null;
+  const nextSibling = block.nextElementSibling instanceof HTMLElement ? block.nextElementSibling : null;
+  const previousSibling = block.previousElementSibling instanceof HTMLElement ? block.previousElementSibling : null;
+  block.remove();
+
+  if (root.children.length === 0) {
+    const paragraph = createParagraphBlockElement(createEmptyNoteBlock().id);
+    root.appendChild(paragraph);
+    const selection = window.getSelection();
+    if (selection) {
+      const range = document.createRange();
+      range.selectNodeContents(paragraph);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    return true;
+  }
+
+  if (currentSelection && restoreEditorSelection(root, currentSelection)) {
+    return true;
+  }
+
+  const focusTarget = nextSibling ?? previousSibling;
+  if (focusTarget) {
+    const selection = window.getSelection();
+    if (selection) {
+      const range = document.createRange();
+      range.selectNodeContents(focusTarget);
+      range.collapse(nextSibling ? true : false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }
+
+  return true;
 }
 
 export function copyPageLinkReference(root: HTMLElement, pageLinkId: string) {
@@ -1299,6 +1529,7 @@ function serializeCurrentSelection(root: HTMLElement): NoteClipboardPayload | nu
       return null;
     }
     return {
+      internalHtml: selectedPageLink.outerHTML,
       html: selectedPageLink.outerHTML,
       text: selectedPageLink.textContent ?? ""
     };
@@ -1322,9 +1553,23 @@ function serializeCurrentSelection(root: HTMLElement): NoteClipboardPayload | nu
     node.remove();
   }
   return {
+    internalHtml: wrapper.innerHTML,
     html: wrapper.innerHTML,
     text: stripPageLinkCaretAnchors(selection.toString())
   };
+}
+
+export function copySelectedBlock(root: HTMLElement, blockId: string) {
+  const block = findBlockElement(root, blockId);
+  if (!block) {
+    return null;
+  }
+
+  const payload = serializeBlockForClipboard(block);
+  if (payload) {
+    internalClipboardPayload = payload;
+  }
+  return payload;
 }
 
 function rememberInternalClipboard(root: HTMLElement) {
@@ -1344,7 +1589,7 @@ export function handleCopy(root: HTMLElement, event: ClipboardEvent) {
   event.preventDefault();
   event.clipboardData.setData("text/plain", payload.text);
   event.clipboardData.setData("text/html", payload.html);
-  event.clipboardData.setData(NOTE_CLIPBOARD_MIME, payload.html);
+  event.clipboardData.setData(NOTE_CLIPBOARD_MIME, payload.internalHtml);
 }
 
 export function handleCut(root: HTMLElement, event: ClipboardEvent) {
@@ -1356,7 +1601,7 @@ export function handleCut(root: HTMLElement, event: ClipboardEvent) {
   event.preventDefault();
   event.clipboardData.setData("text/plain", payload.text);
   event.clipboardData.setData("text/html", payload.html);
-  event.clipboardData.setData(NOTE_CLIPBOARD_MIME, payload.html);
+  event.clipboardData.setData(NOTE_CLIPBOARD_MIME, payload.internalHtml);
   document.execCommand("delete");
 }
 
@@ -1398,7 +1643,7 @@ export async function pasteSelection(root: HTMLElement) {
   if (internalClipboardPayload && navigator.clipboard?.readText) {
     const currentClipboardText = await navigator.clipboard.readText();
     if (currentClipboardText === internalClipboardPayload.text) {
-      insertHtmlAtSelection(internalClipboardPayload.html);
+      insertHtmlAtSelection(internalClipboardPayload.internalHtml);
       normalizeNoteEditorDom(root);
       return;
     }

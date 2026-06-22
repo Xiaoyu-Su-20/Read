@@ -326,6 +326,7 @@ impl NoteStore {
         let mut excerpt = note
             .blocks
             .iter()
+            .filter(|block| block.r#type != NoteBlockType::SectionBreak)
             .flat_map(|block| block.children.iter())
             .map(|child| match child {
                 NoteInlineNode::Text(text) => text.text.trim(),
@@ -363,6 +364,16 @@ impl NoteStore {
                 block.id = Uuid::new_v4().to_string();
             }
 
+            if matches!(
+                block.r#type,
+                NoteBlockType::SectionBreak
+            ) {
+                block.children.clear();
+                block.source_reference = None;
+                block.spans.clear();
+                continue;
+            }
+
             if block.children.is_empty() {
                 if block.spans.is_empty() {
                     block.children.push(NoteInlineNode::Text(NoteTextNode {
@@ -390,6 +401,26 @@ impl NoteStore {
             );
             block.spans.clear();
         }
+
+        let mut normalized_blocks = Vec::with_capacity(note.blocks.len());
+        let mut previous_was_break = false;
+        for block in note.blocks.drain(..) {
+            let is_break = matches!(
+                block.r#type,
+                NoteBlockType::SectionBreak
+            );
+            if is_break && previous_was_break {
+                continue;
+            }
+            previous_was_break = is_break;
+            normalized_blocks.push(block);
+        }
+
+        note.blocks = if normalized_blocks.is_empty() {
+            vec![self.empty_note_block()]
+        } else {
+            normalized_blocks
+        };
     }
 
     fn note_sort_at<'a>(&self, entry: &'a NoteIndexEntry) -> &'a str {
@@ -410,6 +441,13 @@ impl NoteStore {
     }
 
     fn note_block_text(&self, block: &NoteBlock) -> String {
+        if matches!(
+            block.r#type,
+            NoteBlockType::SectionBreak
+        ) {
+            return String::new();
+        }
+
         block
             .children
             .iter()
@@ -448,6 +486,13 @@ impl NoteStore {
         fallback_document_id: Option<&str>,
     ) -> Option<DocumentSourceReference> {
         if block_type == NoteBlockType::Paragraph {
+            return None;
+        }
+
+        if matches!(
+            block_type,
+            NoteBlockType::SectionBreak
+        ) {
             return None;
         }
 

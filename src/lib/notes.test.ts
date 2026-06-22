@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createSectionBreakBlock,
   createPageLinkNode,
   createSaveScheduler,
   createTextNode,
@@ -10,6 +11,7 @@ import {
   normalizeNoteBlocks,
   normalizeNoteDocument,
   normalizeNoteSpans,
+  noteToPlainText,
   parsePageLinkText,
   parsePageLinkTargetInput,
   replaceBlockSourceReference,
@@ -75,6 +77,34 @@ describe("notes helpers", () => {
 
     expect(updated[0]?.type).toBe("paragraph");
     expect(updated[1]?.type).toBe("heading3");
+  });
+
+  it("stores section breaks as real blocks, preserves plain text separators, and collapses adjacent breaks", () => {
+    const blocks = normalizeNoteBlocks([
+      createSectionBreakBlock(),
+      createSectionBreakBlock(),
+      {
+        id: "body",
+        type: "paragraph",
+        children: [createTextNode("After break")]
+      }
+    ]);
+
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]?.type).toBe("sectionBreak");
+    expect(blocks[0]?.children).toEqual([]);
+
+    const note = normalizeNoteDocument({
+      id: "note-1",
+      title: "Breaks",
+      bookId: null,
+      createdAt: "2026-06-22T00:00:00Z",
+      updatedAt: "2026-06-22T00:00:00Z",
+      version: 1,
+      blocks
+    });
+
+    expect(noteToPlainText(note)).toContain("---");
   });
 
   it("merges adjacent spans that share the same inline marks", () => {

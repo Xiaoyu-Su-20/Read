@@ -241,6 +241,50 @@ fn save_note_migrates_legacy_spans_into_children() {
 }
 
 #[test]
+fn save_note_preserves_section_breaks_as_block_nodes() {
+    let temp = tempdir().unwrap();
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+
+    let saved = store
+        .save_note(NoteDocument {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: "Breaks".to_string(),
+            book_id: None,
+            created_at: timestamp(),
+            updated_at: timestamp(),
+            version: NOTE_DOCUMENT_VERSION,
+            blocks: vec![
+                NoteBlock {
+                    id: "break-one".to_string(),
+                    r#type: crate::models::NoteBlockType::SectionBreak,
+                    children: vec![NoteInlineNode::Text(NoteTextNode {
+                        text: "should be cleared".to_string(),
+                        bold: false,
+                        italic: false,
+                    })],
+                    source_reference: None,
+                    spans: Vec::new(),
+                },
+                note_block("Between"),
+                NoteBlock {
+                    id: "break-two".to_string(),
+                    r#type: crate::models::NoteBlockType::SectionBreak,
+                    children: Vec::new(),
+                    source_reference: None,
+                    spans: Vec::new(),
+                },
+            ],
+        })
+        .unwrap();
+
+    assert_eq!(saved.blocks[0].r#type, crate::models::NoteBlockType::SectionBreak);
+    assert!(saved.blocks[0].children.is_empty());
+    assert_eq!(saved.blocks[2].r#type, crate::models::NoteBlockType::SectionBreak);
+    assert!(saved.blocks[2].children.is_empty());
+}
+
+#[test]
 fn list_standalone_notes_excludes_document_notes_and_sorts_by_last_opened() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("attached.pdf");

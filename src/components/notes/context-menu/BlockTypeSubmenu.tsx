@@ -5,6 +5,7 @@ import type { SubmenuDirection } from "./menuPlacement";
 
 type BlockTypeSubmenuProps = {
   direction: SubmenuDirection;
+  offsetY: number;
   innerRef?: Ref<HTMLDivElement>;
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
@@ -13,6 +14,7 @@ type BlockTypeSubmenuProps = {
 
 export default function BlockTypeSubmenu({
   direction,
+  offsetY,
   innerRef,
   onMouseEnter,
   onMouseLeave,
@@ -29,6 +31,7 @@ export default function BlockTypeSubmenu({
     <div
       ref={innerRef}
       className={`block-type-submenu block-type-submenu--${direction}`}
+      style={{ top: `${offsetY}px` }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
