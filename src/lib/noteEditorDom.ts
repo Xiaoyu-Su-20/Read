@@ -10,8 +10,17 @@ import {
   normalizeNoteInlineNodes,
   parsePageLinkText
 } from "./notes";
+import {
+  DEFAULT_TOPIC_COLOR,
+  MAX_TOPIC_LENGTH,
+  normalizeParagraphTopic,
+  normalizeParagraphTopics,
+  normalizeTopicText,
+  resolveTopicAppearance
+} from "./paragraphTopics";
 import type {
   DocumentSourceReference,
+  InteractiveColorKey,
   NoteBlock,
   NoteBlockType,
   NoteDocument,
@@ -19,12 +28,15 @@ import type {
   NoteEditorSelectionSnapshot,
   NoteInlineNode,
   NotePageLinkNode,
+  ParagraphTopic,
   NoteTextNode
 } from "./types";
 
 const NOTE_CLIPBOARD_MIME = "application/x-calmreader-note-fragment";
 const PAGE_LINK_CARET_ANCHOR = "\u200B";
 const SECTION_BREAK_TEXT = "---";
+const TOPIC_INLINE_TYPE = "topic-card";
+const PAGE_LINK_INLINE_TYPE = "page-link";
 
 type CaretRangeDocument = Document & {
   caretRangeFromPoint?: (x: number, y: number) => Range | null;
@@ -96,6 +108,24 @@ function decodeSourceReference(value: string | undefined, fallbackDocumentId?: s
   } catch {
     return null;
   }
+}
+
+function sourceReferencesEqual(
+  left: DocumentSourceReference | null | undefined,
+  right: DocumentSourceReference | null | undefined
+) {
+  if (!left || !right) {
+    return false;
+  }
+
+  return (
+    left.documentId === right.documentId &&
+    left.kind === right.kind &&
+    left.outlineItemId === right.outlineItemId &&
+    left.outlineSource === right.outlineSource &&
+    left.title === right.title &&
+    JSON.stringify(left.target ?? null) === JSON.stringify(right.target ?? null)
+  );
 }
 
 function blockTagName(type: NoteBlockType) {
@@ -176,9 +206,29 @@ function renderPageLinkNodeHtml(node: NotePageLinkNode) {
     node.pdfPageIndex == null ? "" : String(node.pdfPageIndex)
   )}" data-book-page-label="${escapeHtml(node.bookPageLabel)}" data-created-at="${escapeHtml(
     node.createdAt
-  )}" contenteditable="false" tabindex="-1"><span class="page-link__paren" aria-hidden="true">(</span><span class="page-link__label">${escapeHtml(
+  )}" contenteditable="false" tabindex="-1"><span class="page-link__icon" aria-hidden="true"><svg viewBox="5 3 14 18" focusable="false"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" /></svg></span><span class="page-link__paren" aria-hidden="true">(</span><span class="page-link__label">${escapeHtml(
     visibleLabel
   )}</span><span class="page-link__paren" aria-hidden="true">)</span></span>`;
+}
+
+function renderTopicCardHtml(topic: ParagraphTopic) {
+  const appearance = resolveTopicAppearance(topic.color);
+  const styleAttribute = Object.entries(appearance)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("; ");
+  return `<span class="paragraph-topic" data-inline-type="${TOPIC_INLINE_TYPE}" data-topic-id="${escapeHtml(
+    topic.id
+  )}" data-topic-text="${escapeHtml(topic.text)}" data-topic-color="${escapeHtml(
+    topic.color
+  )}" style="${escapeHtml(styleAttribute)}" contenteditable="false" tabindex="-1"><span class="paragraph-topic__bracket" aria-hidden="true">[</span><span class="paragraph-topic__label">${escapeHtml(
+    topic.text
+  )}</span><span class="paragraph-topic__bracket" aria-hidden="true">]</span><span class="paragraph-topic__separator" aria-hidden="true"> </span></span>`;
+}
+
+function renderTopicCardsHtml(topics: ParagraphTopic[]) {
+  return normalizeParagraphTopics(topics)
+    .map((topic) => renderTopicCardHtml(topic))
+    .join("");
 }
 
 export function renderNoteInlineNodesHtml(children: NoteInlineNode[]) {
@@ -198,9 +248,9 @@ export function renderNoteBlocksHtml(blocks: NoteBlock[]) {
       const sourceReference = block.sourceReference
         ? ` data-source-reference="${escapeHtml(encodeDataJson(block.sourceReference))}"`
         : "";
-      return `<${tagName} data-block-id="${escapeHtml(block.id)}" data-block-type="${block.type}"${sourceReference}>${renderNoteInlineNodesHtml(
-        block.children
-      )}</${tagName}>`;
+      const topicMarkup = block.type === "paragraph" ? renderTopicCardsHtml(block.topics ?? []) : "";
+      const contentMarkup = `${topicMarkup}${renderNoteInlineNodesHtml(block.children)}`;
+      return `<${tagName} data-block-id="${escapeHtml(block.id)}" data-block-type="${block.type}"${sourceReference}>${contentMarkup}</${tagName}>`;
     })
     .join("");
 }
@@ -221,6 +271,14 @@ function pageLinkNodeFromElement(element: HTMLElement): NotePageLinkNode {
     bookPageLabel: element.dataset.bookPageLabel?.trim() || "",
     createdAt: element.dataset.createdAt || new Date().toISOString()
   };
+}
+
+function topicFromElement(element: HTMLElement): ParagraphTopic | null {
+  return normalizeParagraphTopic({
+    id: element.dataset.topicId || crypto.randomUUID(),
+    text: element.dataset.topicText ?? element.textContent ?? "",
+    color: (element.dataset.topicColor as InteractiveColorKey | undefined) ?? DEFAULT_TOPIC_COLOR
+  });
 }
 
 function inlineNodesFromNode(node: Node, activeMarks: MarkState): NoteInlineNode[] {
@@ -247,7 +305,11 @@ function inlineNodesFromNode(node: Node, activeMarks: MarkState): NoteInlineNode
     return [];
   }
 
-  if (element.dataset.inlineType === "page-link") {
+  if (element.dataset.inlineType === TOPIC_INLINE_TYPE) {
+    return [];
+  }
+
+  if (element.dataset.inlineType === PAGE_LINK_INLINE_TYPE) {
     return [pageLinkNodeFromElement(element)];
   }
 
@@ -288,10 +350,23 @@ export function parseNoteBlocksFromEditor(root: HTMLElement): NoteBlock[] {
 
     const element = childNode as HTMLElement;
     const type = blockTypeFromElement(element);
+    const topics =
+      type === "paragraph"
+        ? normalizeParagraphTopics(
+            Array.from(element.children)
+              .filter(
+                (child): child is HTMLElement =>
+                  child instanceof HTMLElement && child.dataset.inlineType === TOPIC_INLINE_TYPE
+              )
+              .map((child) => topicFromElement(child))
+              .filter((topic): topic is ParagraphTopic => topic != null)
+          )
+        : [];
     return [
       {
         id: element.dataset.blockId || crypto.randomUUID(),
         type,
+        topics,
         children: isSectionBreakBlockType(type)
           ? []
           : normalizeNoteInlineNodes(inlineNodesFromNode(element, { bold: false, italic: false })),
@@ -308,16 +383,72 @@ export function parseNoteBlocksFromEditor(root: HTMLElement): NoteBlock[] {
 
 function configurePageLinkElement(element: HTMLElement) {
   element.classList.add("page-link");
-  element.dataset.inlineType = "page-link";
+  element.dataset.inlineType = PAGE_LINK_INLINE_TYPE;
   element.contentEditable = "false";
   element.tabIndex = -1;
+}
+
+function createTopicCardElement(topic: ParagraphTopic) {
+  const element = document.createElement("span");
+  updateTopicCardElement(element, topic);
+  return element;
+}
+
+function updateTopicCardElement(element: HTMLElement, topic: ParagraphTopic) {
+  const appearance = resolveTopicAppearance(topic.color);
+  element.className = "paragraph-topic";
+  element.dataset.inlineType = TOPIC_INLINE_TYPE;
+  element.dataset.topicId = topic.id;
+  element.dataset.topicText = topic.text;
+  element.dataset.topicColor = topic.color;
+  element.contentEditable = "false";
+  element.tabIndex = -1;
+  Object.entries(appearance).forEach(([key, value]) => {
+    element.style.setProperty(key, value);
+  });
+
+  const leadingBracket = document.createElement("span");
+  leadingBracket.className = "paragraph-topic__bracket";
+  leadingBracket.setAttribute("aria-hidden", "true");
+  leadingBracket.textContent = "[";
+
+  const label = document.createElement("span");
+  label.className = "paragraph-topic__label";
+  label.textContent = topic.text;
+
+  const trailingBracket = document.createElement("span");
+  trailingBracket.className = "paragraph-topic__bracket";
+  trailingBracket.setAttribute("aria-hidden", "true");
+  trailingBracket.textContent = "]";
+
+  const separator = document.createElement("span");
+  separator.className = "paragraph-topic__separator";
+  separator.setAttribute("aria-hidden", "true");
+  separator.textContent = " ";
+
+  element.replaceChildren(leadingBracket, label, trailingBracket, separator);
+}
+
+function configureTopicElement(element: HTMLElement) {
+  const topic = topicFromElement(element);
+  if (!topic) {
+    element.remove();
+    return null;
+  }
+
+  updateTopicCardElement(element, topic);
+  return element;
 }
 
 function isPageLinkElementNode(node: Node | null): node is HTMLElement {
   return (
     node instanceof HTMLElement &&
-    node.dataset.inlineType === "page-link"
+    node.dataset.inlineType === PAGE_LINK_INLINE_TYPE
   );
+}
+
+function isTopicElementNode(node: Node | null): node is HTMLElement {
+  return node instanceof HTMLElement && node.dataset.inlineType === TOPIC_INLINE_TYPE;
 }
 
 function removeAdjacentAnchorDuplicates(anchorNode: Text, direction: "backward" | "forward") {
@@ -383,9 +514,44 @@ function removeOrphanPageLinkCaretAnchors(root: HTMLElement) {
   }
 }
 
+function collectBlockTopicElements(block: HTMLElement) {
+  return Array.from(block.querySelectorAll<HTMLElement>(`[data-inline-type='${TOPIC_INLINE_TYPE}']`)).filter(
+    (element) => findClosestBlockElement(block, element) === block
+  );
+}
+
+function normalizeTopicElementsInBlock(block: HTMLElement, blockType: NoteBlockType) {
+  const topicElements = collectBlockTopicElements(block);
+  if (topicElements.length === 0) {
+    return;
+  }
+
+  if (blockType !== "paragraph") {
+    for (const topicElement of topicElements) {
+      topicElement.remove();
+    }
+    return;
+  }
+
+  let insertionPoint = block.firstChild;
+  for (const topicElement of topicElements) {
+    const configured = configureTopicElement(topicElement);
+    if (!configured) {
+      continue;
+    }
+
+    if (configured !== insertionPoint) {
+      block.insertBefore(configured, insertionPoint);
+    }
+    insertionPoint = configured.nextSibling;
+  }
+}
+
 export function normalizeNoteEditorDom(root: HTMLElement) {
   const children = Array.from(root.childNodes);
   const seenBlockIds = new Set<string>();
+  let previousBlockType: NoteBlockType | null = null;
+  let previousSourceReference: DocumentSourceReference | null = null;
 
   for (const child of children) {
     if (child.nodeType === Node.TEXT_NODE) {
@@ -400,6 +566,8 @@ export function normalizeNoteEditorDom(root: HTMLElement) {
       block.dataset.blockType = "paragraph";
       block.textContent = text;
       root.replaceChild(block, child);
+      previousBlockType = "paragraph";
+      previousSourceReference = null;
       continue;
     }
 
@@ -413,18 +581,57 @@ export function normalizeNoteEditorDom(root: HTMLElement) {
       block.dataset.blockType = "paragraph";
       block.appendChild(document.createElement("br"));
       root.replaceChild(block, child);
+      previousBlockType = "paragraph";
+      previousSourceReference = null;
       continue;
     }
 
     child.dataset.blockId = nextUniqueBlockId(child.dataset.blockId, seenBlockIds);
-    child.dataset.blockType = blockTypeFromElement(child);
+    const blockType = blockTypeFromElement(child);
+    child.dataset.blockType = blockType;
 
-    if (isSectionBreakBlockType(child.dataset.blockType as NoteBlockType)) {
+    if (isSectionBreakBlockType(blockType)) {
       configureSectionBreakElement(
         child,
-        child.dataset.blockType as Extract<NoteBlockType, "sectionBreak">
+        blockType as Extract<NoteBlockType, "sectionBreak">
       );
+      previousBlockType = blockType;
+      previousSourceReference = null;
       continue;
+    }
+
+    if (blockType === "paragraph") {
+      delete child.dataset.sourceReference;
+      normalizeTopicElementsInBlock(child, blockType);
+      previousBlockType = blockType;
+      previousSourceReference = null;
+    } else {
+      normalizeTopicElementsInBlock(child, blockType);
+      const hasVisibleText = (child.textContent ?? "").trim().length > 0;
+      if (!hasVisibleText) {
+        delete child.dataset.sourceReference;
+        previousBlockType = blockType;
+        previousSourceReference = null;
+        child.querySelectorAll<HTMLElement>("[data-inline-type='page-link']").forEach((pageLink) => {
+          configurePageLinkElement(pageLink);
+          ensurePageLinkCaretAnchors(pageLink);
+        });
+        removeOrphanPageLinkCaretAnchors(child);
+        continue;
+      }
+
+      const sourceReference = decodeSourceReference(child.dataset.sourceReference);
+      if (
+        sourceReference &&
+        previousBlockType === blockType &&
+        sourceReferencesEqual(previousSourceReference, sourceReference)
+      ) {
+        delete child.dataset.sourceReference;
+        previousSourceReference = null;
+      } else {
+        previousSourceReference = sourceReference;
+      }
+      previousBlockType = blockType;
     }
 
     child.querySelectorAll<HTMLElement>("[data-inline-type='page-link']").forEach((pageLink) => {
@@ -444,6 +651,10 @@ export function findPageLinkElement(root: HTMLElement, pageLinkId: string) {
   return root.querySelector<HTMLElement>(`[data-page-link-id="${CSS.escape(pageLinkId)}"]`);
 }
 
+export function findTopicCardElement(root: HTMLElement, topicId: string) {
+  return root.querySelector<HTMLElement>(`[data-topic-id="${CSS.escape(topicId)}"]`);
+}
+
 export function findClosestBlockElement(root: HTMLElement, node: Node | null) {
   const element = node instanceof HTMLElement ? node : node?.parentElement ?? null;
   const block = element?.closest<HTMLElement>("[data-block-id]") ?? null;
@@ -454,6 +665,12 @@ export function findClosestPageLinkElement(root: HTMLElement, node: Node | null)
   const element = node instanceof HTMLElement ? node : node?.parentElement ?? null;
   const pageLink = element?.closest<HTMLElement>("[data-inline-type='page-link']") ?? null;
   return pageLink && root.contains(pageLink) ? pageLink : null;
+}
+
+export function findClosestTopicCardElement(root: HTMLElement, node: Node | null) {
+  const element = node instanceof HTMLElement ? node : node?.parentElement ?? null;
+  const topic = element?.closest<HTMLElement>(`[data-inline-type='${TOPIC_INLINE_TYPE}']`) ?? null;
+  return topic && root.contains(topic) ? topic : null;
 }
 
 function isPointWithinRects(rects: Iterable<DOMRect>, x: number, y: number, padding = 4) {
@@ -496,6 +713,14 @@ export function isPointWithinPageLinkContent(root: HTMLElement, pageLink: HTMLEl
   return isPointWithinRects([pageLink.getBoundingClientRect()], x, y, 4);
 }
 
+export function isPointWithinTopicCardContent(root: HTMLElement, topicCard: HTMLElement, x: number, y: number) {
+  if (!root.contains(topicCard)) {
+    return false;
+  }
+
+  return isPointWithinRects([topicCard.getBoundingClientRect()], x, y, 4);
+}
+
 export function getBlockAtPoint(root: HTMLElement, x: number, y: number) {
   const ownerDocument = root.ownerDocument as CaretRangeDocument;
   let node: Node | null = null;
@@ -527,6 +752,22 @@ export function getPageLinkAtPoint(root: HTMLElement, x: number, y: number) {
     node instanceof HTMLElement ? node : node?.parentElement ?? ownerDocument.elementFromPoint(x, y);
   const pageLink = element?.closest<HTMLElement>("[data-inline-type='page-link']") ?? null;
   return pageLink && root.contains(pageLink) ? pageLink : null;
+}
+
+export function getTopicCardAtPoint(root: HTMLElement, x: number, y: number) {
+  const ownerDocument = root.ownerDocument as CaretRangeDocument;
+  let node: Node | null = null;
+
+  if (ownerDocument.caretPositionFromPoint) {
+    node = ownerDocument.caretPositionFromPoint(x, y)?.offsetNode ?? null;
+  } else if (ownerDocument.caretRangeFromPoint) {
+    node = ownerDocument.caretRangeFromPoint(x, y)?.startContainer ?? null;
+  }
+
+  const element =
+    node instanceof HTMLElement ? node : node?.parentElement ?? ownerDocument.elementFromPoint(x, y);
+  const topicCard = element?.closest<HTMLElement>(`[data-inline-type='${TOPIC_INLINE_TYPE}']`) ?? null;
+  return topicCard && root.contains(topicCard) ? topicCard : null;
 }
 
 function getRangeAtPoint(root: HTMLElement, x: number, y: number) {
@@ -939,32 +1180,6 @@ export function replaceBlockElementType(root: HTMLElement, blockId: string, next
   return true;
 }
 
-export function updateBlockSourceReference(
-  root: HTMLElement,
-  blockId: string,
-  sourceReference: DocumentSourceReference | null,
-  fallbackDocumentId?: string | null
-) {
-  const block = findBlockElement(root, blockId);
-  if (!block) {
-    return false;
-  }
-
-  const blockType = blockTypeFromElement(block);
-  const normalized =
-    blockType === "paragraph" || isSectionBreakBlockType(blockType)
-      ? null
-      : normalizeDocumentSourceReference(sourceReference, fallbackDocumentId);
-
-  if (!normalized) {
-    delete block.dataset.sourceReference;
-    return true;
-  }
-
-  block.dataset.sourceReference = encodeDataJson(normalized);
-  return true;
-}
-
 function createParagraphBlockElement(blockId: string) {
   const element = document.createElement("div");
   element.dataset.blockId = blockId;
@@ -986,6 +1201,20 @@ export function insertSectionBreak(
     return null;
   }
 
+  const referenceType = blockTypeFromElement(referenceBlock);
+  const referenceText = referenceBlock.textContent?.trim() ?? "";
+  if (referenceType === "paragraph" && referenceText.length === 0) {
+    const replaced = replaceBlockElementType(root, args.referenceBlockId, "sectionBreak");
+    if (!replaced) {
+      return null;
+    }
+
+    focusElementWithoutScroll(root);
+    return {
+      sectionBreakId: args.referenceBlockId
+    };
+  }
+
   const adjacentSibling =
     args.position === "after"
       ? referenceBlock.nextElementSibling
@@ -998,31 +1227,19 @@ export function insertSectionBreak(
   }
 
   const breakBlock = createSectionBreakBlock();
-  const paragraphBlock = createEmptyNoteBlock();
   const breakElement = document.createElement("div");
   breakElement.dataset.blockId = breakBlock.id;
   configureSectionBreakElement(breakElement, "sectionBreak");
-  const paragraphElement = createParagraphBlockElement(paragraphBlock.id);
 
   if (args.position === "after") {
-    referenceBlock.after(breakElement, paragraphElement);
+    referenceBlock.after(breakElement);
   } else {
-    referenceBlock.before(breakElement, paragraphElement);
+    referenceBlock.before(breakElement);
   }
 
   focusElementWithoutScroll(root);
-  const selection = window.getSelection();
-  if (selection) {
-    const range = document.createRange();
-    range.selectNodeContents(paragraphElement);
-    range.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
-
   return {
-    sectionBreakId: breakBlock.id,
-    paragraphId: paragraphBlock.id
+    sectionBreakId: breakBlock.id
   };
 }
 
@@ -1040,6 +1257,11 @@ function createPageLinkElement(node: NotePageLinkNode) {
   leadingParen.className = "page-link__paren";
   leadingParen.setAttribute("aria-hidden", "true");
   leadingParen.textContent = "(";
+  const icon = document.createElement("span");
+  icon.className = "page-link__icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.innerHTML =
+    '<svg viewBox="5 3 14 18" focusable="false"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" /></svg>';
   const label = document.createElement("span");
   label.className = "page-link__label";
   label.textContent = visibleLabel;
@@ -1047,7 +1269,7 @@ function createPageLinkElement(node: NotePageLinkNode) {
   trailingParen.className = "page-link__paren";
   trailingParen.setAttribute("aria-hidden", "true");
   trailingParen.textContent = ")";
-  element.append(leadingParen, label, trailingParen);
+  element.append(icon, leadingParen, label, trailingParen);
   return element;
 }
 
@@ -1186,6 +1408,292 @@ function removeTrailingLineBreakArtifacts(block: HTMLElement) {
   }
 }
 
+type VisibleTextSegment = {
+  node: Text;
+  start: number;
+  end: number;
+  text: string;
+};
+
+function stripInlineArtifacts(fragment: DocumentFragment | HTMLElement) {
+  fragment
+    .querySelectorAll<HTMLElement>(`[data-inline-type='${PAGE_LINK_INLINE_TYPE}'], [data-inline-type='${TOPIC_INLINE_TYPE}']`)
+    .forEach((element) => {
+      element.remove();
+    });
+}
+
+function visibleTextFromRange(range: Range) {
+  const fragment = range.cloneContents();
+  stripInlineArtifacts(fragment);
+  const text = stripPageLinkCaretAnchors(fragment.textContent ?? "");
+  return text.replace(/\u00a0/g, " ");
+}
+
+function selectionContainsInlineArtifacts(range: Range) {
+  const fragment = range.cloneContents();
+  return Boolean(
+    fragment.querySelector?.(
+      `[data-inline-type='${PAGE_LINK_INLINE_TYPE}'], [data-inline-type='${TOPIC_INLINE_TYPE}'], br`
+    )
+  );
+}
+
+function collectVisibleTextSegments(block: HTMLElement) {
+  const ownerDocument = block.ownerDocument;
+  const walker = ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  const segments: VisibleTextSegment[] = [];
+  let cursor = 0;
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const nodeText = node.textContent ?? "";
+    if (isPageLinkCaretAnchorValue(nodeText)) {
+      continue;
+    }
+
+    const parentElement = node.parentNode instanceof Element ? node.parentNode : null;
+    if (parentElement?.closest(`[data-inline-type='${PAGE_LINK_INLINE_TYPE}'], [data-inline-type='${TOPIC_INLINE_TYPE}']`)) {
+      continue;
+    }
+
+    const text = nodeText.replace(/\u00a0/g, " ");
+    if (text.length === 0) {
+      continue;
+    }
+
+    segments.push({
+      node,
+      start: cursor,
+      end: cursor + text.length,
+      text
+    });
+    cursor += text.length;
+  }
+
+  return segments;
+}
+
+function domPointForVisibleOffset(segments: VisibleTextSegment[], offset: number) {
+  if (segments.length === 0) {
+    return null;
+  }
+
+  for (const segment of segments) {
+    if (offset <= segment.end) {
+      return {
+        node: segment.node,
+        offset: Math.max(0, Math.min(segment.text.length, offset - segment.start))
+      };
+    }
+  }
+
+  const lastSegment = segments[segments.length - 1];
+  return lastSegment
+    ? {
+        node: lastSegment.node,
+        offset: lastSegment.text.length
+      }
+    : null;
+}
+
+function visibleOffsetFromPoint(block: HTMLElement, container: Node, offset: number) {
+  const range = block.ownerDocument.createRange();
+  range.selectNodeContents(block);
+  range.setEnd(container, offset);
+  return visibleTextFromRange(range).length;
+}
+
+function replaceVisibleTextRange(block: HTMLElement, startOffset: number, endOffset: number, nextText: string) {
+  const segments = collectVisibleTextSegments(block);
+  const startPoint = domPointForVisibleOffset(segments, startOffset);
+  const endPoint = domPointForVisibleOffset(segments, endOffset);
+  if (!startPoint || !endPoint) {
+    return false;
+  }
+
+  const range = block.ownerDocument.createRange();
+  range.setStart(startPoint.node, startPoint.offset);
+  range.setEnd(endPoint.node, endPoint.offset);
+  range.deleteContents();
+  if (nextText.length > 0) {
+    range.insertNode(block.ownerDocument.createTextNode(nextText));
+  }
+  return true;
+}
+
+function cleanupEmptyWrappingDelimiters(block: HTMLElement, caretOffset: number) {
+  const segments = collectVisibleTextSegments(block);
+  const text = segments.map((segment) => segment.text).join("");
+  if (text.length === 0) {
+    return;
+  }
+
+  let leftIndex = caretOffset - 1;
+  while (leftIndex >= 0 && /\s/.test(text[leftIndex] ?? "")) {
+    leftIndex -= 1;
+  }
+
+  let rightIndex = caretOffset;
+  while (rightIndex < text.length && /\s/.test(text[rightIndex] ?? "")) {
+    rightIndex += 1;
+  }
+
+  const leftChar = text[leftIndex] ?? "";
+  const rightChar = text[rightIndex] ?? "";
+  const isWrapped =
+    (leftChar === "(" && rightChar === ")") || (leftChar === "[" && rightChar === "]");
+
+  if (!isWrapped) {
+    return;
+  }
+
+  replaceVisibleTextRange(block, leftIndex, rightIndex + 1, "");
+}
+
+function cleanupWhitespaceAroundOffset(block: HTMLElement, caretOffset: number) {
+  const segments = collectVisibleTextSegments(block);
+  const text = segments.map((segment) => segment.text).join("");
+  if (text.length === 0) {
+    return;
+  }
+
+  let start = Math.max(0, Math.min(caretOffset, text.length));
+  while (start > 0 && /\s/.test(text[start - 1] ?? "")) {
+    start -= 1;
+  }
+
+  let end = Math.max(0, Math.min(caretOffset, text.length));
+  while (end < text.length && /\s/.test(text[end] ?? "")) {
+    end += 1;
+  }
+
+  if (start === end) {
+    return;
+  }
+
+  const before = text[start - 1] ?? "";
+  const after = text[end] ?? "";
+  const replacement =
+    start === 0 || end === text.length || /[),.;:!?]/.test(after) || /[([]/.test(before)
+      ? ""
+      : " ";
+
+  replaceVisibleTextRange(block, start, end, replacement);
+}
+
+function insertTopicCardAtBlockStart(block: HTMLElement, topic: ParagraphTopic) {
+  const topicElement = createTopicCardElement(topic);
+  const topicElements = Array.from(block.children).filter(
+    (child): child is HTMLElement =>
+      child instanceof HTMLElement && child.dataset.inlineType === TOPIC_INLINE_TYPE
+  );
+  const insertionPoint = topicElements[topicElements.length - 1]?.nextSibling ?? block.firstChild;
+  block.insertBefore(topicElement, insertionPoint);
+  return topicElement;
+}
+
+function readTopicCard(element: HTMLElement) {
+  return topicFromElement(element);
+}
+
+function topicCommandError(message: string) {
+  return {
+    ok: false as const,
+    message
+  };
+}
+
+function selectedTextCanBecomeTopic(root: HTMLElement) {
+  const selection = getSelectionInRoot(root);
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return topicCommandError("Select text inside one paragraph before creating a Topic card.");
+  }
+
+  const range = selection.getRangeAt(0);
+  const startBlock = findClosestBlockElement(root, range.startContainer);
+  const endBlock = findClosestBlockElement(root, range.endContainer);
+  if (!startBlock || !endBlock || startBlock !== endBlock) {
+    return topicCommandError("Topic cards can only be created from text inside one paragraph.");
+  }
+
+  if (startBlock.dataset.blockType !== "paragraph") {
+    return topicCommandError("Topic cards can only be created from paragraph text.");
+  }
+
+  if (selectionContainsInlineArtifacts(range)) {
+    return topicCommandError("Topic cards can only be created from plain text.");
+  }
+
+  const rawText = visibleTextFromRange(range);
+  if (rawText.includes("\n")) {
+    return topicCommandError("Topic cards cannot include line breaks.");
+  }
+
+  const topicText = normalizeTopicText(rawText);
+  if (!topicText) {
+    return topicCommandError("Select text inside one paragraph before creating a Topic card.");
+  }
+
+  if (topicText.length > MAX_TOPIC_LENGTH) {
+    return topicCommandError(`Topic cards must stay under ${MAX_TOPIC_LENGTH} characters.`);
+  }
+
+  return {
+    ok: true as const,
+    range,
+    block: startBlock,
+    text: topicText
+  };
+}
+
+export function canTurnSelectionIntoTopicCard(root: HTMLElement) {
+  return selectedTextCanBecomeTopic(root).ok;
+}
+
+export function turnSelectionIntoTopicCard(
+  root: HTMLElement,
+  color: InteractiveColorKey = DEFAULT_TOPIC_COLOR
+) {
+  const result = selectedTextCanBecomeTopic(root);
+  if (!result.ok) {
+    return result;
+  }
+
+  const { range, block, text } = result;
+  focusElementWithoutScroll(root);
+  const workingRange = range.cloneRange();
+  workingRange.deleteContents();
+
+  const selection = window.getSelection();
+  if (selection) {
+    selection.removeAllRanges();
+    selection.addRange(workingRange);
+  }
+
+  const caretOffset = visibleOffsetFromPoint(block, workingRange.startContainer, workingRange.startOffset);
+  cleanupEmptyWrappingDelimiters(block, caretOffset);
+  cleanupWhitespaceAroundOffset(block, caretOffset);
+
+  const topic = normalizeParagraphTopic({
+    id: crypto.randomUUID(),
+    text,
+    color
+  });
+  if (!topic) {
+    return topicCommandError("Unable to create Topic card.");
+  }
+
+  const topicElement = insertTopicCardAtBlockStart(block, topic);
+  return {
+    ok: true as const,
+    blockId: block.dataset.blockId ?? null,
+    topic,
+    topicId: topic.id,
+    topicElement
+  };
+}
+
 export function insertPageLinkAtRange(
   root: HTMLElement,
   insertionRange: Range,
@@ -1201,12 +1709,19 @@ export function insertPageLinkAtRange(
   }
 
   const block = findBlockFromRange(root, insertionRange);
-  if (!block || block.dataset.blockType !== "paragraph") {
+  const blockType = block?.dataset.blockType ?? "";
+  const canInsertIntoBlock =
+    blockType === "paragraph" ||
+    blockType === "heading1" ||
+    blockType === "heading2" ||
+    blockType === "heading3";
+  if (!block || !canInsertIntoBlock) {
     return {
       ok: false as const,
-      message: "PageLinks can only be inserted into paragraphs."
+      message: "PageLinks can only be inserted into paragraphs or headings."
     };
   }
+  const insertingIntoHeading = blockType !== "paragraph";
 
   const node = createPageLinkNode({
     text: formatPageLinkText(pageNumber),
@@ -1226,7 +1741,7 @@ export function insertPageLinkAtRange(
     nextRange.collapse(false);
   }
   const fragment = root.ownerDocument.createDocumentFragment();
-  if (shouldInsertLeadingSpace(root, nextRange)) {
+  if (!insertingIntoHeading && shouldInsertLeadingSpace(root, nextRange)) {
     fragment.appendChild(root.ownerDocument.createTextNode(" "));
   }
   fragment.appendChild(element);
@@ -1314,6 +1829,84 @@ export function removePageLink(root: HTMLElement, pageLinkId: string) {
   }
 
   return true;
+}
+
+export function readTopicCardFromElement(element: HTMLElement) {
+  return readTopicCard(element);
+}
+
+export function updateTopicCard(
+  root: HTMLElement,
+  topicId: string,
+  updates: Partial<Pick<ParagraphTopic, "text" | "color">>
+) {
+  const topicCard = findTopicCardElement(root, topicId);
+  if (!topicCard) {
+    return {
+      ok: false as const,
+      message: "Unable to update Topic card."
+    };
+  }
+
+  const current = readTopicCard(topicCard);
+  if (!current) {
+    return {
+      ok: false as const,
+      message: "Unable to update Topic card."
+    };
+  }
+
+  const nextTopic = normalizeParagraphTopic({
+    ...current,
+    text: updates.text ?? current.text,
+    color: updates.color ?? current.color
+  });
+
+  if (!nextTopic) {
+    return {
+      ok: false as const,
+      message: "Topic cards need a short label."
+    };
+  }
+
+  updateTopicCardElement(topicCard, nextTopic);
+  return {
+    ok: true as const,
+    topic: nextTopic
+  };
+}
+
+export function removeTopicCard(root: HTMLElement, topicId: string) {
+  const topicCard = findTopicCardElement(root, topicId);
+  if (!topicCard) {
+    return false;
+  }
+
+  const block = findClosestBlockElement(root, topicCard);
+  topicCard.remove();
+  if (block) {
+    focusElementWithoutScroll(root);
+    const selection = window.getSelection();
+    if (selection) {
+      const range = document.createRange();
+      range.selectNodeContents(block);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }
+  return true;
+}
+
+export function selectTopicCardToken(root: HTMLElement, topicId: string | null) {
+  root.querySelectorAll<HTMLElement>(`[data-inline-type='${TOPIC_INLINE_TYPE}']`).forEach((element) => {
+    if (!topicId || element.dataset.topicId !== topicId) {
+      delete element.dataset.selected;
+      return;
+    }
+
+    element.dataset.selected = "true";
+  });
 }
 
 export function selectPageLinkToken(root: HTMLElement, pageLinkId: string | null) {
@@ -1667,7 +2260,11 @@ export function handlePaste(root: HTMLElement, event: ClipboardEvent) {
   }
 
   const html = event.clipboardData?.getData("text/html");
-  if (html && html.includes("data-inline-type=\"page-link\"")) {
+  if (
+    html &&
+    (html.includes(`data-inline-type="${PAGE_LINK_INLINE_TYPE}"`) ||
+      html.includes(`data-inline-type="${TOPIC_INLINE_TYPE}"`))
+  ) {
     event.preventDefault();
     insertHtmlAtSelection(html);
     normalizeNoteEditorDom(root);

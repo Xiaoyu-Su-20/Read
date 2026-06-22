@@ -10,6 +10,10 @@ import type {
   NoteSpan,
   NoteTextNode
 } from "./types";
+import {
+  normalizeParagraphTopics,
+  paragraphTopicsPlainText
+} from "./paragraphTopics";
 
 export const NOTE_SAVE_DEBOUNCE_MS = 1000;
 export const PAGE_LINK_TEXT_PATTERN = /^\(p\.\s*(\d+)\)$/;
@@ -50,6 +54,46 @@ export function isSectionBreakBlock(block: NoteBlock) {
 
 export function sectionBreakPlainText() {
   return "---";
+}
+
+function sourceReferencesEqual(
+  left: DocumentSourceReference | null | undefined,
+  right: DocumentSourceReference | null | undefined
+) {
+  if (!left || !right) {
+    return false;
+  }
+
+  return (
+    left.documentId === right.documentId &&
+    left.kind === right.kind &&
+    left.outlineItemId === right.outlineItemId &&
+    left.outlineSource === right.outlineSource &&
+    left.title === right.title &&
+    JSON.stringify(left.target ?? null) === JSON.stringify(right.target ?? null)
+  );
+}
+
+function createLegacyHeadingPageLink(
+  sourceReference: DocumentSourceReference | null,
+  fallbackDocumentId?: string | null
+) {
+  const pageIndex = sourceReference?.target?.pageIndex;
+  if (!Number.isInteger(pageIndex) || pageIndex == null || pageIndex < 0) {
+    return null;
+  }
+
+  const pageNumber = pageIndex + 1;
+  return createPageLinkNode({
+    text: formatPageLinkText(pageNumber),
+    bookPageLabel: String(pageNumber),
+    documentId:
+      sourceReference?.target?.documentId ??
+      sourceReference?.documentId ??
+      fallbackDocumentId ??
+      null,
+    pdfPageIndex: pageIndex
+  });
 }
 
 function normalizeNavigationTarget(target: PdfNavigationTarget | null | undefined): PdfNavigationTarget | null {
@@ -117,12 +161,28 @@ export function noteBlockText(block: NoteBlock) {
   return block.children.map(noteInlineText).join("");
 }
 
+function noteBlockPlainText(block: NoteBlock) {
+  if (isSectionBreakBlock(block)) {
+    return sectionBreakPlainText();
+  }
+
+  const topicPrefix =
+    block.type === "paragraph" && (block.topics?.length ?? 0) > 0
+      ? paragraphTopicsPlainText(block.topics ?? [])
+      : "";
+  const bodyText = noteBlockText(block).trim();
+
+  if (topicPrefix && bodyText) {
+    return `${topicPrefix} ${bodyText}`;
+  }
+
+  return topicPrefix || bodyText;
+}
+
 export function noteToPlainText(note: NoteDocument) {
   const lines = [
     note.title.trim(),
-    ...note.blocks.map((block) =>
-      isSectionBreakBlock(block) ? sectionBreakPlainText() : noteBlockText(block).trim()
-    )
+    ...note.blocks.map(noteBlockPlainText)
   ];
   return lines.filter((line) => line.length > 0).join("\n");
 }
@@ -203,6 +263,10 @@ function normalizePageLinkNode(node: NotePageLinkNode): NotePageLinkNode {
   };
 }
 
+function normalizeBlockTopics(block: NoteBlock) {
+  return block.type === "paragraph" ? normalizeParagraphTopics(block.topics) : [];
+}
+
 function spansToChildren(spans: NoteSpan[]): NoteInlineNode[] {
   return normalizeNoteSpans(spans).map((span) => createTextNode(span.text, span));
 }
@@ -260,6 +324,7 @@ export function normalizeNoteBlocks(blocks: NoteBlock[], fallbackDocumentId?: st
         id: blockId,
         type: block.type,
         children: [],
+        topics: [],
         sourceReference: null
       });
       continue;
@@ -269,15 +334,47 @@ export function normalizeNoteBlocks(blocks: NoteBlock[], fallbackDocumentId?: st
       Array.isArray(block.children) && block.children.length > 0
         ? block.children
         : spansToChildren(block.spans ?? []);
+    let normalizedChildren = normalizeNoteInlineNodes(children, fallbackDocumentId);
+    const hasVisibleText = normalizedChildren.some((child) =>
+      child.type === "page-link" ? child.text.trim().length > 0 : child.text.trim().length > 0
+    );
+
+    const normalizedSourceReference =
+      block.type === "paragraph" || !hasVisibleText
+        ? null
+        : normalizeDocumentSourceReference(block.sourceReference, fallbackDocumentId);
+    const hasInlinePageLink = normalizedChildren.some((child) => child.type === "page-link");
+    const legacyHeadingPageLink =
+      !hasInlinePageLink && normalizedSourceReference
+        ? createLegacyHeadingPageLink(normalizedSourceReference, fallbackDocumentId)
+        : null;
+    if (legacyHeadingPageLink) {
+      normalizedChildren = normalizeNoteInlineNodes(
+        [...normalizedChildren, legacyHeadingPageLink],
+        fallbackDocumentId
+      );
+    }
+    const previousBlock = normalized[normalized.length - 1];
+    const sourceReference =
+      legacyHeadingPageLink
+        ? null
+        : previousBlock &&
+            previousBlock.type === block.type &&
+            normalizedSourceReference &&
+            sourceReferencesEqual(previousBlock.sourceReference, normalizedSourceReference)
+          ? null
+          : normalizedSourceReference;
 
     normalized.push({
       id: blockId,
       type: block.type,
-      children: normalizeNoteInlineNodes(children, fallbackDocumentId),
-      sourceReference:
-        block.type === "paragraph"
-          ? null
-          : normalizeDocumentSourceReference(block.sourceReference, fallbackDocumentId)
+      children: normalizedChildren,
+      topics: normalizeBlockTopics({
+        ...block,
+        id: blockId,
+        children: normalizedChildren
+      }),
+      sourceReference
     });
   }
 
@@ -325,6 +422,7 @@ export function replaceBlockType(
             children: isSectionBreakBlockType(nextType)
               ? []
               : block.children,
+            topics: nextType === "paragraph" ? normalizeParagraphTopics(block.topics) : [],
             sourceReference:
               nextType === "paragraph" || isSectionBreakBlockType(nextType)
                 ? null
@@ -346,6 +444,7 @@ export function replaceBlockSourceReference(
       block.id === blockId
         ? {
             ...block,
+            topics: block.type === "paragraph" ? normalizeParagraphTopics(block.topics) : [],
             sourceReference:
               block.type === "paragraph" || isSectionBreakBlockType(block.type)
                 ? null

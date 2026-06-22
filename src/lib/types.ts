@@ -31,6 +31,14 @@ export type NoteDeleteState = {
   reason: string | null;
 };
 
+export type InteractiveColorKey =
+  | "blue"
+  | "green"
+  | "amber"
+  | "rose"
+  | "violet"
+  | "slate";
+
 export type Bookmark = {
   id: string;
   page: number;
@@ -244,10 +252,17 @@ export type NotePageLinkNode = {
 
 export type NoteInlineNode = NoteTextNode | NotePageLinkNode;
 
+export type ParagraphTopic = {
+  id: string;
+  text: string;
+  color: InteractiveColorKey;
+};
+
 export type NoteBlock = {
   id: string;
   type: NoteBlockType;
   children: NoteInlineNode[];
+  topics?: ParagraphTopic[];
   sourceReference?: DocumentSourceReference | null;
   spans?: NoteSpan[];
 };
@@ -305,7 +320,10 @@ export type NoteHistoryMergeKey =
   | "insert-page-link"
   | "edit-page-link"
   | "remove-page-link"
-  | "heading-reference"
+  | "insert-topic"
+  | "edit-topic"
+  | "remove-topic"
+  | "recolor-topic"
   | "format"
   | "turn-into";
 

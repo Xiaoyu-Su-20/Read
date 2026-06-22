@@ -79,6 +79,83 @@ describe("notes helpers", () => {
     expect(updated[1]?.type).toBe("heading3");
   });
 
+  it("normalizes paragraph topics, drops empty ones, and strips them from headings", () => {
+    const blocks = normalizeNoteBlocks([
+      {
+        id: "paragraph-with-topics",
+        type: "paragraph",
+        topics: [
+          {
+            id: "topic-1",
+            text: "  Program   signals  ",
+            color: "amber"
+          },
+          {
+            id: "topic-2",
+            text: "   ",
+            color: "blue"
+          }
+        ],
+        children: [createTextNode("Body")]
+      },
+      {
+        id: "heading-with-topic",
+        type: "heading2",
+        topics: [
+          {
+            id: "topic-3",
+            text: "Should clear",
+            color: "rose"
+          }
+        ],
+        children: [createTextNode("Heading")]
+      }
+    ] as NoteBlock[]);
+
+    expect(blocks[0]?.topics).toEqual([
+      {
+        id: "topic-1",
+        text: "Program signals",
+        color: "amber"
+      }
+    ]);
+    expect(blocks[1]?.topics).toEqual([]);
+  });
+
+  it("prefixes paragraph topics in plain text export", () => {
+    const note = normalizeNoteDocument({
+      id: "note-topic-export",
+      title: "Topics",
+      bookId: null,
+      createdAt: "2026-06-22T00:00:00Z",
+      updatedAt: "2026-06-22T00:00:00Z",
+      version: 1,
+      blocks: [
+        {
+          id: "paragraph-topics",
+          type: "paragraph",
+          topics: [
+            {
+              id: "topic-1",
+              text: "Program signals",
+              color: "amber"
+            },
+            {
+              id: "topic-2",
+              text: "Observation",
+              color: "slate"
+            }
+          ],
+          children: [createTextNode("Particular signals are needed.")]
+        }
+      ]
+    });
+
+    expect(noteToPlainText(note)).toContain(
+      "[Program signals] [Observation] Particular signals are needed."
+    );
+  });
+
   it("stores section breaks as real blocks, preserves plain text separators, and collapses adjacent breaks", () => {
     const blocks = normalizeNoteBlocks([
       createSectionBreakBlock(),
@@ -167,7 +244,7 @@ describe("notes helpers", () => {
     ]);
   });
 
-  it("preserves valid heading references and removes them from paragraphs", () => {
+  it("converts valid heading references into heading page-links and removes them from paragraphs", () => {
     const reference = normalizeDocumentSourceReference({
       id: "ref-1",
       documentId: "doc-1",
@@ -197,11 +274,16 @@ describe("notes helpers", () => {
       }
     ]);
 
-    expect(blocks[0]?.sourceReference?.target?.pageIndex).toBe(4);
+    expect(blocks[0]?.sourceReference).toBeNull();
+    expect(blocks[0]?.children[blocks[0].children.length - 1]).toMatchObject({
+      type: "page-link",
+      bookPageLabel: "5",
+      pdfPageIndex: 4
+    });
     expect(blocks[1]?.sourceReference).toBeNull();
   });
 
-  it("replaces heading references without changing the heading text", () => {
+  it("replaces heading references without changing the heading text prefix", () => {
     const blocks = replaceBlockSourceReference(
       [
         {
@@ -226,8 +308,79 @@ describe("notes helpers", () => {
       }
     );
 
-    expect(blocks[0]?.children).toEqual([createTextNode("Section")]);
-    expect(blocks[0]?.sourceReference?.target?.pageIndex).toBe(8);
+    expect(blocks[0]?.children[0]).toEqual(createTextNode("Section"));
+    expect(blocks[0]?.children[1]).toMatchObject({
+      type: "page-link",
+      bookPageLabel: "9",
+      pdfPageIndex: 8
+    });
+    expect(blocks[0]?.sourceReference).toBeNull();
+  });
+
+  it("converts duplicated adjacent heading references into a single visible heading page-link", () => {
+    const reference = normalizeDocumentSourceReference({
+      id: "ref-1",
+      documentId: "doc-1",
+      kind: "direct",
+      outlineItemId: null,
+      outlineSource: null,
+      title: "Chapter",
+      target: {
+        documentId: "doc-1",
+        pageIndex: 12
+      },
+      createdAt: "2026-06-22T00:00:00Z"
+    });
+
+    const blocks = normalizeNoteBlocks([
+      {
+        id: "heading-1",
+        type: "heading1",
+        children: [createTextNode("Chapter 2")],
+        sourceReference: reference
+      },
+      {
+        id: "heading-2",
+        type: "heading1",
+        children: [createTextNode("")],
+        sourceReference: reference
+      }
+    ]);
+
+    expect(blocks[0]?.sourceReference).toBeNull();
+    expect(blocks[0]?.children[blocks[0].children.length - 1]).toMatchObject({
+      type: "page-link",
+      bookPageLabel: "13",
+      pdfPageIndex: 12
+    });
+    expect(blocks[1]?.sourceReference).toBeNull();
+  });
+
+  it("clears heading references from empty headings", () => {
+    const reference = normalizeDocumentSourceReference({
+      id: "ref-empty",
+      documentId: "doc-1",
+      kind: "direct",
+      outlineItemId: null,
+      outlineSource: null,
+      title: "Chapter",
+      target: {
+        documentId: "doc-1",
+        pageIndex: 12
+      },
+      createdAt: "2026-06-22T00:00:00Z"
+    });
+
+    const blocks = normalizeNoteBlocks([
+      {
+        id: "heading-empty",
+        type: "heading1",
+        children: [createTextNode("")],
+        sourceReference: reference
+      }
+    ]);
+
+    expect(blocks[0]?.sourceReference).toBeNull();
   });
 
   it("creates pagelinks with a saved pdf page index", () => {

@@ -1,5 +1,6 @@
-import type { NoteBlockType } from "../../../lib/types";
+import type { InteractiveColorKey, NoteBlockType } from "../../../lib/types";
 import BlockTypeSubmenu from "./BlockTypeSubmenu";
+import TopicColorSubmenu from "./TopicColorSubmenu";
 import type { PanePoint } from "./menuPlacement";
 import type { NotesContextMenuState } from "./useContextMenuController";
 
@@ -7,7 +8,7 @@ type NotesContextMenuProps = {
   documentCapabilities: boolean;
   state: NotesContextMenuState | null;
   position: PanePoint | null;
-  submenuOpen: boolean;
+  submenuKind: "turn-into" | "topic-color" | null;
   submenuPlacement: {
     direction: "right" | "left";
     offsetY: number;
@@ -20,23 +21,25 @@ type NotesContextMenuProps = {
   onPaste: () => void | Promise<void>;
   onTurnInto: (type: NoteBlockType) => void;
   onInsertSectionBreak: () => void;
+  onRemoveSectionBreak: () => void;
   onAddPageLink: () => void;
-  onAddHeadingPagemark: () => void;
-  onRemoveHeadingReference: () => void;
   onOpenPage: () => void;
-  onOpenHeadingReferencePage: () => void;
   onEditPageLink: () => void;
   onCopyPageReference: () => void;
   onRemovePageLink: () => void;
-  onOpenSubmenu: () => void;
+  onEditTopic: () => void;
+  onRemoveTopic: () => void;
+  onChangeTopicColor: (color: InteractiveColorKey) => void;
+  onOpenSubmenu: (kind: "turn-into" | "topic-color") => void;
   onScheduleCloseSubmenu: () => void;
+  onTurnIntoTopicCard: () => void;
 };
 
 export default function NotesContextMenu({
   documentCapabilities,
   state,
   position,
-  submenuOpen,
+  submenuKind,
   submenuPlacement,
   menuRef,
   submenuRef,
@@ -46,26 +49,24 @@ export default function NotesContextMenu({
   onPaste,
   onTurnInto,
   onInsertSectionBreak,
+  onRemoveSectionBreak,
   onAddPageLink,
-  onAddHeadingPagemark,
-  onRemoveHeadingReference,
   onOpenPage,
-  onOpenHeadingReferencePage,
   onEditPageLink,
   onCopyPageReference,
   onRemovePageLink,
+  onEditTopic,
+  onRemoveTopic,
+  onChangeTopicColor,
   onOpenSubmenu,
-  onScheduleCloseSubmenu
+  onScheduleCloseSubmenu,
+  onTurnIntoTopicCard
 }: NotesContextMenuProps) {
   if (!state) {
     return null;
   }
 
   const menuPosition = position ?? state.anchor;
-  const isHeadingTarget =
-    documentCapabilities &&
-    state.target === "body" &&
-    (state.blockType === "heading1" || state.blockType === "heading2" || state.blockType === "heading3");
   const isSectionBreakTarget =
     state.target === "body" && state.blockType === "sectionBreak";
 
@@ -100,13 +101,45 @@ export default function NotesContextMenu({
               Remove PageLink
             </button>
           </>
-        ) : state.target === "heading-reference" ? (
+        ) : state.target === "topic-card" ? (
           <>
-            <button className="editor-context-menu__item" type="button" onClick={onOpenHeadingReferencePage}>
-              Open Page
+            <button className="editor-context-menu__item" type="button" onClick={onEditTopic}>
+              Edit topic
             </button>
-            <button className="editor-context-menu__item" type="button" onClick={onRemoveHeadingReference}>
-              Remove pagemark
+            <div
+              ref={submenuAnchorRef}
+              className="editor-context-menu__group editor-context-menu__group--has-submenu"
+              onMouseEnter={() => onOpenSubmenu("topic-color")}
+              onMouseLeave={onScheduleCloseSubmenu}
+            >
+              <button
+                className="editor-context-menu__item editor-context-menu__item--with-caret"
+                type="button"
+                onClick={() => {
+                  if (submenuKind === "topic-color") {
+                    onScheduleCloseSubmenu();
+                    return;
+                  }
+
+                  onOpenSubmenu("topic-color");
+                }}
+              >
+                Change color
+              </button>
+              {submenuKind === "topic-color" ? (
+                <TopicColorSubmenu
+                  direction={submenuPlacement.direction}
+                  offsetY={submenuPlacement.offsetY}
+                  innerRef={submenuRef}
+                  currentColor={state.topicColor}
+                  onMouseEnter={() => onOpenSubmenu("topic-color")}
+                  onMouseLeave={onScheduleCloseSubmenu}
+                  onSelect={onChangeTopicColor}
+                />
+              ) : null}
+            </div>
+            <button className="editor-context-menu__item" type="button" onClick={onRemoveTopic}>
+              Remove topic
             </button>
           </>
         ) : (
@@ -114,9 +147,11 @@ export default function NotesContextMenu({
             <button className="editor-context-menu__item" type="button" onClick={onCopy}>
               Copy
             </button>
-            <button className="editor-context-menu__item" type="button" onClick={onPaste}>
-              Paste
-            </button>
+            {!isSectionBreakTarget ? (
+              <button className="editor-context-menu__item" type="button" onClick={onPaste}>
+                Paste
+              </button>
+            ) : null}
             <button className="editor-context-menu__item" type="button" onClick={onCut}>
               Cut
             </button>
@@ -130,49 +165,44 @@ export default function NotesContextMenu({
                 Insert Section Break
               </button>
             ) : null}
-            {isHeadingTarget ? (
-              <>
-                <button className="editor-context-menu__item" type="button" onClick={onAddHeadingPagemark}>
-                  Add pagemark
-                </button>
-                {state.sourceReference ? (
-                  <button className="editor-context-menu__item" type="button" onClick={onRemoveHeadingReference}>
-                    Remove pagemark
-                  </button>
-                ) : null}
-              </>
+            {isSectionBreakTarget ? (
+              <button className="editor-context-menu__item" type="button" onClick={onRemoveSectionBreak}>
+                Remove Section Break
+              </button>
             ) : null}
             {state.target === "body" ? (
               <div
                 ref={submenuAnchorRef}
                 className="editor-context-menu__group editor-context-menu__group--has-submenu"
-                onMouseEnter={onOpenSubmenu}
+                onMouseEnter={() => onOpenSubmenu("turn-into")}
                 onMouseLeave={onScheduleCloseSubmenu}
               >
                 <button
                   className="editor-context-menu__item editor-context-menu__item--with-caret"
                   type="button"
                   onClick={() => {
-                    if (submenuOpen) {
+                    if (submenuKind === "turn-into") {
                       onScheduleCloseSubmenu();
                       return;
                     }
 
-                    onOpenSubmenu();
+                    onOpenSubmenu("turn-into");
                   }}
                 >
                   Turn into
                 </button>
-                {submenuOpen ? (
+                {submenuKind === "turn-into" ? (
                   <BlockTypeSubmenu
                     direction={submenuPlacement.direction}
                     offsetY={submenuPlacement.offsetY}
                     innerRef={submenuRef}
-                    onMouseEnter={onOpenSubmenu}
+                    onMouseEnter={() => onOpenSubmenu("turn-into")}
                     onMouseLeave={onScheduleCloseSubmenu}
+                    canTurnIntoTopicCard={state.canTurnIntoTopicCard}
                     onSelect={(type) => {
                       onTurnInto(type);
                     }}
+                    onSelectTopicCard={onTurnIntoTopicCard}
                   />
                 ) : null}
               </div>

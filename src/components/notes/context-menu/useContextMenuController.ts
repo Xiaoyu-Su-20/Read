@@ -1,4 +1,4 @@
-import type { DocumentSourceReference, NoteBlockType } from "../../../lib/types";
+import type { InteractiveColorKey, NoteBlockType } from "../../../lib/types";
 import {
   useCallback,
   useEffect,
@@ -24,7 +24,7 @@ export type NotesContextMenuState =
       blockId: string;
       blockType: NoteBlockType;
       canAddPageLink: boolean;
-      sourceReference: DocumentSourceReference | null;
+      canTurnIntoTopicCard: boolean;
       anchor: PanePoint;
     }
   | {
@@ -34,10 +34,10 @@ export type NotesContextMenuState =
       anchor: PanePoint;
     }
   | {
-      target: "heading-reference";
+      target: "topic-card";
       blockId: string;
-      blockType: NoteBlockType;
-      sourceReference: DocumentSourceReference;
+      topicId: string;
+      topicColor: InteractiveColorKey;
       anchor: PanePoint;
     };
 
@@ -48,7 +48,7 @@ type UseContextMenuControllerArgs = {
 export function useContextMenuController({ paneRef }: UseContextMenuControllerArgs) {
   const [state, setState] = useState<NotesContextMenuState | null>(null);
   const [position, setPosition] = useState<PanePoint | null>(null);
-  const [submenuOpen, setSubmenuOpen] = useState(false);
+  const [submenuKind, setSubmenuKind] = useState<"turn-into" | "topic-color" | null>(null);
   const [submenuPlacement, setSubmenuPlacement] = useState<SubmenuPlacement>({
     direction: "right",
     offsetY: 0
@@ -67,28 +67,28 @@ export function useContextMenuController({ paneRef }: UseContextMenuControllerAr
 
   const closeMenu = useCallback(() => {
     clearCloseTimer();
-    setSubmenuOpen(false);
+    setSubmenuKind(null);
     setState(null);
   }, [clearCloseTimer]);
 
   const openMenu = useCallback(
     (nextState: NotesContextMenuState) => {
       clearCloseTimer();
-      setSubmenuOpen(false);
+      setSubmenuKind(null);
       setState(nextState);
     },
     [clearCloseTimer]
   );
 
-  const openSubmenu = useCallback(() => {
+  const openSubmenu = useCallback((kind: "turn-into" | "topic-color") => {
     clearCloseTimer();
-    setSubmenuOpen(true);
+    setSubmenuKind(kind);
   }, [clearCloseTimer]);
 
   const scheduleCloseSubmenu = useCallback(() => {
     clearCloseTimer();
     closeTimerRef.current = window.setTimeout(() => {
-      setSubmenuOpen(false);
+      setSubmenuKind(null);
       closeTimerRef.current = null;
     }, 120);
   }, [clearCloseTimer]);
@@ -135,7 +135,7 @@ export function useContextMenuController({ paneRef }: UseContextMenuControllerAr
   }, [paneRef, state]);
 
   useLayoutEffect(() => {
-    if (!submenuOpen || !paneRef.current || !submenuAnchorRef.current || !submenuRef.current) {
+    if (!submenuKind || !paneRef.current || !submenuAnchorRef.current || !submenuRef.current) {
       setSubmenuPlacement({
         direction: "right",
         offsetY: 0
@@ -153,12 +153,13 @@ export function useContextMenuController({ paneRef }: UseContextMenuControllerAr
         }
       )
     );
-  }, [paneRef, position, state, submenuOpen]);
+  }, [paneRef, position, state, submenuKind]);
 
   return {
     state,
     position,
-    submenuOpen,
+    submenuKind,
+    submenuOpen: submenuKind !== null,
     submenuPlacement,
     menuRef,
     submenuRef,

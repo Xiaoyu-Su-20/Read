@@ -9,7 +9,9 @@ type BlockTypeSubmenuProps = {
   innerRef?: Ref<HTMLDivElement>;
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
+  canTurnIntoTopicCard?: boolean;
   onSelect: (type: NoteBlockType) => void;
+  onSelectTopicCard?: () => void;
 };
 
 export default function BlockTypeSubmenu({
@@ -18,7 +20,9 @@ export default function BlockTypeSubmenu({
   innerRef,
   onMouseEnter,
   onMouseLeave,
-  onSelect
+  canTurnIntoTopicCard = false,
+  onSelect,
+  onSelectTopicCard
 }: BlockTypeSubmenuProps) {
   const options: Array<{ label: string; type: NoteBlockType }> = [
     { label: "Normal text", type: "paragraph" },
@@ -45,6 +49,16 @@ export default function BlockTypeSubmenu({
           {option.label}
         </button>
       ))}
+      <button
+        className="editor-context-menu__item"
+        type="button"
+        disabled={!canTurnIntoTopicCard}
+        onClick={() => {
+          onSelectTopicCard?.();
+        }}
+      >
+        Topic card
+      </button>
     </div>
   );
 }

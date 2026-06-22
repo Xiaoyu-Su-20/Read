@@ -3,10 +3,8 @@ import { createPortal } from "react-dom";
 
 import { logNoteDebugEvent } from "../../lib/api";
 import {
-  createDirectHeadingReference,
   headingLevel,
-  headingTitle,
-  resolveSourceReferenceTarget
+  headingTitle
 } from "../../lib/documentReferences";
 import { makeBookmark } from "../../lib/app/helpers";
 import { findBookmarkAtPage } from "../../lib/commands";
@@ -82,7 +80,11 @@ function NavigationButton({
 }
 
 function isContextMenuTarget(target: EventTarget | null) {
-  return target instanceof Element && Boolean(target.closest(".note-editor"));
+  return (
+    target instanceof Element &&
+    !target.closest(".paragraph-topic-editor") &&
+    Boolean(target.closest(".note-editor"))
+  );
 }
 
 function isMenuInteractiveTarget(target: EventTarget | null) {
@@ -90,7 +92,7 @@ function isMenuInteractiveTarget(target: EventTarget | null) {
     target instanceof Element &&
     Boolean(
       target.closest(
-        ".editor-context-menu, .block-type-submenu, .notes-find-panel, .notes-inline-dialog, .notes-popover, .notes-header-tools, .notes-pane__scrollbar"
+        ".editor-context-menu, .block-type-submenu, .notes-find-panel, .notes-inline-dialog, .notes-popover, .notes-header-tools, .notes-pane__scrollbar, .paragraph-topic-editor"
       )
     )
   );
@@ -242,6 +244,8 @@ const NotesPane = memo(function NotesPane({
   const [pageLinkDialog, setPageLinkDialog] = useState<{
     mode: "insert" | "edit";
     pageLinkId: string | null;
+    blockId: string | null;
+    blockType: NoteBlockType | null;
     value: string;
     error: string | null;
   } | null>(null);
@@ -371,7 +375,7 @@ const NotesPane = memo(function NotesPane({
   const {
     state: contextMenuState,
     position: contextMenuPosition,
-    submenuOpen,
+    submenuKind,
     submenuPlacement,
     menuRef,
     submenuRef,
@@ -555,6 +559,20 @@ const NotesPane = memo(function NotesPane({
       return;
     }
 
+    if (
+      current.mode === "insert" &&
+      documentCapabilities &&
+      currentPage &&
+      (current.blockType === "heading1" ||
+        current.blockType === "heading2" ||
+        current.blockType === "heading3")
+    ) {
+      const block = findHeadingBlock(current.blockId);
+      if (block && !findBookmarkAtPage(bookmarks, currentPage)) {
+        onSetBookmarks([...bookmarks, makeBookmark(currentPage, headingTitle(block))]);
+      }
+    }
+
     editorRef.current?.clearSelectedBlock();
     setPageLinkDialog(null);
     window.requestAnimationFrame(() => {
@@ -578,115 +596,6 @@ const NotesPane = memo(function NotesPane({
   function findHeadingBlock(blockId: string | null | undefined) {
     const block = note?.blocks.find((candidate) => candidate.id === blockId) ?? null;
     return block && headingLevel(block) ? block : null;
-  }
-
-  function setHeadingReference(
-    blockId: string,
-    reference: Parameters<NoteEditorHandle["setHeadingReference"]>[1]
-  ) {
-    const updated = editorRef.current?.setHeadingReference(blockId, reference);
-    if (!updated) {
-      showToast("Unable to update heading reference.");
-      return false;
-    }
-
-    return true;
-  }
-
-  function addHeadingPagemark() {
-    if (!documentCapabilities) {
-      closeMenu();
-      return;
-    }
-
-    if (contextMenuState?.target !== "body" || !documentId || !currentPage) {
-      showToast("Open a document page before adding a pagemark.");
-      closeMenu();
-      return;
-    }
-
-    const block = findHeadingBlock(contextMenuState.blockId);
-    if (!block) {
-      closeMenu();
-      return;
-    }
-
-    setHeadingReference(
-      block.id,
-      createDirectHeadingReference({
-        documentId,
-        title: headingTitle(block),
-        pageNumber: currentPage
-      })
-    );
-
-    const existingBookmark = findBookmarkAtPage(bookmarks, currentPage);
-    if (!existingBookmark) {
-      onSetBookmarks([
-        ...bookmarks,
-        makeBookmark(currentPage, headingTitle(block))
-      ]);
-    }
-
-    editorRef.current?.clearSelectedBlock();
-    closeMenu();
-  }
-
-  function removeHeadingReference() {
-    if (!documentCapabilities) {
-      closeMenu();
-      return;
-    }
-
-    if (contextMenuState?.target !== "body" && contextMenuState?.target !== "heading-reference") {
-      return;
-    }
-
-    setHeadingReference(contextMenuState.blockId, null);
-    editorRef.current?.clearSelectedBlock();
-    closeMenu();
-  }
-
-  function handleHeadingReferenceOpen(
-    reference: NonNullable<NoteDocument["blocks"][number]["sourceReference"]>
-  ) {
-    if (!documentCapabilities) {
-      return;
-    }
-
-    const target = resolveSourceReferenceTarget(reference, outlineItems);
-    if (!target) {
-      showToast("This heading reference no longer has a page target.");
-      return;
-    }
-
-    onNavigateToTarget(target);
-  }
-
-  function handleHeadingReferenceContextMenu(args: {
-    blockId: string;
-    blockType: Exclude<NoteBlockType, "paragraph">;
-    clientX: number;
-    clientY: number;
-    reference: NonNullable<NoteDocument["blocks"][number]["sourceReference"]>;
-  }) {
-    if (!documentCapabilities) {
-      return;
-    }
-
-    const paneElement = paneRef.current;
-    if (!paneElement) {
-      return;
-    }
-
-    closeInlineOverlays();
-    openMenu({
-      target: "heading-reference",
-      blockId: args.blockId,
-      blockType: args.blockType,
-      sourceReference: args.reference,
-      anchor: toPanePoint(args.clientX, args.clientY, paneElement)
-    });
   }
 
   useEffect(() => {
@@ -906,12 +815,20 @@ const NotesPane = memo(function NotesPane({
               pageLinkId: resolvedTarget.pageLinkId,
               anchor
             }
+          : resolvedTarget.target === "topic-card"
+            ? {
+                target: "topic-card",
+                blockId: resolvedTarget.blockId,
+                topicId: resolvedTarget.topicId,
+                topicColor: resolvedTarget.topicColor,
+                anchor
+              }
           : {
               target: "body",
               blockId: resolvedTarget.blockId,
               blockType: resolvedTarget.blockType,
               canAddPageLink: resolvedTarget.canAddPageLink,
-              sourceReference: resolvedTarget.sourceReference,
+              canTurnIntoTopicCard: resolvedTarget.canTurnIntoTopicCard,
               anchor
             };
 
@@ -1231,8 +1148,6 @@ const NotesPane = memo(function NotesPane({
                   void onFlush();
                 }}
                 onOpenPageLink={handlePageLinkOpen}
-                onOpenHeadingReference={handleHeadingReferenceOpen}
-                onOpenHeadingReferenceContextMenu={handleHeadingReferenceContextMenu}
               />
             </>
           ) : (
@@ -1388,7 +1303,7 @@ const NotesPane = memo(function NotesPane({
         documentCapabilities={documentCapabilities}
         state={contextMenuState}
         position={contextMenuPosition}
-        submenuOpen={submenuOpen}
+        submenuKind={submenuKind}
         submenuPlacement={submenuPlacement}
         menuRef={menuRef}
         submenuRef={submenuRef}
@@ -1411,12 +1326,27 @@ const NotesPane = memo(function NotesPane({
           closeMenu();
         }}
         onAddPageLink={() => {
+          const targetBlockId =
+            contextMenuState?.target === "body" ? contextMenuState.blockId : null;
+          const targetBlockType =
+            contextMenuState?.target === "body" ? contextMenuState.blockType : null;
           setPageLinkDialog({
             mode: "insert",
             pageLinkId: null,
+            blockId: targetBlockId,
+            blockType: targetBlockType,
             value: "",
             error: null
           });
+          closeMenu();
+        }}
+        onTurnIntoTopicCard={() => {
+          const result = editorRef.current?.createTopicFromSelection();
+          if (result && !result.ok) {
+            showToast(result.message);
+            return;
+          }
+          editorRef.current?.clearSelectedBlock();
           closeMenu();
         }}
         onInsertSectionBreak={() => {
@@ -1429,8 +1359,14 @@ const NotesPane = memo(function NotesPane({
           editorRef.current?.clearSelectedBlock();
           closeMenu();
         }}
-        onAddHeadingPagemark={addHeadingPagemark}
-        onRemoveHeadingReference={removeHeadingReference}
+        onRemoveSectionBreak={() => {
+          if (contextMenuState?.target !== "body") {
+            return;
+          }
+          editorRef.current?.removeBlock(contextMenuState.blockId);
+          editorRef.current?.clearSelectedBlock();
+          closeMenu();
+        }}
         onOpenPage={() => {
           if (contextMenuState?.target !== "page-link") {
             return;
@@ -1439,14 +1375,6 @@ const NotesPane = memo(function NotesPane({
           if (!node) {
             return;
           }
-          editorRef.current?.clearSelectedBlock();
-          closeMenu();
-        }}
-        onOpenHeadingReferencePage={() => {
-          if (contextMenuState?.target !== "heading-reference") {
-            return;
-          }
-          handleHeadingReferenceOpen(contextMenuState.sourceReference);
           editorRef.current?.clearSelectedBlock();
           closeMenu();
         }}
@@ -1462,6 +1390,8 @@ const NotesPane = memo(function NotesPane({
           setPageLinkDialog({
             mode: "edit",
             pageLinkId: contextMenuState.pageLinkId,
+            blockId: contextMenuState.blockId,
+            blockType: null,
             value:
               node.bookPageLabel.trim() ||
               (typeof node.pdfPageIndex === "number" ? String(node.pdfPageIndex) : ""),
@@ -1477,6 +1407,33 @@ const NotesPane = memo(function NotesPane({
           editorRef.current?.clearSelectedBlock();
           closeMenu();
         }}
+        onEditTopic={() => {
+          if (contextMenuState?.target !== "topic-card") {
+            return;
+          }
+          editorRef.current?.startTopicEdit(contextMenuState.topicId);
+          closeMenu();
+        }}
+        onChangeTopicColor={(color) => {
+          if (contextMenuState?.target !== "topic-card") {
+            return;
+          }
+          const result = editorRef.current?.editTopic(contextMenuState.topicId, { color });
+          if (result && !result.ok) {
+            showToast(result.message);
+            return;
+          }
+          editorRef.current?.clearSelectedBlock();
+          closeMenu();
+        }}
+        onRemoveTopic={() => {
+          if (contextMenuState?.target !== "topic-card") {
+            return;
+          }
+          editorRef.current?.removeTopic(contextMenuState.topicId);
+          editorRef.current?.clearSelectedBlock();
+          closeMenu();
+        }}
         onRemovePageLink={() => {
           if (contextMenuState?.target !== "page-link") {
             return;
@@ -1488,7 +1445,9 @@ const NotesPane = memo(function NotesPane({
         onTurnInto={(type: NoteBlockType) => {
           void logNoteDebugEvent("notes.turn_into.menu_clicked", {
             blockId:
-              contextMenuState?.target === "body" || contextMenuState?.target === "page-link"
+              contextMenuState?.target === "body" ||
+              contextMenuState?.target === "page-link" ||
+              contextMenuState?.target === "topic-card"
                 ? contextMenuState.blockId
                 : null,
             noteId: note?.id ?? null,
