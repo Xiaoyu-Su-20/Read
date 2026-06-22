@@ -57,6 +57,16 @@ export function getLibraryRoot() {
   return invokeLogged<string>("get_library_root");
 }
 
+export function loadAppSettings() {
+  return invokeLogged<string | null>("load_app_settings");
+}
+
+export function saveAppSettings(rawSettings: string) {
+  return invokeLogged<void>("save_app_settings", {
+    rawSettings
+  });
+}
+
 export function createFolder(name: string, parentFolderId?: string) {
   return invokeLogged<FolderRecord>("create_folder", {
     name,

@@ -88,6 +88,21 @@ impl LibraryStore {
         Ok(self.paths.library_root_path().to_string_lossy().to_string())
     }
 
+    pub fn load_app_settings(&self) -> AppResult<Option<String>> {
+        self.paths.ensure_storage_dirs()?;
+        if !self.paths.settings_path.exists() {
+            return Ok(None);
+        }
+
+        Ok(Some(fs::read_to_string(&self.paths.settings_path)?))
+    }
+
+    pub fn save_app_settings(&self, raw: &str) -> AppResult<()> {
+        self.paths.ensure_storage_dirs()?;
+        self.paths
+            .write_string_atomically(&self.paths.settings_path, raw)
+    }
+
     pub fn list_library(&self) -> AppResult<FolderTreeNode> {
         self.ensure_ready()?;
         self.catalog.reconcile_library(&self.paths, &self.states)?;

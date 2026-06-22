@@ -10,14 +10,14 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState,
-  useSyncExternalStore
+  useState
 } from "react";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import CollectionViewRefresh from "./components/CollectionViewRefresh";
 import DisplaySettingsPopover from "./components/DisplaySettingsPopover";
+import SidebarDocumentSearchPopover from "./components/SidebarDocumentSearchPopover";
 import BookWorkspaceGlyph from "./components/icons/BookWorkspaceGlyph";
 import CollectionLibraryGlyph from "./components/icons/CollectionLibraryGlyph";
 import { createUnifiedSearchController } from "./search";
@@ -38,8 +38,9 @@ import { useLibraryFlows } from "./lib/app/useLibraryFlows";
 import { useNotesController, type NoteTarget } from "./lib/app/useNotesController";
 import { usePaletteController } from "./lib/app/usePaletteController";
 import { useWorkspaceController } from "./lib/app/useWorkspaceController";
-import { debugAction, debugLocalAction } from "./lib/debugLog";
+import { debugAction, debugLocalAction, reportFrontendError, traceEvent } from "./lib/debugLog";
 import { collectDocuments } from "./lib/tree";
+import { toViewEventName, type ViewTransition, type WorkspaceView } from "./lib/workspaceView";
 
 function startupTrace(step: string, fields: Record<string, unknown> = {}) {
   const payload = {
@@ -48,9 +49,8 @@ function startupTrace(step: string, fields: Record<string, unknown> = {}) {
     navigationMs: Math.round(performance.now()),
     ...fields
   };
-  console.info(`[CR-STARTUP][app] ${step}`, payload);
   debugLocalAction(`frontend.startup.app.${step}`, payload);
-  debugAction(`frontend.startup.app.${step}`, payload);
+  traceEvent(`frontend.startup.app.${step}`, payload);
 }
 
 startupTrace("module-loaded");
@@ -71,22 +71,17 @@ type FullscreenState =
   | "fullscreen"
   | "exiting";
 
-type ViewMode = "reader" | "collection" | "notes" | "book";
-
 type PendingViewNavigationTrace = {
   clickStartedAtMs: number;
   documentId: string | null;
-  fromView: ViewMode;
+  fromView: WorkspaceView;
   openSessionId: string | null;
   source: string;
-  toView: ViewMode;
+  toView: WorkspaceView;
   viewTransitionId: string;
 };
 
-type ActiveViewTransition = Pick<
-  PendingViewNavigationTrace,
-  "clickStartedAtMs" | "fromView" | "source" | "toView" | "viewTransitionId"
->;
+type ActiveViewTransition = ViewTransition;
 
 type SavedWindowState = {
   maximized: boolean;
@@ -94,19 +89,6 @@ type SavedWindowState = {
   position: { x: number; y: number } | null;
   size: { width: number; height: number } | null;
 };
-
-function toViewEventName(view: ViewMode) {
-  if (view === "reader") {
-    return "document";
-  }
-  if (view === "book") {
-    return "book";
-  }
-  if (view === "notes") {
-    return "notes";
-  }
-  return "collection";
-}
 
 function shouldStartWindowDrag(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
@@ -148,7 +130,6 @@ function ChromeIcon({
 }
 
 export default function App() {
-  startupTrace("component-render-start");
   const workspace = useWorkspaceController();
   const noteTarget: NoteTarget = useMemo(() => {
     if (workspace.workspaceMode === "notes") {
@@ -181,16 +162,13 @@ export default function App() {
   const { settings, selectors, setSetting, updateSettings } = useAppSettings();
   const palette = usePaletteController();
   const searchController = useMemo(() => createUnifiedSearchController(), []);
-  const searchUiOpen = useSyncExternalStore(
-    searchController.subscribe,
-    () => searchController.getSnapshot().open,
-    () => false
-  );
   const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const [noteRevealRequest, setNoteRevealRequest] = useState<import("./lib/types").NoteRevealRequest | null>(null);
   const [notesNavigationOpenRequest, setNotesNavigationOpenRequest] = useState(0);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [outlineAnchorElement, setOutlineAnchorElement] = useState<HTMLButtonElement | null>(null);
+  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
+  const [sidebarSearchAnchorElement, setSidebarSearchAnchorElement] = useState<HTMLButtonElement | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteAnchorElement, setPaletteAnchorElement] = useState<HTMLButtonElement | null>(null);
   const [fullscreenState, setFullscreenState] = useState<FullscreenState>("windowed");
@@ -200,7 +178,7 @@ export default function App() {
   const pendingViewNavigationRef = useRef<PendingViewNavigationTrace | null>(null);
   const committedViewNavigationRef = useRef<PendingViewNavigationTrace | null>(null);
   const activeViewTransitionRef = useRef<ActiveViewTransition | null>(null);
-  const currentViewRef = useRef<ViewMode>(workspace.workspaceMode);
+  const currentViewRef = useRef<WorkspaceView>(workspace.workspaceMode);
   const activeDocumentIdRef = useRef<string | null>(workspace.activeDocumentId);
   const collectionPointerDownSequenceRef = useRef(0);
   const lastCollectionPointerDownRef = useRef<{
@@ -278,7 +256,7 @@ export default function App() {
   );
 
   const startViewNavigationTrace = useCallback(
-    (toView: ViewMode, source: string) => {
+    (toView: WorkspaceView, source: string) => {
       const fromView = workspace.workspaceMode;
       const trace: PendingViewNavigationTrace = {
         clickStartedAtMs: performance.now(),
@@ -480,7 +458,7 @@ export default function App() {
       const readerFullscreenActive = nativeFullscreen || fullscreenWindowStateRef.current !== null;
       setFullscreenState(readerFullscreenActive ? "fullscreen" : "windowed");
     } catch (error) {
-      console.error("fullscreen sync failed:", error);
+      reportFrontendError("frontend.fullscreen-sync-error", error);
     }
   }, []);
 
@@ -570,7 +548,7 @@ export default function App() {
       fullscreenWindowStateRef.current = null;
       setFullscreenState("windowed");
       workspace.setStatusMessage("Unable to enter fullscreen.");
-      console.error("enter fullscreen failed:", error);
+      reportFrontendError("frontend.enter-fullscreen-error", error);
     } finally {
       fullscreenTransitionRef.current = false;
       void syncFullscreenState();
@@ -604,7 +582,7 @@ export default function App() {
       setFullscreenState("windowed");
     } catch (error) {
       setFullscreenState("fullscreen");
-      console.error("exit fullscreen failed:", error);
+      reportFrontendError("frontend.exit-fullscreen-error", error);
     } finally {
       fullscreenTransitionRef.current = false;
       void syncFullscreenState();
@@ -713,10 +691,27 @@ export default function App() {
     }
 
     palette.closePalette();
+    setSidebarSearchOpen(false);
     setOutlineOpen(false);
     setSettingsOpen(false);
     searchController.open();
     setSearchFocusRequest((current) => current + 1);
+  }
+
+  const openSidebarSearchDocument = useCallback(async (documentId: string) => {
+    const targetMode = workspace.workspaceMode === "book" ? "book" : "reader";
+    await workspace.handleOpenDocument(documentId, {
+      source: "sidebar-search",
+      targetMode
+    });
+  }, [workspace]);
+
+  function toggleSidebarDocumentSearch() {
+    palette.closePalette();
+    searchController.dismiss();
+    setOutlineOpen(false);
+    setSettingsOpen(false);
+    setSidebarSearchOpen((current) => !current);
   }
 
   const openNotesNavigation = useCallback(() => {
@@ -794,7 +789,7 @@ export default function App() {
         }
         document.documentElement.dataset.windowMaximized = maximized ? "true" : "false";
       } catch (error) {
-        console.error("window chrome sync failed:", error);
+        reportFrontendError("frontend.window-chrome-sync-error", error);
       }
     }
 
@@ -815,7 +810,7 @@ export default function App() {
           await appWindow.maximize();
         }
       } catch (error) {
-        console.error("startup maximize failed:", error);
+        reportFrontendError("frontend.startup-maximize-error", error);
       }
 
       await Promise.all([syncWindowChromeState(), syncFullscreenState()]);
@@ -840,7 +835,7 @@ export default function App() {
             })
           ]);
       } catch (error) {
-        console.error("window event subscription failed:", error);
+        reportFrontendError("frontend.window-event-subscription-error", error);
       }
     }
 
@@ -896,6 +891,7 @@ export default function App() {
 
         palette.closePalette();
         searchController.dismiss();
+        setSidebarSearchOpen(false);
         setOutlineOpen(false);
         return;
       }
@@ -969,7 +965,20 @@ export default function App() {
 
   useEffect(() => {
     searchController.dismiss();
+    setSidebarSearchOpen(false);
   }, [searchController, workspace.activeDocumentId]);
+
+  useEffect(() => {
+    setSidebarSearchOpen(false);
+  }, [workspace.workspaceMode]);
+
+  useEffect(() => {
+    if (!readerFullscreenActive) {
+      return;
+    }
+
+    setSidebarSearchOpen(false);
+  }, [readerFullscreenActive]);
 
   const collectionModeActive =
     workspace.workspaceMode === "collection" && !readerFullscreenActive;
@@ -984,7 +993,7 @@ export default function App() {
     }
 
     appWindow.startDragging().catch((error) => {
-      console.error("startDragging failed:", error);
+      reportFrontendError("frontend.window-start-dragging-error", error);
     });
   }
 
@@ -1195,11 +1204,14 @@ export default function App() {
             </ChromeIcon>
           </button>
           <button
-            className="sidebar__icon-button"
+            ref={setSidebarSearchAnchorElement}
+            className={`sidebar__icon-button${
+              sidebarSearchOpen ? " sidebar__icon-button--active" : ""
+            }`}
             type="button"
             aria-label="Search"
-            disabled={workspace.workspaceMode === "collection"}
-            onClick={openUnifiedSearch}
+            aria-expanded={sidebarSearchOpen}
+            onClick={toggleSidebarDocumentSearch}
           >
             <ChromeIcon label="Search">
               <circle cx="11" cy="11" r="6.5" />
@@ -1621,6 +1633,16 @@ export default function App() {
             anchorElement={paletteAnchorElement}
           />
         </Suspense>
+      ) : null}
+
+      {sidebarSearchOpen ? (
+        <SidebarDocumentSearchPopover
+          open={sidebarSearchOpen}
+          anchorElement={sidebarSearchAnchorElement}
+          documents={searchableDocuments}
+          onClose={() => setSidebarSearchOpen(false)}
+          onOpenDocument={openSidebarSearchDocument}
+        />
       ) : null}
 
       {(workspace.workspaceMode === "reader" || workspace.workspaceMode === "book") && outlineOpen ? (

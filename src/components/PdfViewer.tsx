@@ -36,6 +36,9 @@ type ImageSlotState = {
   ready: boolean;
 };
 
+const AUTO_MAXIMIZE_RESIZE_SETTLE_MS = 160;
+const READER_SCROLLBAR_OVERFLOW_EPSILON_PX = 2;
+
 const PdfViewer = memo(function PdfViewer({
   readerSession,
   readerActive,
@@ -51,8 +54,6 @@ const PdfViewer = memo(function PdfViewer({
   const document = readerSession?.document ?? null;
   const openSessionId = readerSession?.openSessionId ?? null;
   const openSessionStartedAtMs = readerSession?.clickStartedAtMs ?? null;
-  const AUTO_MAXIMIZE_RESIZE_SETTLE_MS = 160;
-  const READER_SCROLLBAR_OVERFLOW_EPSILON_PX = 2;
   const scrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const scrollbarRef = useRef<HTMLDivElement | null>(null);
@@ -142,6 +143,7 @@ const PdfViewer = memo(function PdfViewer({
     { page: null, generation: 0, ready: false }
   ]);
   const firstVisibleLoggedSessionRef = useRef<string | null>(null);
+  const currentOpenSessionIdRef = useRef<string | null>(openSessionId);
   const lastSrcAssignedLogRef = useRef<{
     displayed: string | null;
     incoming: string | null;
@@ -174,6 +176,7 @@ const PdfViewer = memo(function PdfViewer({
   latestScrollResetRequestRef.current = scrollResetRequest;
   imageSlotsRef.current = imageSlots;
   activeImageSlotRef.current = activeImageSlot;
+  currentOpenSessionIdRef.current = openSessionId;
 
   function replaceImageSlot(
     currentSlots: [ImageSlotState, ImageSlotState],
@@ -316,10 +319,18 @@ const PdfViewer = memo(function PdfViewer({
       return;
     }
 
-    firstVisibleLoggedSessionRef.current = openSessionId;
+    const scheduledSessionId = openSessionId;
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
+        if (currentOpenSessionIdRef.current !== scheduledSessionId) {
+          return;
+        }
+
         const imageElement = imageElementRefs.current[slotIndex];
+        const slotState = imageSlotsRef.current[slotIndex];
+        if (slotState.page?.requestKey !== slotPage.requestKey) {
+          return;
+        }
         const rect = imageElement?.getBoundingClientRect();
         const computedStyle = imageElement ? window.getComputedStyle(imageElement) : null;
         const visible = Boolean(
@@ -346,6 +357,7 @@ const PdfViewer = memo(function PdfViewer({
 
         debugAction("reader.first-visible", fields);
         if (visible) {
+          firstVisibleLoggedSessionRef.current = scheduledSessionId;
           markDisplayedPageVisible(slotPage.requestKey);
         }
       });
@@ -455,98 +467,101 @@ const PdfViewer = memo(function PdfViewer({
 
   useEffect(() => {
     if (!displayedPage && !incomingPage) {
-      setActiveImageSlot(0);
-      setImageSlots((currentSlots) => [
-        replaceImageSlot(currentSlots, 0, null, false, "reset"),
-        replaceImageSlot(currentSlots, 1, null, false, "reset")
-      ]);
+      if (activeImageSlot !== 0) {
+        setActiveImageSlot(0);
+      }
+      if (imageSlots[0].page || imageSlots[1].page || imageSlots[0].ready || imageSlots[1].ready) {
+        setImageSlots([
+          replaceImageSlot(imageSlots, 0, null, false, "reset"),
+          replaceImageSlot(imageSlots, 1, null, false, "reset")
+        ]);
+      }
       return;
     }
 
-    setImageSlots((currentSlots) => {
-      let nextSlots = currentSlots;
-      let nextActiveSlot = activeImageSlot;
-      const inactiveSlot = activeImageSlot === 0 ? 1 : 0;
+    let nextSlots = imageSlots;
+    let nextActiveSlot = activeImageSlot;
+    const inactiveSlot = activeImageSlot === 0 ? 1 : 0;
 
-      if (displayedPage) {
-        if (currentSlots[inactiveSlot].page?.requestKey === displayedPage.requestKey) {
-          nextActiveSlot = inactiveSlot;
-        } else if (currentSlots[activeImageSlot].page?.requestKey !== displayedPage.requestKey) {
-          if (lastSrcAssignedLogRef.current.displayed !== displayedPage.requestKey) {
-            debugAction(
-              "viewer.image:src-assigned",
-              buildOpenSessionFields({
-                currentGeneration: navigationGeneration,
-                currentTargetPage: targetPage,
-                imageByteLength: displayedPage.imageBytes.length,
-                pageNumber: displayedPage.pageNumber,
-                phase: "assign",
-                requestKey: displayedPage.requestKey,
-                resultPage: displayedPage.pageNumber,
-                slotIndex: activeImageSlot,
-                role: "displayed",
-                ...buildPresentationFields(displayedPage)
-              })
-            );
-            lastSrcAssignedLogRef.current.displayed = displayedPage.requestKey;
-          }
-          nextSlots = [...currentSlots] as [ImageSlotState, ImageSlotState];
-          nextSlots[activeImageSlot] = replaceImageSlot(
-            currentSlots,
-            activeImageSlot,
-            displayedPage,
-            true,
-            "displayed"
+    if (displayedPage) {
+      if (imageSlots[inactiveSlot].page?.requestKey === displayedPage.requestKey) {
+        nextActiveSlot = inactiveSlot;
+      } else if (imageSlots[activeImageSlot].page?.requestKey !== displayedPage.requestKey) {
+        if (lastSrcAssignedLogRef.current.displayed !== displayedPage.requestKey) {
+          debugAction(
+            "viewer.image:src-assigned",
+            buildOpenSessionFields({
+              currentGeneration: navigationGeneration,
+              currentTargetPage: targetPage,
+              imageByteLength: displayedPage.imageBytes.length,
+              pageNumber: displayedPage.pageNumber,
+              phase: "assign",
+              requestKey: displayedPage.requestKey,
+              resultPage: displayedPage.pageNumber,
+              slotIndex: activeImageSlot,
+              role: "displayed",
+              ...buildPresentationFields(displayedPage)
+            })
           );
+          lastSrcAssignedLogRef.current.displayed = displayedPage.requestKey;
         }
+        nextSlots = [...imageSlots] as [ImageSlotState, ImageSlotState];
+        nextSlots[activeImageSlot] = replaceImageSlot(
+          imageSlots,
+          activeImageSlot,
+          displayedPage,
+          true,
+          "displayed"
+        );
       }
+    }
 
-      if (incomingPage) {
-        const resolvedInactiveSlot = nextActiveSlot === 0 ? 1 : 0;
-        const activePageKey = nextSlots[nextActiveSlot].page?.requestKey;
-        const inactivePageKey = nextSlots[resolvedInactiveSlot].page?.requestKey;
-        if (
-          activePageKey !== incomingPage.requestKey &&
-          inactivePageKey !== incomingPage.requestKey
-        ) {
-          if (nextSlots === currentSlots) {
-            nextSlots = [...currentSlots] as [ImageSlotState, ImageSlotState];
-          }
-          if (lastSrcAssignedLogRef.current.incoming !== incomingPage.requestKey) {
-            debugAction(
-              "viewer.image:src-assigned",
-              buildOpenSessionFields({
-                currentGeneration: navigationGeneration,
-                currentTargetPage: targetPage,
-                imageByteLength: incomingPage.imageBytes.length,
-                pageNumber: incomingPage.pageNumber,
-                phase: "assign",
-                requestKey: incomingPage.requestKey,
-                resultPage: incomingPage.pageNumber,
-                slotIndex: resolvedInactiveSlot,
-                role: "incoming",
-                ...buildPresentationFields(incomingPage)
-              })
-            );
-            lastSrcAssignedLogRef.current.incoming = incomingPage.requestKey;
-          }
-          nextSlots[resolvedInactiveSlot] = replaceImageSlot(
-            nextSlots,
-            resolvedInactiveSlot,
-            incomingPage,
-            false,
-            "incoming"
+    if (incomingPage) {
+      const resolvedInactiveSlot = nextActiveSlot === 0 ? 1 : 0;
+      const activePageKey = nextSlots[nextActiveSlot].page?.requestKey;
+      const inactivePageKey = nextSlots[resolvedInactiveSlot].page?.requestKey;
+      if (
+        activePageKey !== incomingPage.requestKey &&
+        inactivePageKey !== incomingPage.requestKey
+      ) {
+        if (nextSlots === imageSlots) {
+          nextSlots = [...imageSlots] as [ImageSlotState, ImageSlotState];
+        }
+        if (lastSrcAssignedLogRef.current.incoming !== incomingPage.requestKey) {
+          debugAction(
+            "viewer.image:src-assigned",
+            buildOpenSessionFields({
+              currentGeneration: navigationGeneration,
+              currentTargetPage: targetPage,
+              imageByteLength: incomingPage.imageBytes.length,
+              pageNumber: incomingPage.pageNumber,
+              phase: "assign",
+              requestKey: incomingPage.requestKey,
+              resultPage: incomingPage.pageNumber,
+              slotIndex: resolvedInactiveSlot,
+              role: "incoming",
+              ...buildPresentationFields(incomingPage)
+            })
           );
+          lastSrcAssignedLogRef.current.incoming = incomingPage.requestKey;
         }
+        nextSlots[resolvedInactiveSlot] = replaceImageSlot(
+          nextSlots,
+          resolvedInactiveSlot,
+          incomingPage,
+          false,
+          "incoming"
+        );
       }
+    }
 
-      if (nextActiveSlot !== activeImageSlot) {
-        setActiveImageSlot(nextActiveSlot);
-      }
-
-      return nextSlots;
-    });
-  }, [activeImageSlot, displayedPage, incomingPage, navigationGeneration, targetPage]);
+    if (nextActiveSlot !== activeImageSlot) {
+      setActiveImageSlot(nextActiveSlot);
+    }
+    if (nextSlots !== imageSlots) {
+      setImageSlots(nextSlots);
+    }
+  }, [activeImageSlot, displayedPage, imageSlots, incomingPage, navigationGeneration, targetPage]);
 
   const renderedPage = imageSlots[activeImageSlot].page ?? displayedPage;
   const activeSlotPageKey = imageSlots[activeImageSlot].page?.requestKey ?? null;
@@ -639,7 +654,7 @@ const PdfViewer = memo(function PdfViewer({
         return;
       }
 
-      if (fitCommitTimerRef.current === null) {
+      if (targetChanged || fitCommitTimerRef.current === null) {
         scheduleFitCommit(nextZoom, fitCycle?.fitCycleId ?? null);
       }
     };
@@ -801,11 +816,15 @@ const PdfViewer = memo(function PdfViewer({
           maxThumbTop: 0,
           maxScroll: 0
         };
-        setScrollbarState({
-          visible: false,
-          thumbHeight: 0,
-          thumbTop: 0
-        });
+        setScrollbarState((current) =>
+          !current.visible && current.thumbHeight === 0 && current.thumbTop === 0
+            ? current
+            : {
+                visible: false,
+                thumbHeight: 0,
+                thumbTop: 0
+              }
+        );
         return;
       }
 
@@ -821,10 +840,20 @@ const PdfViewer = memo(function PdfViewer({
         maxThumbTop,
         maxScroll: nextMaxScroll
       };
-      setScrollbarState({
-        visible: true,
-        thumbHeight,
-        thumbTop
+      setScrollbarState((current) => {
+        if (
+          current.visible &&
+          Math.abs(current.thumbHeight - thumbHeight) < 0.5 &&
+          Math.abs(current.thumbTop - thumbTop) < 0.5
+        ) {
+          return current;
+        }
+
+        return {
+          visible: true,
+          thumbHeight,
+          thumbTop
+        };
       });
     }
 
@@ -877,6 +906,7 @@ const PdfViewer = memo(function PdfViewer({
     }
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
 
     return () => {
       scrollSurface.removeEventListener("scroll", updateReaderScrollbar);
@@ -884,6 +914,7 @@ const PdfViewer = memo(function PdfViewer({
       resizeObserver?.disconnect();
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
@@ -992,7 +1023,6 @@ const PdfViewer = memo(function PdfViewer({
                               slotGeneration,
                               slotIndex: index
                             });
-                            debugAction("viewer.image:decode:finish", decodeFields);
                             debugAction("viewer.image:decode-finished", decodeFields);
                             setImageSlots((currentSlots) => {
                               const currentSlot = currentSlots[index];

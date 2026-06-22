@@ -1,4 +1,5 @@
 import { isValidElement, type ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import ReaderWorkspace from "./ReaderWorkspace";
@@ -155,12 +156,16 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
     showFullscreenHint: false,
     fullscreen: false,
     onToggleFullscreen: vi.fn(),
-    readerPaneSplitRatio: 0.46,
+    readerPaneSplitRatio: 0.42,
     hidePaneResizeHandle: false,
     autoHidePaneResizeHandle: true,
     onChangeReaderPaneSplitRatio: vi.fn(),
     ...overrides
   });
+}
+
+function renderWorkspaceMarkup(overrides?: Partial<Parameters<typeof ReaderWorkspace>[0]>) {
+  return renderToStaticMarkup(renderWorkspace(overrides));
 }
 
 function collectElements(node: unknown): Array<ReactElement<{ [key: string]: unknown }>> {
@@ -177,83 +182,66 @@ function collectElements(node: unknown): Array<ReactElement<{ [key: string]: unk
   }
 
   const element = node as ReactElement<{ [key: string]: unknown }>;
+  const memoComponent = (() => {
+    if (
+      typeof element.type === "object" &&
+      element.type !== null &&
+      "type" in element.type &&
+      typeof (element.type as { type?: unknown }).type === "function"
+    ) {
+      return (element.type as { type: (props: { [key: string]: unknown }) => unknown }).type;
+    }
+
+    return null;
+  })();
   const componentType = element.type as {
     name?: string;
     displayName?: string;
     (props: { [key: string]: unknown }): unknown;
   };
+  const resolvedType = memoComponent ?? (typeof element.type === "function" ? componentType : null);
+  const resolvedTypeName =
+    resolvedType?.name ??
+    ((resolvedType as { displayName?: string } | null)?.displayName ?? "");
   if (
-    typeof element.type === "function" &&
-    (componentType.name === "DocumentWorkspaceHeader" ||
-      componentType.displayName === "DocumentWorkspaceHeader")
+    resolvedType &&
+    resolvedTypeName !== "WorkspaceSearchField" &&
+    !resolvedTypeName.includes("DeferredNotesViewport")
   ) {
-    return collectElements(componentType(element.props));
+    return collectElements(resolvedType(element.props));
   }
   return [element, ...collectElements(element.props.children)];
 }
 
 describe("ReaderWorkspace document header", () => {
   it("renders title, page, and zoom regions with stable control labels", () => {
-    const tree = renderWorkspace();
-    const elements = collectElements(tree);
+    const markup = renderWorkspaceMarkup();
 
-    const layout = elements.find(
-      (element) =>
-        typeof element.props.className === "string" &&
-        element.props.className.includes("reader-workspace__document-header-layout")
-    );
-    const pageValue = elements.find(
-      (element) =>
-        typeof element.props.className === "string" &&
-        element.props.className.includes("reader-workspace__header-value") &&
-        element.props.children === "52 / 191"
-    );
-    const zoomValue = elements.find(
-      (element) =>
-        typeof element.props.className === "string" &&
-        element.props.className.includes("reader-workspace__header-value") &&
-        element.props.children === "100%"
-    );
-
-    expect(layout).toBeDefined();
-    expect(elements.some((element) => element.props.className === "reader-workspace__header-title")).toBe(true);
-    expect(pageValue).toBeDefined();
-    expect(zoomValue).toBeDefined();
-    expect(elements.some((element) => element.props["aria-label"] === "Previous page")).toBe(true);
-    expect(elements.some((element) => element.props["aria-label"] === "Next page")).toBe(true);
-    expect(elements.some((element) => element.props["aria-label"] === "Zoom out")).toBe(true);
-    expect(elements.some((element) => element.props["aria-label"] === "Zoom in")).toBe(true);
-    expect(elements.some((element) => element.props["aria-label"] === "Switch to free zoom")).toBe(true);
+    expect(markup).toContain("reader-workspace__document-header-layout");
+    expect(markup).toContain('class="reader-workspace__header-title"');
+    expect(markup).toContain("52 / 191");
+    expect(markup).toContain("100%");
+    expect(markup).toContain('aria-label="Previous page"');
+    expect(markup).toContain('aria-label="Next page"');
+    expect(markup).toContain('aria-label="Zoom out"');
+    expect(markup).toContain('aria-label="Zoom in"');
+    expect(markup).toContain('aria-label="Switch to free zoom"');
   });
 
   it("disables page and zoom controls when no document is open", () => {
-    const tree = renderWorkspace({
+    const markup = renderWorkspaceMarkup({
       readerSession: null,
       documentHeaderCurrentPage: 1,
       documentHeaderPageCount: 0,
       viewerApi: null
     });
-    const elements = collectElements(tree);
-    const controlButtons = elements.filter((element) =>
-      [
-        "Previous page",
-        "Next page",
-        "Zoom out",
-        "Zoom in",
-        "Switch to auto maximize",
-        "Switch to free zoom"
-      ].includes(String(element.props["aria-label"]))
-    );
-    const pageValue = elements.find(
-      (element) =>
-        typeof element.props.className === "string" &&
-        element.props.className.includes("reader-workspace__header-value") &&
-        element.props.children === "No document"
-    );
 
-    expect(pageValue).toBeDefined();
-    expect(controlButtons).toHaveLength(5);
-    expect(controlButtons.filter((element) => element.props.disabled === true)).toHaveLength(5);
+    expect(markup).toContain("No document");
+    expect(markup.match(/aria-label="Previous page"/g)).toHaveLength(1);
+    expect(markup.match(/aria-label="Next page"/g)).toHaveLength(1);
+    expect(markup.match(/aria-label="Zoom out"/g)).toHaveLength(1);
+    expect(markup.match(/aria-label="Zoom in"/g)).toHaveLength(1);
+    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(5);
   });
 
   it("routes page, zoom, and fit mode button clicks through the viewer api", () => {

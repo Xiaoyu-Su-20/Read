@@ -2,7 +2,7 @@ import { memo } from "react";
 
 import NotesPane from "./notes/NotesPane";
 import type {
-  DocumentState,
+  Bookmark,
   NoteDocument,
   NoteNavigationItem,
   NoteRevealRequest,
@@ -30,9 +30,9 @@ type NotesViewportProps = {
   onGoToPage: (page: number) => void;
   documentId: string | null;
   outlineItems: OutlineItem[];
-  readerState: DocumentState | null;
+  bookmarks: Bookmark[];
   onNavigateToTarget: (target: PdfNavigationTarget) => void;
-  onSetBookmarks: (bookmarks: DocumentState["bookmarks"]) => void;
+  onSetBookmarks: (bookmarks: Bookmark[]) => void;
   currentPage: number | null;
   revealRequest: NoteRevealRequest | null;
 };
@@ -57,7 +57,7 @@ const NotesViewport = memo(function NotesViewport({
   onGoToPage,
   documentId,
   outlineItems,
-  readerState,
+  bookmarks,
   onNavigateToTarget,
   onSetBookmarks,
   currentPage,
@@ -88,7 +88,7 @@ const NotesViewport = memo(function NotesViewport({
         onGoToPage={onGoToPage}
         documentId={documentId}
         outlineItems={outlineItems}
-        readerState={readerState}
+        bookmarks={bookmarks}
         onNavigateToTarget={onNavigateToTarget}
         onSetBookmarks={onSetBookmarks}
         currentPage={currentPage}

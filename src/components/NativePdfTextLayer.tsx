@@ -17,7 +17,6 @@ import {
   type NativePdfSelectionLike
 } from "../lib/reader/PdfCopyNormalizer";
 import type {
-  NativeTextChar,
   NativeTextPagePayload,
   NativeTextPoint,
   NativeTextQuad,
@@ -57,8 +56,15 @@ type HighlightRect = {
   height: number;
 };
 
+type LineBounds = NativeTextRect & {
+  charEnd: number;
+  charStart: number;
+  lineIndex: number;
+};
+
 type NativeTextGeometry = {
   charBounds: NativeTextRect[];
+  lineBounds: LineBounds[];
   transformedCharBounds: NativeTextRect[];
 };
 
@@ -138,30 +144,111 @@ function buildNativeTextGeometry(
   const transformedCharBounds = textLayer.chars.map((char) =>
     transformedQuadBounds(char.quad, matrix)
   );
+  const lineBounds = textLayer.lines.flatMap((line) => {
+    let lineRect: NativeTextRect | null = null;
+
+    for (let index = line.charStart; index < line.charEnd; index += 1) {
+      const charRect = charBounds[index];
+      if (!charRect) {
+        continue;
+      }
+
+      lineRect = lineRect
+        ? {
+            x0: Math.min(lineRect.x0, charRect.x0),
+            y0: Math.min(lineRect.y0, charRect.y0),
+            x1: Math.max(lineRect.x1, charRect.x1),
+            y1: Math.max(lineRect.y1, charRect.y1)
+          }
+        : charRect;
+    }
+
+    if (!lineRect) {
+      return [];
+    }
+
+    return [
+      {
+        ...lineRect,
+        charEnd: line.charEnd,
+        charStart: line.charStart,
+        lineIndex: line.index
+      }
+    ];
+  });
   return {
     charBounds,
+    lineBounds,
     transformedCharBounds
   };
 }
 
 function hitTestChar(
-  chars: readonly NativeTextChar[],
   charBounds: readonly NativeTextRect[],
+  lineBounds: readonly LineBounds[],
   point: NativeTextPoint
 ) {
-  let bestIndex = -1;
-  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestLineIndex = -1;
+  let bestLineDistance = Number.POSITIVE_INFINITY;
 
-  for (let index = 0; index < chars.length; index += 1) {
-    const char = chars[index];
-    const rect = charBounds[index];
-    if (!char || !rect) {
+  for (let index = 0; index < lineBounds.length; index += 1) {
+    const lineRect = lineBounds[index];
+    if (!lineRect) {
       continue;
     }
+
+    const distance = distanceToRect(point, lineRect);
+    if (distance < bestLineDistance) {
+      bestLineDistance = distance;
+      bestLineIndex = index;
+    }
+  }
+
+  if (bestLineIndex === -1 || bestLineDistance > HIT_TEST_MAX_DISTANCE) {
+    return -1;
+  }
+
+  let bestIndex = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  const primaryLine = lineBounds[bestLineIndex];
+  const candidateLines = [bestLineIndex - 1, bestLineIndex, bestLineIndex + 1];
+
+  for (const candidateLineIndex of candidateLines) {
+    const candidateLine = lineBounds[candidateLineIndex];
+    if (!candidateLine) {
+      continue;
+    }
+
+    const scanStart = Math.max(candidateLine.charStart, 0);
+    const scanEnd = Math.min(candidateLine.charEnd, charBounds.length);
+    for (let index = scanStart; index < scanEnd; index += 1) {
+      const rect = charBounds[index];
+      if (!rect) {
+        continue;
+      }
+
+      const distance = distanceToRect(point, rect);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    }
+  }
+
+  if (bestIndex !== -1) {
+    return bestDistance <= HIT_TEST_MAX_DISTANCE ? bestIndex : -1;
+  }
+
+  for (let index = Math.max(primaryLine.charStart, 0); index < Math.min(primaryLine.charEnd, charBounds.length); index += 1) {
+    const rect = charBounds[index];
+    if (!rect) {
+      continue;
+    }
+
     const distance = distanceToRect(point, rect);
     if (distance < bestDistance) {
       bestDistance = distance;
-      bestIndex = char.index;
+      bestIndex = index;
     }
   }
 
@@ -271,19 +358,21 @@ function buildHighlightRects(
 }
 
 function pointFromPointerEvent(
-  event: ReactPointerEvent<HTMLDivElement>,
+  layer: HTMLDivElement,
+  clientX: number,
+  clientY: number,
   renderedWidth: number,
   renderedHeight: number,
   matrix: TextLayerTransform["matrix"]
 ) {
-  const rect = event.currentTarget.getBoundingClientRect();
+  const rect = layer.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) {
     return null;
   }
 
   const renderedPoint = {
-    x: (event.clientX - rect.left) * (renderedWidth / rect.width),
-    y: (event.clientY - rect.top) * (renderedHeight / rect.height)
+    x: (clientX - rect.left) * (renderedWidth / rect.width),
+    y: (clientY - rect.top) * (renderedHeight / rect.height)
   };
 
   return invertPoint(renderedPoint, matrix);
@@ -316,11 +405,22 @@ const NativePdfTextLayer = memo(function NativePdfTextLayer({
   );
   const layerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  const pendingPointerFrameRef = useRef<number | null>(null);
+  const pendingPointerPositionRef = useRef<{ clientX: number; clientY: number; pointerId: number } | null>(
+    null
+  );
   const selectionRef = useRef<SelectionState | null>(null);
   const textLayerRef = useRef<NativeTextPagePayload | null>(textLayer);
   const [selection, setSelection] = useState<SelectionState | null>(null);
 
   const commitSelection = useCallback((nextSelection: SelectionState | null) => {
+    const currentSelection = selectionRef.current;
+    if (
+      currentSelection?.anchorIndex === nextSelection?.anchorIndex &&
+      currentSelection?.focusIndex === nextSelection?.focusIndex
+    ) {
+      return;
+    }
     selectionRef.current = nextSelection;
     setSelection(nextSelection);
   }, []);
@@ -444,13 +544,16 @@ const NativePdfTextLayer = memo(function NativePdfTextLayer({
   }, [pageNumber]);
 
   const updateSelectionFromPointer = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
+    (clientX: number, clientY: number) => {
       const drag = dragRef.current;
-      if (!drag || !textLayer || !geometry) {
+      const layer = layerRef.current;
+      if (!drag || !layer || !textLayer || !geometry) {
         return;
       }
       const point = pointFromPointerEvent(
-        event,
+        layer,
+        clientX,
+        clientY,
         renderedWidth,
         renderedHeight,
         resolvedRenderTransform.matrix
@@ -458,14 +561,14 @@ const NativePdfTextLayer = memo(function NativePdfTextLayer({
       if (!point) {
         return;
       }
-      const focusIndex = hitTestChar(textLayer.chars, geometry.charBounds, point);
+      const focusIndex = hitTestChar(geometry.charBounds, geometry.lineBounds, point);
       if (focusIndex < 0) {
         return;
       }
 
       const moved =
         drag.moved ||
-        Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >=
+        Math.hypot(clientX - drag.startX, clientY - drag.startY) >=
           DRAG_MOVE_THRESHOLD_PX;
       if (focusIndex === drag.focusIndex && moved === drag.moved) {
         return;
@@ -480,6 +583,14 @@ const NativePdfTextLayer = memo(function NativePdfTextLayer({
     },
     [commitSelection, geometry, renderedHeight, renderedWidth, resolvedRenderTransform.matrix, textLayer]
   );
+
+  useEffect(() => {
+    return () => {
+      if (pendingPointerFrameRef.current !== null) {
+        window.cancelAnimationFrame(pendingPointerFrameRef.current);
+      }
+    };
+  }, []);
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -520,7 +631,9 @@ const NativePdfTextLayer = memo(function NativePdfTextLayer({
       }
 
       const point = pointFromPointerEvent(
-        event,
+        event.currentTarget,
+        event.clientX,
+        event.clientY,
         renderedWidth,
         renderedHeight,
         resolvedRenderTransform.matrix
@@ -536,7 +649,7 @@ const NativePdfTextLayer = memo(function NativePdfTextLayer({
         );
         return;
       }
-      const anchorIndex = hitTestChar(textLayer.chars, geometry.charBounds, point);
+      const anchorIndex = hitTestChar(geometry.charBounds, geometry.lineBounds, point);
       if (anchorIndex < 0) {
         commitSelection(null);
         debugAction(
@@ -615,7 +728,23 @@ const NativePdfTextLayer = memo(function NativePdfTextLayer({
         return;
       }
       event.preventDefault();
-      updateSelectionFromPointer(event);
+      pendingPointerPositionRef.current = {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        pointerId: event.pointerId
+      };
+      if (pendingPointerFrameRef.current !== null) {
+        return;
+      }
+      pendingPointerFrameRef.current = window.requestAnimationFrame(() => {
+        pendingPointerFrameRef.current = null;
+        const pendingPointer = pendingPointerPositionRef.current;
+        if (!pendingPointer || dragRef.current?.pointerId !== pendingPointer.pointerId) {
+          return;
+        }
+
+        updateSelectionFromPointer(pendingPointer.clientX, pendingPointer.clientY);
+      });
     },
     [updateSelectionFromPointer]
   );
@@ -628,6 +757,11 @@ const NativePdfTextLayer = memo(function NativePdfTextLayer({
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.releasePointerCapture(event.pointerId);
+    if (pendingPointerFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingPointerFrameRef.current);
+      pendingPointerFrameRef.current = null;
+    }
+    pendingPointerPositionRef.current = null;
     dragRef.current = null;
     if (!drag.moved) {
       commitSelection(null);

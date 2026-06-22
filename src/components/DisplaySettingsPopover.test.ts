@@ -40,7 +40,7 @@ describe("DisplaySettingsPopover", () => {
           {
             ...customTheme,
             id: "builtin-midnight",
-            name: "Midnight Reading",
+            name: "Night",
             kind: "builtin"
           },
           customTheme
@@ -86,7 +86,7 @@ describe("DisplaySettingsPopover", () => {
   it("shows built-in themes as read-only", () => {
     const builtinTheme = {
       id: "builtin-midnight",
-      name: "Midnight Reading",
+      name: "Night",
       kind: "builtin" as const,
       source: {
         chrome: "#13191e",

@@ -108,7 +108,14 @@ export type ReaderSession = {
   zoom: number;
   openSessionId: string;
   clickStartedAtMs: number;
-  source: "collection" | "search-result" | "command" | "library-flow" | "sync" | "unknown";
+  source:
+    | "collection"
+    | "search-result"
+    | "sidebar-search"
+    | "command"
+    | "library-flow"
+    | "sync"
+    | "unknown";
 };
 
 export type RenderedPagePayload = {

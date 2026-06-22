@@ -12,7 +12,7 @@ import { makeBookmark } from "../../lib/app/helpers";
 import { findBookmarkAtPage } from "../../lib/commands";
 import { noteBlockText, parsePageLinkTargetInput } from "../../lib/notes";
 import type {
-  DocumentState,
+  Bookmark,
   NoteBlockType,
   NoteDocument,
   NoteNavigationItem,
@@ -47,9 +47,9 @@ type NotesPaneProps = {
   onGoToPage: (page: number) => void;
   documentId: string | null;
   outlineItems: OutlineItem[];
-  readerState: DocumentState | null;
+  bookmarks: Bookmark[];
   onNavigateToTarget: (target: PdfNavigationTarget) => void;
-  onSetBookmarks: (bookmarks: DocumentState["bookmarks"]) => void;
+  onSetBookmarks: (bookmarks: Bookmark[]) => void;
   currentPage: number | null;
   revealRequest: NoteRevealRequest | null;
   navigationOpenRequest: number;
@@ -195,7 +195,7 @@ const NotesPane = memo(function NotesPane({
   onGoToPage,
   documentId,
   outlineItems,
-  readerState,
+  bookmarks,
   onNavigateToTarget,
   onSetBookmarks,
   currentPage,
@@ -619,10 +619,10 @@ const NotesPane = memo(function NotesPane({
       })
     );
 
-    const existingBookmark = findBookmarkAtPage(readerState?.bookmarks ?? [], currentPage);
+    const existingBookmark = findBookmarkAtPage(bookmarks, currentPage);
     if (!existingBookmark) {
       onSetBookmarks([
-        ...(readerState?.bookmarks ?? []),
+        ...bookmarks,
         makeBookmark(currentPage, headingTitle(block))
       ]);
     }

@@ -1,10 +1,12 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { memo, useEffect, useState } from "react";
+import type { ComponentProps, MouseEvent as ReactMouseEvent } from "react";
 
 import DocumentWorkspaceHeader from "./DocumentWorkspaceHeader";
 import NotesViewport from "./NotesViewport";
 import PaneResizeHandle from "./PaneResizeHandle";
 import ReaderViewport from "./ReaderViewport";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
+import type { ViewTransition } from "../lib/workspaceView";
 import { useReaderPaneLayoutController } from "../lib/reader/useReaderPaneLayoutController";
 import { normalizeReaderFitMode } from "../lib/reader/zoom";
 import type {
@@ -22,13 +24,7 @@ import type {
 import type { UnifiedSearchController } from "../search/controller/UnifiedSearchController";
 
 type ReaderWorkspaceProps = {
-  activeViewTransition: {
-    clickStartedAtMs: number;
-    fromView: "reader" | "collection" | "notes" | "book";
-    source: string;
-    toView: "reader" | "collection" | "notes" | "book";
-    viewTransitionId: string;
-  } | null;
+  activeViewTransition: ViewTransition | null;
   readerSession: ReaderSession | null;
   readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
@@ -75,6 +71,36 @@ type ReaderWorkspaceProps = {
   autoHidePaneResizeHandle: boolean;
   onChangeReaderPaneSplitRatio: (nextRatio: number) => void;
 };
+
+type DeferredNotesViewportProps = ComponentProps<typeof NotesViewport>;
+
+const DeferredNotesViewport = memo(function DeferredNotesViewport(
+  props: DeferredNotesViewportProps
+) {
+  const [notesReady, setNotesReady] = useState(false);
+
+  useEffect(() => {
+    const frameId = window.requestAnimationFrame(() => {
+      setNotesReady(true);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, []);
+
+  if (!notesReady) {
+    return (
+      <section
+        className={`notes-viewport${props.fullscreen ? " notes-viewport--fullscreen" : ""} notes-viewport--deferred`}
+        aria-label="Notes viewport"
+        aria-busy="true"
+      />
+    );
+  }
+
+  return <NotesViewport {...props} />;
+});
 
 export default function ReaderWorkspace({
   activeViewTransition,
@@ -126,6 +152,7 @@ export default function ReaderWorkspace({
 }: ReaderWorkspaceProps) {
   const document = readerSession?.document ?? null;
   const documentFitMode = normalizeReaderFitMode(readerState?.preferences.fitMode);
+  const bookmarks = readerState?.bookmarks ?? [];
   const autoMaximizeMinDocumentWidth =
     documentFitMode === "auto-maximize"
       ? viewerApi?.getAutoMaximizeMinDocumentWidth() ?? null
@@ -147,7 +174,7 @@ export default function ReaderWorkspace({
           currentPage={documentHeaderCurrentPage}
           pageCount={documentHeaderPageCount}
           zoom={documentHeaderZoom}
-          readerState={readerState}
+          documentFitMode={documentFitMode}
           viewerApi={viewerApi}
           onHeaderMouseDown={onHeaderMouseDown}
           searchController={searchController}
@@ -189,7 +216,7 @@ export default function ReaderWorkspace({
           />
         </div>
         <div className="reader-workspace__notes">
-          <NotesViewport
+          <DeferredNotesViewport
             note={note}
             loading={notesLoading}
             capabilityMode="document"
@@ -205,7 +232,7 @@ export default function ReaderWorkspace({
             onGoToPage={onGoToNotePage}
             documentId={document?.document.id ?? null}
             outlineItems={outlineItems}
-            readerState={readerState}
+            bookmarks={bookmarks}
             onNavigateToTarget={onNavigateToTarget}
             onSetBookmarks={onSetBookmarks}
             currentPage={currentReaderPage}

@@ -6,6 +6,7 @@ mod store;
 
 use std::{
     collections::HashMap,
+    fs,
     path::PathBuf,
     process::Command,
     sync::{Arc, Condvar, Mutex},
@@ -50,6 +51,10 @@ struct InFlightRender {
     result: Mutex<Option<Result<RenderedPagePayload, String>>>,
     ready: Condvar,
 }
+
+const CURRENT_DOCUMENT_LIBRARY_DIR_NAME: &str = "Readr";
+const LEGACY_DOCUMENT_LIBRARY_DIR_NAME: &str = "Reader";
+const LEGACY_APP_IDENTIFIER_DIR_NAME: &str = "com.openai.calmreader";
 
 fn epoch_ms() -> u128 {
     SystemTime::now()
@@ -180,7 +185,10 @@ fn app_store(app: &AppHandle) -> Result<LibraryStore, String> {
         .path()
         .document_dir()
         .map_err(|error| format!("Unable to resolve the user documents directory: {error}"))?;
-    Ok(LibraryStore::new(app_dir, document_dir.join("Reader")))
+    Ok(LibraryStore::new(
+        app_dir,
+        document_dir.join(CURRENT_DOCUMENT_LIBRARY_DIR_NAME),
+    ))
 }
 
 fn with_store<T>(
@@ -242,6 +250,55 @@ fn open_in_explorer(path: &str, select: bool) -> Result<(), String> {
         .map_err(|error| format!("Unable to open File Explorer: {error}"))
 }
 
+fn legacy_app_dir(app_dir: &std::path::Path) -> Option<PathBuf> {
+    app_dir
+        .parent()
+        .map(|parent| parent.join(LEGACY_APP_IDENTIFIER_DIR_NAME))
+}
+
+fn migrate_legacy_storage(app: &AppHandle) -> Result<(), String> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Unable to resolve app data directory: {error}"))?;
+    let documents_root = app
+        .path()
+        .document_dir()
+        .map_err(|error| format!("Unable to resolve the user documents directory: {error}"))?;
+    let document_dir = documents_root.join(CURRENT_DOCUMENT_LIBRARY_DIR_NAME);
+    let legacy_document_dir = documents_root.join(LEGACY_DOCUMENT_LIBRARY_DIR_NAME);
+
+    if !app_dir.exists() {
+        if let Some(legacy_dir) = legacy_app_dir(&app_dir) {
+            if legacy_dir.exists() {
+                if let Some(parent) = app_dir.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|error| format!("Unable to prepare app data parent directory: {error}"))?;
+                }
+                fs::rename(&legacy_dir, &app_dir).map_err(|error| {
+                    format!(
+                        "Unable to migrate legacy app data from {} to {}: {error}",
+                        legacy_dir.display(),
+                        app_dir.display()
+                    )
+                })?;
+            }
+        }
+    }
+
+    if !document_dir.exists() && legacy_document_dir.exists() {
+        fs::rename(&legacy_document_dir, &document_dir).map_err(|error| {
+            format!(
+                "Unable to migrate legacy document library from {} to {}: {error}",
+                legacy_document_dir.display(),
+                document_dir.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 fn get_library_root(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     run_logged_command("get_library_root", json!({}), || {
@@ -251,6 +308,38 @@ fn get_library_root(app: AppHandle, state: State<'_, AppState>) -> Result<String
                 .map_err(|error| error.to_string())
         })
     })
+}
+
+#[tauri::command]
+fn load_app_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    run_logged_command("load_app_settings", json!({}), || {
+        with_store(&app, state, |store| {
+            store.load_app_settings().map_err(|error| error.to_string())
+        })
+    })
+}
+
+#[tauri::command]
+fn save_app_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    raw_settings: String,
+) -> Result<(), String> {
+    run_logged_command(
+        "save_app_settings",
+        json!({
+            "byteLength": raw_settings.len(),
+        }),
+        || {
+            serde_json::from_str::<Value>(&raw_settings)
+                .map_err(|error| format!("Unable to parse settings payload: {error}"))?;
+            with_store(&app, state, |store| {
+                store
+                    .save_app_settings(&raw_settings)
+                    .map_err(|error| error.to_string())
+            })
+        },
+    )
 }
 
 #[tauri::command]
@@ -814,6 +903,23 @@ fn log_note_debug_events(events: Vec<MirroredDebugEvent>) -> Result<(), String> 
 }
 
 #[tauri::command]
+fn report_frontend_error(event: String, fields: Value) -> Result<(), String> {
+    crate::debug::report_error(&event, fields);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_support_logging_enabled(enabled: bool) -> Result<(), String> {
+    crate::debug::set_support_logging_enabled(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_logging_policy() -> Result<String, String> {
+    Ok(crate::debug::current_policy_name().to_string())
+}
+
+#[tauri::command]
 fn list_recent_documents(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1214,7 +1320,22 @@ pub fn run() {
             "epochMs": epoch_ms(),
         }),
     );
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            crate::debug::action(
+                "app.single-instance:second-launch",
+                json!({
+                    "args": args,
+                    "cwd": cwd,
+                }),
+            );
+
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .on_page_load(|_webview, payload| {
             let event = match payload.event() {
@@ -1252,6 +1373,8 @@ pub fn run() {
                 }),
             );
 
+            migrate_legacy_storage(app.handle())?;
+
             let app_dir = app.path().app_data_dir()?;
             crate::debug::startup(
                 "app.setup:app-data-dir",
@@ -1268,7 +1391,10 @@ pub fn run() {
                 }),
             );
 
-            let document_dir = app.path().document_dir()?.join("Reader");
+            let document_dir = app
+                .path()
+                .document_dir()?
+                .join(CURRENT_DOCUMENT_LIBRARY_DIR_NAME);
             crate::debug::startup(
                 "app.setup:document-dir",
                 json!({
@@ -1429,6 +1555,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            load_app_settings,
+            save_app_settings,
             get_library_root,
             import_pdf,
             list_library,
@@ -1455,6 +1583,9 @@ pub fn run() {
             search_standalone_notes,
             save_note,
             log_note_debug_event,
+            report_frontend_error,
+            set_support_logging_enabled,
+            get_logging_policy,
             list_recent_documents,
             open_library_folder,
             show_document_in_explorer,
@@ -1466,7 +1597,9 @@ pub fn run() {
             get_pdf_native_outline,
             render_pdf_page
         ])
-        .run({
+        ;
+
+    builder.run({
             crate::debug::startup(
                 "run.before-tauri-run",
                 json!({
@@ -1475,7 +1608,7 @@ pub fn run() {
             );
             tauri::generate_context!()
         })
-        .expect("error while running calm reader");
+        .expect("error while running Readr");
     crate::debug::startup(
         "run.exit",
         json!({

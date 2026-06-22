@@ -475,7 +475,7 @@ export function createDefaultDocumentRenderTheme(): DocumentRenderTheme {
 export const builtinThemeDefinitions: ThemeDefinition[] = [
   {
     id: "builtin-light",
-    name: "Light",
+    name: "White",
     kind: "builtin",
     source: {
       chrome: "#f1ece2",
@@ -492,7 +492,7 @@ export const builtinThemeDefinitions: ThemeDefinition[] = [
   },
   {
     id: DEFAULT_ACTIVE_THEME_ID,
-    name: "Midnight Reading",
+    name: "Night",
     kind: "builtin",
     source: {
       chrome: "#13191e",

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 type DebugFields = Record<string, unknown>;
 type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
+type RuntimeLogPolicy = "off" | "errors-only" | "verbose";
 type MirroredDebugEvent = {
   event: string;
   fields: DebugFields;
@@ -11,18 +12,20 @@ type BrowserMemorySnapshot = {
   totalJSHeapSize?: number;
   usedJSHeapSize?: number;
 };
+type SupportLoggingBridge = {
+  disable: () => Promise<RuntimeLogPolicy>;
+  enable: () => Promise<RuntimeLogPolicy>;
+  getPolicy: () => RuntimeLogPolicy;
+};
 
 declare global {
   interface Window {
     __CALM_READER_LOCAL_DEBUG_EVENTS__?: DebugFields[];
+    __READR_SUPPORT_LOGGING__?: SupportLoggingBridge;
   }
 }
 
-export const isDebugModeEnabled =
-  import.meta.env.VITE_DEBUG_UI === "true";
-const shouldMirrorDebugEvents =
-  (import.meta.env.DEV || isDebugModeEnabled) &&
-  import.meta.env.VITE_MIRROR_DEBUG_EVENTS !== "false";
+const SUPPORT_LOGGING_SESSION_KEY = "readr.support-logging-enabled";
 const MIRRORED_DEBUG_FLUSH_MS = 100;
 const MIRRORED_DEBUG_BATCH_SIZE = 50;
 const MAX_MIRRORED_DEBUG_QUEUE = 500;
@@ -34,10 +37,42 @@ const LOG_LEVEL_RANK: Record<LogLevel, number> = {
   debug: 3,
   trace: 4
 };
+
+let currentLogPolicy = resolveInitialPolicy();
 const currentLogLevel = resolveLogLevel();
 let mirroredDebugQueue: MirroredDebugEvent[] = [];
 let mirroredDebugFlushTimer: number | null = null;
 let droppedMirroredDebugEventCount = 0;
+
+export const isDebugModeEnabled =
+  import.meta.env.DEV || import.meta.env.VITE_DEBUG_UI === "true";
+
+function isSupportLoggingEnabledForSession() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.sessionStorage.getItem(SUPPORT_LOGGING_SESSION_KEY) === "1";
+}
+
+function resolveInitialPolicy(): RuntimeLogPolicy {
+  if (import.meta.env.DEV || import.meta.env.VITE_DEBUG_UI === "true") {
+    return "verbose";
+  }
+
+  if (
+    String(import.meta.env.VITE_READR_SUPPORT_LOG ?? "").trim() === "1" ||
+    isSupportLoggingEnabledForSession()
+  ) {
+    return "verbose";
+  }
+
+  return "errors-only";
+}
+
+function isVerboseLoggingEnabled() {
+  return currentLogPolicy === "verbose";
+}
 
 function resolveLogLevel(): LogLevel {
   const rawLevel = String(import.meta.env.VITE_READER_LOG_LEVEL ?? "").trim().toLowerCase();
@@ -54,7 +89,12 @@ function resolveLogLevel(): LogLevel {
 }
 
 function eventLevel(event: string, explicitLevel: "info" | "error"): LogLevel {
-  if (explicitLevel === "error" || event.endsWith(":error")) {
+  if (
+    explicitLevel === "error" ||
+    event.endsWith(":error") ||
+    event.endsWith("-error") ||
+    event.endsWith(".error")
+  ) {
     return "error";
   }
 
@@ -134,11 +174,12 @@ function shouldEmitEvent(event: string, explicitLevel: "info" | "error") {
   return LOG_LEVEL_RANK[eventLevel(event, explicitLevel)] <= LOG_LEVEL_RANK[currentLogLevel];
 }
 
-function normalizeError(error: unknown) {
+function normalizeError(error: unknown, verbose: boolean) {
   if (error instanceof Error) {
     return {
       name: error.name,
-      message: error.message
+      message: error.message,
+      ...(verbose && error.stack ? { stack: error.stack } : {})
     };
   }
 
@@ -159,36 +200,28 @@ function browserMemorySnapshot(): BrowserMemorySnapshot {
   };
 }
 
-export function debugLocalAction(event: string, fields: DebugFields = {}) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  const payload = {
-    scope: "frontend-local",
+function createPayload(scope: string, event: string, fields: DebugFields = {}) {
+  return {
+    scope,
     event,
     at: new Date().toISOString(),
     atMs: Date.now(),
-    performanceNow: Math.round(performance.now()),
     ...fields
   };
-  const events = window.__CALM_READER_LOCAL_DEBUG_EVENTS__ ?? [];
-  events.push(payload);
-  while (events.length > MAX_LOCAL_DEBUG_EVENTS) {
-    events.shift();
-  }
-  window.__CALM_READER_LOCAL_DEBUG_EVENTS__ = events;
-
-  if (isDebugModeEnabled) {
-    console.info(payload);
-  }
 }
 
-export function debugLocalMemory(event: string, fields: DebugFields = {}) {
-  debugLocalAction(event, {
-    ...fields,
-    ...browserMemorySnapshot()
-  });
+function emitConsole(level: LogLevel, payload: Record<string, unknown>) {
+  if (!isVerboseLoggingEnabled()) {
+    return;
+  }
+
+  if (level === "error") {
+    console.error(payload);
+  } else if (level === "warn") {
+    console.warn(payload);
+  } else {
+    console.info(payload);
+  }
 }
 
 function scheduleMirroredDebugFlush() {
@@ -235,79 +268,134 @@ function enqueueMirroredDebugEvent(event: string, fields: DebugFields) {
   scheduleMirroredDebugFlush();
 }
 
-function emit(level: "info" | "error", event: string, fields: DebugFields = {}) {
-  if (!isDebugModeEnabled && !shouldMirrorDebugEvents) {
-    return;
-  }
-
-  if (!shouldEmitEvent(event, level)) {
-    return;
-  }
-
-  const payload = {
-    scope: "frontend",
+async function sendFrontendError(event: string, fields: DebugFields) {
+  await invoke("report_frontend_error", {
     event,
-    at: new Date().toISOString(),
-    atMs: Date.now(),
-    ...fields
-  };
+    fields
+  }).catch(() => undefined);
+}
 
-  if (isDebugModeEnabled) {
-    const resolvedLevel = eventLevel(event, level);
-    if (resolvedLevel === "error") {
-      console.error(payload);
-    } else if (resolvedLevel === "warn") {
-      console.warn(payload);
+export function getLoggingPolicy(): RuntimeLogPolicy {
+  return currentLogPolicy;
+}
+
+export async function setSupportLoggingEnabled(enabled: boolean) {
+  currentLogPolicy =
+    enabled || import.meta.env.DEV || import.meta.env.VITE_DEBUG_UI === "true"
+      ? "verbose"
+      : "errors-only";
+
+  if (typeof window !== "undefined") {
+    if (enabled) {
+      window.sessionStorage.setItem(SUPPORT_LOGGING_SESSION_KEY, "1");
     } else {
-      console.info(payload);
+      window.sessionStorage.removeItem(SUPPORT_LOGGING_SESSION_KEY);
     }
   }
 
-  if (shouldMirrorDebugEvents) {
-    enqueueMirroredDebugEvent(event, payload);
+  await invoke("set_support_logging_enabled", {
+    enabled
+  }).catch(() => undefined);
+
+  return currentLogPolicy;
+}
+
+export function initializeLoggingBridge() {
+  if (typeof window === "undefined") {
+    return;
   }
+
+  window.__READR_SUPPORT_LOGGING__ = {
+    disable: () => setSupportLoggingEnabled(false),
+    enable: () => setSupportLoggingEnabled(true),
+    getPolicy: () => getLoggingPolicy()
+  };
+
+  if (isSupportLoggingEnabledForSession()) {
+    void setSupportLoggingEnabled(true);
+  }
+
+  void invoke<RuntimeLogPolicy>("get_logging_policy")
+    .then((policy) => {
+      currentLogPolicy = policy;
+    })
+    .catch(() => undefined);
 }
 
-export function debugAction(event: string, fields?: DebugFields) {
-  emit("info", event, fields);
+export function debugLocalAction(event: string, fields: DebugFields = {}) {
+  if (typeof window === "undefined" || !isVerboseLoggingEnabled()) {
+    return;
+  }
+
+  const payload = createPayload("frontend-local", event, {
+    performanceNow: Math.round(performance.now()),
+    ...fields
+  });
+  const events = window.__CALM_READER_LOCAL_DEBUG_EVENTS__ ?? [];
+  events.push(payload);
+  while (events.length > MAX_LOCAL_DEBUG_EVENTS) {
+    events.shift();
+  }
+  window.__CALM_READER_LOCAL_DEBUG_EVENTS__ = events;
+  console.info(payload);
 }
 
-export function debugError(event: string, error: unknown, fields: DebugFields = {}) {
-  emit("error", event, {
+export function debugLocalMemory(event: string, fields: DebugFields = {}) {
+  debugLocalAction(event, {
     ...fields,
-    error: normalizeError(error)
+    ...browserMemorySnapshot()
   });
 }
 
-export function startDebugProcess(event: string, fields: DebugFields = {}) {
-  if (!isDebugModeEnabled) {
-    return {
-      checkpoint(_checkpointEvent: string, _checkpointFields?: DebugFields) {},
-      finish(_finishFields?: DebugFields) {},
-      fail(_error: unknown, _failureFields?: DebugFields) {}
-    };
+export function traceEvent(event: string, fields: DebugFields = {}) {
+  if (currentLogPolicy !== "verbose" || !shouldEmitEvent(event, "info")) {
+    return;
   }
 
+  const payload = createPayload("frontend-trace", event, fields);
+  emitConsole(eventLevel(event, "info"), payload);
+  enqueueMirroredDebugEvent(event, payload);
+}
+
+export function reportFrontendError(event: string, error: unknown, fields: DebugFields = {}) {
+  const payload = createPayload("frontend-error", event, {
+    ...fields,
+    error: normalizeError(error, isVerboseLoggingEnabled())
+  });
+
+  emitConsole("error", payload);
+  void sendFrontendError(event, payload);
+}
+
+export function debugAction(event: string, fields?: DebugFields) {
+  traceEvent(event, fields);
+}
+
+export function debugError(event: string, error: unknown, fields: DebugFields = {}) {
+  reportFrontendError(event, error, fields);
+}
+
+export function startDebugProcess(event: string, fields: DebugFields = {}) {
   const startedAt = performance.now();
-  emit("info", `${event}:start`, fields);
+  traceEvent(`${event}:start`, fields);
 
   return {
     checkpoint(checkpointEvent: string, checkpointFields: DebugFields = {}) {
-      emit("info", `${event}:${checkpointEvent}`, {
+      traceEvent(`${event}:${checkpointEvent}`, {
         ...fields,
         ...checkpointFields,
         elapsedMs: Math.round(performance.now() - startedAt)
       });
     },
     finish(finishFields: DebugFields = {}) {
-      emit("info", `${event}:finish`, {
+      traceEvent(`${event}:finish`, {
         ...fields,
         ...finishFields,
         elapsedMs: Math.round(performance.now() - startedAt)
       });
     },
     fail(error: unknown, failureFields: DebugFields = {}) {
-      debugError(`${event}:error`, error, {
+      reportFrontendError(`${event}:error`, error, {
         ...fields,
         ...failureFields,
         elapsedMs: Math.round(performance.now() - startedAt)

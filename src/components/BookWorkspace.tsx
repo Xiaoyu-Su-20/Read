@@ -4,6 +4,8 @@ import DocumentWorkspaceHeader from "./DocumentWorkspaceHeader";
 import ReaderViewport from "./ReaderViewport";
 import WorkspaceHeaderTools from "./WorkspaceHeaderTools";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
+import type { ViewTransition } from "../lib/workspaceView";
+import { normalizeReaderFitMode } from "../lib/reader/zoom";
 import type {
   DocumentState,
   ReaderSession,
@@ -13,13 +15,7 @@ import type {
 import type { UnifiedSearchController } from "../search/controller/UnifiedSearchController";
 
 type BookWorkspaceProps = {
-  activeViewTransition: {
-    clickStartedAtMs: number;
-    fromView: "reader" | "collection" | "notes" | "book";
-    source: string;
-    toView: "reader" | "collection" | "notes" | "book";
-    viewTransitionId: string;
-  } | null;
+  activeViewTransition: ViewTransition | null;
   readerSession: ReaderSession | null;
   readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
@@ -79,6 +75,8 @@ export default function BookWorkspace({
   fullscreen,
   onToggleFullscreen
 }: BookWorkspaceProps) {
+  const documentFitMode = normalizeReaderFitMode(readerState?.preferences.fitMode);
+
   return (
     <div className={`reader-workspace${showHeaders ? "" : " reader-workspace--immersive"}`}>
       {showHeaders ? (
@@ -87,14 +85,14 @@ export default function BookWorkspace({
           currentPage={documentHeaderCurrentPage}
           pageCount={documentHeaderPageCount}
           zoom={documentHeaderZoom}
-          readerState={readerState}
+          documentFitMode={documentFitMode}
           viewerApi={viewerApi}
           onHeaderMouseDown={onHeaderMouseDown}
           searchController={searchController}
           searchFocusRequest={searchFocusRequest}
           onSearchOpenDocument={onSearchOpenDocument}
           onSearchGoToPage={onSearchGoToPage}
-          onSearchOpenNoteResult={async () => undefined}
+          onSearchOpenNoteResult={null}
           headerActionsContainerId="book-workspace-header-tools"
           rightSlot={
             <WorkspaceHeaderTools

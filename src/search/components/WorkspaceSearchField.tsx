@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
-import type { UnifiedSearchController } from "../controller/UnifiedSearchController";
+import type { UnifiedSearchController, UnifiedSearchState } from "../controller/UnifiedSearchController";
 import type { SearchHighlightRange, SearchResult } from "../model/SearchResult";
 
 type WorkspaceSearchFieldProps = {
@@ -9,7 +9,7 @@ type WorkspaceSearchFieldProps = {
   placeholder?: string;
   onOpenDocument: (documentId: string) => Promise<void>;
   onGoToPage: (pageNumber: number) => void;
-  onOpenNoteResult: (noteId: string, blockId: string) => void | Promise<void>;
+  onOpenNoteResult: ((noteId: string, blockId: string) => void | Promise<void>) | null;
 };
 
 const INITIAL_LIMITS = {
@@ -18,6 +18,25 @@ const INITIAL_LIMITS = {
   "across-document": 3,
   "pdf-names": 5
 } as const;
+
+const EMPTY_SEARCH_STATE: UnifiedSearchState = {
+  open: false,
+  inputQuery: "",
+  liveGeneration: null,
+  committedView: {
+    query: "",
+    stale: false,
+    groups: [],
+    warnings: [],
+    progress: null
+  },
+  phase: "idle",
+  activeResultId: null,
+  selectionOrigin: null,
+  expandedGroups: new Set()
+};
+
+const SUBSCRIBE_INACTIVE = () => () => undefined;
 
 function GroupIcon({ groupId }: { groupId: keyof typeof INITIAL_LIMITS }) {
   if (groupId === "notes") {
@@ -88,7 +107,24 @@ export default function WorkspaceSearchField({
   onGoToPage,
   onOpenNoteResult
 }: WorkspaceSearchFieldProps) {
-  const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
+  const initialStateRef = useRef<UnifiedSearchState | null>(null);
+  if (initialStateRef.current === null) {
+    initialStateRef.current = controller.getSnapshot();
+  }
+
+  const [isActivated, setIsActivated] = useState(() => {
+    const initialState = initialStateRef.current ?? EMPTY_SEARCH_STATE;
+    return (
+      focusRequest > 0 ||
+      initialState.open ||
+      initialState.inputQuery.trim().length > 0
+    );
+  });
+  const state = useSyncExternalStore(
+    isActivated ? controller.subscribe : SUBSCRIBE_INACTIVE,
+    isActivated ? controller.getSnapshot : () => EMPTY_SEARCH_STATE,
+    isActivated ? controller.getSnapshot : () => EMPTY_SEARCH_STATE
+  );
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -110,6 +146,10 @@ export default function WorkspaceSearchField({
     visible: false
   });
   const view = state.committedView;
+
+  function activateSearchField() {
+    setIsActivated(true);
+  }
 
   function updateScrollbar() {
     const bodyElement = bodyRef.current;
@@ -171,6 +211,7 @@ export default function WorkspaceSearchField({
       return;
     }
 
+    activateSearchField();
     setFocusPulse(true);
     const pulseTimer = window.setTimeout(() => {
       setFocusPulse(false);
@@ -190,7 +231,7 @@ export default function WorkspaceSearchField({
   }, [controller, focusRequest]);
 
   useEffect(() => {
-    if (!state.open) {
+    if (!isActivated || !state.open) {
       return;
     }
 
@@ -211,7 +252,7 @@ export default function WorkspaceSearchField({
     return () => {
       window.removeEventListener("pointerdown", closeOnPointerDown, true);
     };
-  }, [controller, state.open]);
+  }, [controller, isActivated, state.open]);
 
   useEffect(() => {
     if (!state.open || !state.activeResultId) {
@@ -224,6 +265,10 @@ export default function WorkspaceSearchField({
   }, [state.activeResultId, state.open]);
 
   useEffect(() => {
+    if (!isActivated || !state.open) {
+      return;
+    }
+
     const frame = window.requestAnimationFrame(() => {
       updateScrollbar();
     });
@@ -231,9 +276,13 @@ export default function WorkspaceSearchField({
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [state.open, view.groups.length, view.warnings.length, view.stale, state.expandedGroups]);
+  }, [isActivated, state.open, view.groups.length, view.warnings.length, view.stale, state.expandedGroups]);
 
   useEffect(() => {
+    if (!isActivated || !state.open) {
+      return;
+    }
+
     const bodyElement = bodyRef.current;
     if (!bodyElement) {
       return;
@@ -257,9 +306,13 @@ export default function WorkspaceSearchField({
       resizeObserver?.disconnect();
       window.removeEventListener("resize", handleResize);
     };
-  }, [state.open]);
+  }, [isActivated, state.open]);
 
   useEffect(() => {
+    if (!isActivated || !state.open) {
+      return;
+    }
+
     function handlePointerMove(event: PointerEvent) {
       const activeDrag = scrollbarDragRef.current;
       const bodyElement = bodyRef.current;
@@ -292,7 +345,7 @@ export default function WorkspaceSearchField({
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, []);
+  }, [isActivated, state.open]);
 
   async function activate(result: SearchResult) {
     controller.dismiss();
@@ -301,6 +354,9 @@ export default function WorkspaceSearchField({
       return;
     }
     if (result.kind === "note" && result.blockId) {
+      if (!onOpenNoteResult) {
+        return;
+      }
       await onOpenNoteResult(result.noteId, result.blockId);
       return;
     }
@@ -310,7 +366,9 @@ export default function WorkspaceSearchField({
   }
 
   const hasQuery = state.inputQuery.trim().length > 0;
-  const hasVisibleDropdownContent = view.groups.length > 0 || view.warnings.length > 0;
+  const visibleGroups = onOpenNoteResult
+    ? view.groups
+    : view.groups.filter((group) => group.id !== "notes");
 
   return (
     <div
@@ -331,8 +389,12 @@ export default function WorkspaceSearchField({
           aria-label="Search workspace"
           placeholder={placeholder}
           spellCheck={false}
-          onFocus={() => controller.open()}
+          onFocus={() => {
+            activateSearchField();
+            controller.open();
+          }}
           onChange={(event) => {
+            activateSearchField();
             if (!state.open) {
               controller.open();
             }
@@ -382,7 +444,7 @@ export default function WorkspaceSearchField({
         </button>
       </label>
 
-      {state.open && hasQuery && hasVisibleDropdownContent ? (
+      {state.open && hasQuery && (visibleGroups.length > 0 || view.warnings.length > 0) ? (
         <section className="workspace-search__dropdown" role="dialog" aria-label="Search">
           <div className="unified-search__body-shell">
             <div
@@ -392,7 +454,7 @@ export default function WorkspaceSearchField({
                 updateScrollbar();
               }}
             >
-            {view.groups.map((group) => {
+            {visibleGroups.map((group) => {
               const expanded = state.expandedGroups.has(group.id);
               const displayedGroupLabel =
                 group.id === "pdf-names" ? "PDFs" : group.label;

@@ -17,6 +17,7 @@ pub struct StorePaths {
     pub app_dir: PathBuf,
     pub library_dir: PathBuf,
     pub legacy_library_dir: PathBuf,
+    pub settings_path: PathBuf,
     pub index_path: PathBuf,
     pub notes_dir: PathBuf,
     pub notes_index_path: PathBuf,
@@ -33,6 +34,7 @@ impl StorePaths {
         Self {
             library_dir,
             legacy_library_dir: app_dir.join("library"),
+            settings_path: app_dir.join("app-settings.json"),
             index_path: app_dir.join("library-index.json"),
             notes_dir: app_dir.join("notes"),
             notes_index_path: app_dir.join("notes").join("index.json"),

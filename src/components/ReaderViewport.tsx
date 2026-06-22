@@ -4,28 +4,10 @@ import PdfViewer from "./PdfViewer";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import { debugAction } from "../lib/debugLog";
 import type { DocumentState, OutlineItem, ReaderSession, ViewerApi, ViewerSnapshot } from "../lib/types";
-
-function toViewEventName(view: "reader" | "collection" | "notes" | "book") {
-  if (view === "reader") {
-    return "document";
-  }
-  if (view === "book") {
-    return "book";
-  }
-  if (view === "notes") {
-    return "notes";
-  }
-  return "collection";
-}
+import { toViewEventName, type ViewTransition } from "../lib/workspaceView";
 
 type ReaderViewportProps = {
-  activeViewTransition: {
-    clickStartedAtMs: number;
-    fromView: "reader" | "collection" | "notes" | "book";
-    source: string;
-    toView: "reader" | "collection" | "notes" | "book";
-    viewTransitionId: string;
-  } | null;
+  activeViewTransition: ViewTransition | null;
   readerSession: ReaderSession | null;
   readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
@@ -52,42 +34,42 @@ const ReaderViewport = memo(function ReaderViewport({
   suspendAutoFitDuringPaneResize
 }: ReaderViewportProps) {
   useEffect(() => {
+    if (!readerSession) {
+      return;
+    }
+
     const elapsedFromClickMs =
       activeViewTransition?.clickStartedAtMs == null
         ? null
         : Math.round(performance.now() - activeViewTransition.clickStartedAtMs);
-    let mountLogged = false;
-    const timeoutId = window.setTimeout(() => {
-      mountLogged = true;
-      debugAction("view.document:component-mounted", {
-        documentId: readerSession?.documentId ?? null,
-        elapsedFromClickMs,
-        fromView: activeViewTransition ? toViewEventName(activeViewTransition.fromView) : null,
-        openSessionId: readerSession?.openSessionId ?? null,
-        source: activeViewTransition?.source ?? null,
-        toView: activeViewTransition ? toViewEventName(activeViewTransition.toView) : null,
-        viewTransitionId: activeViewTransition?.viewTransitionId ?? null
-      });
-      debugAction("reader:mounted", {
-        documentId: readerSession?.documentId ?? null,
-        elapsedFromClickMs,
-        openSessionId: readerSession?.openSessionId ?? null,
-        viewTransitionId: activeViewTransition?.viewTransitionId ?? null
-      });
-    }, 0);
+    const destinationEventName = activeViewTransition
+      ? toViewEventName(activeViewTransition.toView)
+      : "document";
+
+    debugAction(`view.${destinationEventName}:component-mounted`, {
+      documentId: readerSession.documentId,
+      elapsedFromClickMs,
+      fromView: activeViewTransition ? toViewEventName(activeViewTransition.fromView) : null,
+      openSessionId: readerSession.openSessionId,
+      source: activeViewTransition?.source ?? null,
+      toView: activeViewTransition ? toViewEventName(activeViewTransition.toView) : null,
+      viewTransitionId: activeViewTransition?.viewTransitionId ?? null
+    });
+    debugAction("reader:mounted", {
+      documentId: readerSession.documentId,
+      elapsedFromClickMs,
+      openSessionId: readerSession.openSessionId,
+      viewTransitionId: activeViewTransition?.viewTransitionId ?? null
+    });
 
     return () => {
-      window.clearTimeout(timeoutId);
-      if (!mountLogged) {
-        return;
-      }
       debugAction("reader:unmounted", {
-        documentId: readerSession?.documentId ?? null,
-        openSessionId: readerSession?.openSessionId ?? null,
+        documentId: readerSession.documentId,
+        openSessionId: readerSession.openSessionId,
         viewTransitionId: activeViewTransition?.viewTransitionId ?? null
       });
     };
-  }, []);
+  }, [activeViewTransition, readerSession]);
 
   return (
     <section className="reader-viewport" aria-label="Reader viewport">

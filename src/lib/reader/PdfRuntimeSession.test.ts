@@ -212,12 +212,12 @@ describe("PdfRuntimeSession", () => {
     );
   });
 
-  it("loads lazily for outline, page text, and page plain text", async () => {
+  it("loads lazily for outline, page text, and page search text", async () => {
     const fixture = createRuntimeFixture();
 
     const outline = await fixture.session.getOutline();
     const textLayer = await fixture.session.getPageText(1);
-    const plainText = await fixture.session.getPagePlainText(2);
+    const searchText = await fixture.session.getPageSearchText(2);
 
     expect(outline[0]?.page).toBe(1);
     expect(outline[0]?.source).toBe("embedded");
@@ -235,7 +235,7 @@ describe("PdfRuntimeSession", () => {
     });
     expect(textLayer.pageNumber).toBe(1);
     expect(textLayer.viewportWidth).toBe(100);
-    expect(plainText).toBe("beta");
+    expect(searchText).toBe("Beta");
     expect(fixture.readDocumentBytes).toHaveBeenCalledTimes(1);
     expect(fixture.getDocument).toHaveBeenCalledTimes(1);
   });
@@ -256,7 +256,7 @@ describe("PdfRuntimeSession", () => {
     expect(fixture.getPageTextContent.get(1)).toHaveBeenCalledTimes(1);
   });
 
-  it("searches incrementally and reuses cached page plain text", async () => {
+  it("searches incrementally and reuses cached page search text", async () => {
     const fixture = createRuntimeFixture();
 
     const firstHit = await fixture.session.search("target");
@@ -273,10 +273,11 @@ describe("PdfRuntimeSession", () => {
     const fixture = createRuntimeFixture();
 
     const text = await fixture.session.getPageSearchText(1, new AbortController().signal);
+    const firstHit = await fixture.session.search("alpha");
 
     expect(text).toBe("Alpha");
+    expect(firstHit).toBe(1);
     expect(fixture.session.getExtractedPageNumbers()).toEqual(new Set([1]));
-    expect(await fixture.session.getPagePlainText(1)).toBe("alpha");
     expect(fixture.getPageTextContent.get(1)).toHaveBeenCalledTimes(1);
   });
 

@@ -1,9 +1,12 @@
 use std::{
     env,
-    fs::OpenOptions,
+    fs::{metadata, OpenOptions},
     io::Write,
     path::PathBuf,
-    sync::OnceLock,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        OnceLock,
+    },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -16,6 +19,49 @@ enum LogLevel {
     Info = 2,
     Debug = 3,
     Trace = 4,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LogPolicy {
+    ErrorsOnly = 1,
+    Verbose = 2,
+}
+
+const ERROR_LOG_MAX_BYTES: u64 = 256 * 1024;
+const SUPPORT_LOG_MAX_BYTES: u64 = 1024 * 1024;
+
+fn default_policy() -> LogPolicy {
+    if cfg!(debug_assertions) {
+        return LogPolicy::Verbose;
+    }
+
+    match env::var("READR_SUPPORT_LOG") {
+        Ok(value) if value.trim() == "1" => LogPolicy::Verbose,
+        _ => LogPolicy::ErrorsOnly,
+    }
+}
+
+fn session_support_logging_override() -> &'static AtomicU8 {
+    static SESSION_OVERRIDE: OnceLock<AtomicU8> = OnceLock::new();
+    SESSION_OVERRIDE.get_or_init(|| AtomicU8::new(0))
+}
+
+fn current_policy() -> LogPolicy {
+    match session_support_logging_override().load(Ordering::Relaxed) {
+        1 => LogPolicy::Verbose,
+        _ => default_policy(),
+    }
+}
+
+pub fn current_policy_name() -> &'static str {
+    match current_policy() {
+        LogPolicy::ErrorsOnly => "errors-only",
+        LogPolicy::Verbose => "verbose",
+    }
+}
+
+pub fn set_support_logging_enabled(enabled: bool) {
+    session_support_logging_override().store(if enabled { 1 } else { 0 }, Ordering::Relaxed);
 }
 
 fn configured_log_level() -> LogLevel {
@@ -34,18 +80,22 @@ fn configured_log_level() -> LogLevel {
     })
 }
 
-fn startup_log_path() -> PathBuf {
+fn error_log_path() -> PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
-    PATH.get_or_init(|| env::temp_dir().join("calm-reader-startup.log"))
+    PATH.get_or_init(|| env::temp_dir().join("readr-errors.log"))
         .clone()
 }
 
-pub fn enabled() -> bool {
-    cfg!(debug_assertions)
+fn support_log_path() -> PathBuf {
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| env::temp_dir().join("readr-support.log"))
+        .clone()
 }
 
 fn event_level(event: &str) -> LogLevel {
     if event.ends_with(":error")
+        || event.ends_with("-error")
+        || event.ends_with(".error")
         || event == "pdf-runtime.ensure-document-error"
         || event == "pdf-runtime.page-text-error"
     {
@@ -140,53 +190,132 @@ fn event_level(event: &str) -> LogLevel {
     LogLevel::Trace
 }
 
-fn emit(event: &str, fields: Value) {
-    if !enabled() || event_level(event) > configured_log_level() {
+fn should_redact_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.contains("path")
+        || key.contains("content")
+        || key.contains("text")
+        || key.contains("body")
+        || key.contains("selection")
+        || key.contains("raw")
+        || key.contains("bytes")
+}
+
+fn sanitize_value(key_hint: Option<&str>, value: &Value, verbose: bool) -> Value {
+    if verbose {
+        return value.clone();
+    }
+
+    if let Some(key) = key_hint {
+        if should_redact_key(key) {
+            return Value::String("[redacted]".to_string());
+        }
+    }
+
+    match value {
+        Value::Object(object) => {
+            let mut sanitized = serde_json::Map::new();
+            for (key, child_value) in object {
+                sanitized.insert(
+                    key.clone(),
+                    sanitize_value(Some(key.as_str()), child_value, verbose),
+                );
+            }
+            Value::Object(sanitized)
+        }
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .take(25)
+                .map(|child_value| sanitize_value(None, child_value, verbose))
+                .collect(),
+        ),
+        Value::String(text) => {
+            let max_len = 240;
+            if text.chars().count() <= max_len {
+                Value::String(text.clone())
+            } else {
+                Value::String(format!("{}…", text.chars().take(max_len).collect::<String>()))
+            }
+        }
+        _ => value.clone(),
+    }
+}
+
+fn write_log_record(path: PathBuf, payload: &Value, max_bytes: u64) {
+    let serialized = payload.to_string();
+    let needs_truncate = metadata(&path)
+        .map(|metadata| metadata.len() >= max_bytes)
+        .unwrap_or(false);
+
+    let mut options = OpenOptions::new();
+    options.create(true).write(true);
+    if needs_truncate {
+        options.truncate(true);
+    } else {
+        options.append(true);
+    }
+
+    if let Ok(mut file) = options.open(path) {
+        let _ = writeln!(file, "{serialized}");
+    }
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn base_payload(scope: &str, event: &str, fields: Value) -> Value {
+    json!({
+        "scope": scope,
+        "event": event,
+        "atMs": now_ms(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "platform": env::consts::OS,
+        "fields": fields,
+    })
+}
+
+fn emit_trace(event: &str, fields: Value) {
+    if current_policy() != LogPolicy::Verbose || event_level(event) > configured_log_level() {
         return;
     }
 
-    let at_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
+    let payload = base_payload("backend-trace", event, fields);
+    println!("{payload}");
+    write_log_record(support_log_path(), &payload, SUPPORT_LOG_MAX_BYTES);
+}
 
-    println!(
-        "{}",
-        json!({
-            "scope": "backend",
-            "event": event,
-            "atMs": at_ms,
-            "fields": fields,
-        })
+pub fn report_error(event: &str, fields: Value) {
+    let verbose = current_policy() == LogPolicy::Verbose;
+    let payload = base_payload(
+        "backend-error",
+        event,
+        sanitize_value(None, &fields, verbose),
     );
+
+    if verbose {
+        eprintln!("{payload}");
+        write_log_record(support_log_path(), &payload, SUPPORT_LOG_MAX_BYTES);
+    }
+
+    write_log_record(error_log_path(), &payload, ERROR_LOG_MAX_BYTES);
 }
 
 pub fn action(event: &str, fields: Value) {
-    emit(event, fields);
+    if event_level(event) == LogLevel::Error {
+        report_error(event, fields);
+        return;
+    }
+
+    emit_trace(event, fields);
 }
 
 pub fn startup(event: &str, fields: Value) {
-    let at_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-
-    let payload = json!({
-        "scope": "backend-startup",
-        "event": event,
-        "atMs": at_ms,
-        "fields": fields,
-    });
-
-    eprintln!("{payload}");
-
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(startup_log_path())
-    {
-        let _ = writeln!(file, "{payload}");
-    }
+    emit_trace(event, fields);
 }
 
 pub struct DebugProcess {
@@ -197,7 +326,7 @@ pub struct DebugProcess {
 
 pub fn process(event: impl Into<String>, fields: Value) -> DebugProcess {
     let event = event.into();
-    emit(&format!("{event}:start"), fields.clone());
+    emit_trace(&format!("{event}:start"), fields.clone());
 
     DebugProcess {
         event,
@@ -208,7 +337,7 @@ pub fn process(event: impl Into<String>, fields: Value) -> DebugProcess {
 
 impl DebugProcess {
     pub fn checkpoint(&self, checkpoint: &str, fields: Value) {
-        emit(
+        emit_trace(
             &format!("{}:{checkpoint}", self.event),
             merge_fields(
                 &self.fields,
@@ -221,7 +350,7 @@ impl DebugProcess {
     }
 
     pub fn finish(self, fields: Value) {
-        emit(
+        emit_trace(
             &format!("{}:finish", self.event),
             merge_fields(
                 &self.fields,
@@ -234,7 +363,7 @@ impl DebugProcess {
     }
 
     pub fn fail(self, error: &str, fields: Value) {
-        emit(
+        report_error(
             &format!("{}:error", self.event),
             merge_fields(
                 &self.fields,

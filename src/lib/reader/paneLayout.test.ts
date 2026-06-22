@@ -5,6 +5,7 @@ import {
   clampReaderPaneSplitRatioWithMinDocumentWidth,
   DEFAULT_READER_PANE_SPLIT_RATIO,
   deriveReaderPaneLayout,
+  getReaderPaneSplitRatioClampResultWithMinDocumentWidth,
   getReaderPaneNotesRatio,
   getReaderPaneSplitRatioBounds,
   getReaderPaneSplitRatioFromPointer,
@@ -66,13 +67,26 @@ describe("paneLayout helpers", () => {
     expect(clampReaderPaneSplitRatioWithMinDocumentWidth(0.8, 1200, 640)).toBe(0.7331);
   });
 
+  it("reports when the locked-fit document minimum forces the notes pane below its global minimum", () => {
+    expect(
+      getReaderPaneSplitRatioClampResultWithMinDocumentWidth(0.42, 700, 640)
+    ).toEqual({
+      constrainedRatio: 0.9156,
+      documentWidth: 640,
+      effectiveMinDocumentWidth: 640,
+      notesWidth: 59,
+      usableWidth: 699,
+      violatesNotesMinWidth: true
+    });
+  });
+
   it("converts pointer position into a ratio and derives the matching notes ratio", () => {
-    expect(getReaderPaneSplitRatioFromPointer(560, 100, 1000)).toBe(0.4605);
-    expect(getReaderPaneNotesRatio(0.46)).toBe(0.54);
+    expect(getReaderPaneSplitRatioFromPointer(520, 100, 1000)).toBe(0.4204);
+    expect(getReaderPaneNotesRatio(0.42)).toBe(0.58);
   });
 
   it("nudges the ratio in keyboard-sized steps", () => {
-    expect(nudgeReaderPaneSplitRatio(0.46, "left", 1000)).toBe(0.44);
-    expect(nudgeReaderPaneSplitRatio(0.46, "right", 1000)).toBe(0.48);
+    expect(nudgeReaderPaneSplitRatio(0.42, "left", 1000)).toBe(0.4);
+    expect(nudgeReaderPaneSplitRatio(0.42, "right", 1000)).toBe(0.44);
   });
 });

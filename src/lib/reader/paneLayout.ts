@@ -1,4 +1,4 @@
-export const DEFAULT_READER_PANE_SPLIT_RATIO = 0.46;
+export const DEFAULT_READER_PANE_SPLIT_RATIO = 0.42;
 export const MIN_READER_PANE_WIDTH_PX = 320;
 export const READER_PANE_SPLIT_KEYBOARD_STEP = 0.02;
 export const READER_PANE_SPLITTER_LINE_WIDTH_PX = 1;
@@ -12,6 +12,15 @@ export type ReaderPaneLayout = {
   notesWidth: number;
   usableWidth: number;
   isConstrained: boolean;
+};
+
+export type ReaderPaneMinDocumentWidthClampResult = {
+  constrainedRatio: number;
+  documentWidth: number;
+  effectiveMinDocumentWidth: number;
+  notesWidth: number;
+  usableWidth: number;
+  violatesNotesMinWidth: boolean;
 };
 
 function roundRatio(value: number) {
@@ -135,26 +144,56 @@ export function clampReaderPaneSplitRatioWithMinDocumentWidth(
   minDocumentWidth: number,
   splitterWidth = READER_PANE_SPLITTER_LINE_WIDTH_PX
 ) {
+  return getReaderPaneSplitRatioClampResultWithMinDocumentWidth(
+    ratio,
+    containerWidth,
+    minDocumentWidth,
+    splitterWidth
+  ).constrainedRatio;
+}
+
+export function getReaderPaneSplitRatioClampResultWithMinDocumentWidth(
+  ratio: number,
+  containerWidth: number,
+  minDocumentWidth: number,
+  splitterWidth = READER_PANE_SPLITTER_LINE_WIDTH_PX
+): ReaderPaneMinDocumentWidthClampResult {
   const usableWidth = getReaderPaneUsableWidth(containerWidth, splitterWidth);
   if (usableWidth <= 0) {
-    return 0.5;
+    return {
+      constrainedRatio: 0.5,
+      documentWidth: 0,
+      effectiveMinDocumentWidth: 0,
+      notesWidth: 0,
+      usableWidth: 0,
+      violatesNotesMinWidth: false
+    };
   }
 
   const normalizedRatio = normalizeRatio(ratio);
-  const minDocumentRatio = Math.max(
+  const effectiveMinDocumentWidth = Math.max(
     MIN_READER_PANE_WIDTH_PX,
     Math.min(minDocumentWidth, usableWidth)
-  ) / usableWidth;
-  const maxDocumentRatio = Math.max(
-    minDocumentRatio,
-    (usableWidth - MIN_READER_PANE_WIDTH_PX) / usableWidth
   );
+  const minDocumentRatio = effectiveMinDocumentWidth / usableWidth;
+  const maxDocumentRatio = (usableWidth - MIN_READER_PANE_WIDTH_PX) / usableWidth;
 
-  if (minDocumentRatio >= maxDocumentRatio) {
-    return roundRatio(clampValue(minDocumentRatio, 0.5, 1));
-  }
+  const constrainedRatio =
+    minDocumentRatio >= maxDocumentRatio
+      ? roundRatio(clampValue(minDocumentRatio, 0.5, 1))
+      : roundRatio(clampValue(normalizedRatio, minDocumentRatio, maxDocumentRatio));
 
-  return roundRatio(clampValue(normalizedRatio, minDocumentRatio, maxDocumentRatio));
+  const documentWidth = roundWidth(usableWidth * constrainedRatio);
+  const notesWidth = roundWidth(Math.max(usableWidth - documentWidth, 0));
+
+  return {
+    constrainedRatio,
+    documentWidth,
+    effectiveMinDocumentWidth: roundWidth(effectiveMinDocumentWidth),
+    notesWidth,
+    usableWidth: roundWidth(usableWidth),
+    violatesNotesMinWidth: notesWidth < MIN_READER_PANE_WIDTH_PX
+  };
 }
 
 export function normalizeReaderPaneSplitRatio(value: unknown) {

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default desktop capability for Calm Reader.",
+  "description": "Default desktop capability for Readr.",
   "windows": ["main"],
   "permissions": [
     "core:default",

@@ -11,6 +11,7 @@ import { getCurrentAutoFitCycle } from "./autoFitDebug";
 import {
   clampReaderPaneSplitRatioWithMinDocumentWidth,
   deriveReaderPaneLayout,
+  getReaderPaneSplitRatioClampResultWithMinDocumentWidth,
   getReaderPaneNotesRatio,
   getReaderPaneSplitRatioFromPointer,
   getReaderPaneUsableWidth,
@@ -52,25 +53,11 @@ const BODY_RESIZE_CLASS = "reader-pane-resizing";
 const DEFAULT_SEPARATOR_VALUE = 46;
 
 function updateWorkspaceRatio(
-  container: HTMLDivElement | null,
   separator: HTMLElement | null,
   preferredRatio: number,
   containerWidth: number
 ) {
   const layout = deriveReaderPaneLayout(preferredRatio, containerWidth);
-
-  if (container) {
-    container.style.setProperty(
-      "--reader-pane-document-ratio",
-      layout.constrainedRatio.toFixed(4)
-    );
-    container.style.setProperty(
-      "--reader-pane-notes-ratio",
-      getReaderPaneNotesRatio(layout.constrainedRatio).toFixed(4)
-    );
-    container.style.setProperty("--reader-pane-document-width", `${layout.documentWidth}px`);
-    container.style.setProperty("--reader-pane-notes-width", `${layout.notesWidth}px`);
-  }
 
   if (separator) {
     separator.setAttribute(
@@ -109,6 +96,10 @@ export function useReaderPaneLayoutController({
     }
     return window.matchMedia(READER_PANE_STACKED_MEDIA_QUERY).matches;
   });
+  const [hasMeasuredLayout, setHasMeasuredLayout] = useState(false);
+  const [previewLayout, setPreviewLayout] = useState(() =>
+    deriveReaderPaneLayout(preferredRatio, 0)
+  );
 
   function getContainerWidth() {
     return containerRef.current?.getBoundingClientRect().width ?? 0;
@@ -129,18 +120,48 @@ export function useReaderPaneLayoutController({
     return nextRatio;
   }
 
+  function getMinDocumentWidthClampResult(nextRatio: number, containerWidth: number) {
+    if (
+      typeof minDocumentWidthRef.current !== "number" ||
+      !Number.isFinite(minDocumentWidthRef.current)
+    ) {
+      return null;
+    }
+
+    return getReaderPaneSplitRatioClampResultWithMinDocumentWidth(
+      nextRatio,
+      containerWidth,
+      minDocumentWidthRef.current
+    );
+  }
+
   function applyPreviewRatio(nextRatio: number, containerWidth = getContainerWidth()) {
+    if (containerWidth <= 0) {
+      return deriveReaderPaneLayout(nextRatio, 0);
+    }
+
     const previousSplitRatio = previewRatioRef.current;
     const clampedRatio = clampPreviewRatio(nextRatio, containerWidth);
     previewRatioRef.current = clampedRatio;
     const layout = updateWorkspaceRatio(
-      containerRef.current,
       separatorRef.current,
       clampedRatio,
       containerWidth
     );
+    setHasMeasuredLayout(true);
+    setPreviewLayout((current) =>
+      current.preferredRatio === layout.preferredRatio &&
+      current.constrainedRatio === layout.constrainedRatio &&
+      current.documentWidth === layout.documentWidth &&
+      current.notesWidth === layout.notesWidth &&
+      current.usableWidth === layout.usableWidth &&
+      current.isConstrained === layout.isConstrained
+        ? current
+        : layout
+    );
     const fitCycle = getCurrentAutoFitCycle();
     const minDocumentWidth = minDocumentWidthRef.current;
+    const minDocumentWidthClamp = getMinDocumentWidthClampResult(nextRatio, containerWidth);
     const requestedDocumentWidth = Number(
       (getReaderPaneUsableWidth(containerWidth) * nextRatio).toFixed(2)
     );
@@ -169,6 +190,8 @@ export function useReaderPaneLayoutController({
         fitCycleId: fitCycle.fitCycleId,
         minDocumentWidth: Number(minDocumentWidth.toFixed(2)),
         nextSplitRatio: layout.constrainedRatio,
+        notesPaneMinWidthViolated: minDocumentWidthClamp?.violatesNotesMinWidth ?? false,
+        resultingNotesWidth: minDocumentWidthClamp?.notesWidth ?? layout.notesWidth,
         previousDocumentWidth: Number(
           (getReaderPaneUsableWidth(containerWidth) * previousSplitRatio).toFixed(2)
         ),
@@ -184,7 +207,10 @@ export function useReaderPaneLayoutController({
   function commitPreviewRatio() {
     draggingPointerIdRef.current = null;
     setIsDragging(false);
-    const containerWidth = getContainerWidth() || 1200;
+    const containerWidth = getContainerWidth();
+    if (containerWidth <= 0) {
+      return;
+    }
     const committedRatio = clampPreviewRatio(previewRatioRef.current, containerWidth);
     const layout = applyPreviewRatio(committedRatio, containerWidth);
     const nextRatio = layout.constrainedRatio;
@@ -197,7 +223,12 @@ export function useReaderPaneLayoutController({
     preferredRatioRef.current = preferredRatio;
     minDocumentWidthRef.current = minDocumentWidthPx ?? null;
     if (!isDragging) {
-      const containerWidth = getContainerWidth() || 1200;
+      const containerWidth = getContainerWidth();
+      if (containerWidth <= 0) {
+        setHasMeasuredLayout(false);
+        setPreviewLayout(deriveReaderPaneLayout(preferredRatio, 0));
+        return;
+      }
       const nextRatio = clampPreviewRatio(preferredRatio, containerWidth);
       applyPreviewRatio(nextRatio, containerWidth);
     }
@@ -238,8 +269,12 @@ export function useReaderPaneLayoutController({
     }
 
     const updateFromContainerWidth = () => {
+      const containerWidth = getContainerWidth();
+      if (containerWidth <= 0) {
+        return;
+      }
       const preferredOrPreview = isDragging ? previewRatioRef.current : preferredRatioRef.current;
-      applyPreviewRatio(preferredOrPreview, getContainerWidth());
+      applyPreviewRatio(preferredOrPreview, containerWidth);
     };
 
     updateFromContainerWidth();
@@ -259,14 +294,24 @@ export function useReaderPaneLayoutController({
   }, [isDragging]);
 
   const workspaceStyle = useMemo(
-    () =>
-      ({
-        ["--reader-pane-document-ratio"]: preferredRatio.toFixed(4),
-        ["--reader-pane-notes-ratio"]: getReaderPaneNotesRatio(preferredRatio).toFixed(4),
-        ["--reader-pane-document-width"]: `calc((100% - var(--reader-splitter-line-width)) * ${preferredRatio.toFixed(4)})`,
-        ["--reader-pane-notes-width"]: `calc((100% - var(--reader-splitter-line-width)) * ${getReaderPaneNotesRatio(preferredRatio).toFixed(4)})`
-      }) as CSSProperties,
-    [preferredRatio]
+    () => {
+      const documentRatio = hasMeasuredLayout
+        ? previewLayout.constrainedRatio
+        : preferredRatioRef.current;
+      const notesRatio = getReaderPaneNotesRatio(documentRatio);
+
+      return {
+        ["--reader-pane-document-ratio"]: documentRatio.toFixed(4),
+        ["--reader-pane-notes-ratio"]: notesRatio.toFixed(4),
+        ["--reader-pane-document-width"]: hasMeasuredLayout
+          ? `${previewLayout.documentWidth}px`
+          : `calc((100% - var(--reader-splitter-line-width)) * ${documentRatio.toFixed(4)})`,
+        ["--reader-pane-notes-width"]: hasMeasuredLayout
+          ? `${previewLayout.notesWidth}px`
+          : `calc((100% - var(--reader-splitter-line-width)) * ${notesRatio.toFixed(4)})`
+      } as CSSProperties;
+    },
+    [hasMeasuredLayout, previewLayout]
   );
 
   const separatorProps: ReaderPaneSeparatorProps = {
@@ -275,7 +320,9 @@ export function useReaderPaneLayoutController({
     "aria-orientation": "vertical",
     "aria-valuemin": 0,
     "aria-valuemax": 100,
-    "aria-valuenow": Math.round(preferredRatio * 100) || DEFAULT_SEPARATOR_VALUE,
+    "aria-valuenow": Number.isFinite(previewLayout.constrainedRatio)
+      ? Math.round(previewLayout.constrainedRatio * 100)
+      : DEFAULT_SEPARATOR_VALUE,
     tabIndex: isStackedLayout ? -1 : 0,
     onKeyDown(event) {
       separatorRef.current = event.currentTarget;
@@ -288,19 +335,30 @@ export function useReaderPaneLayoutController({
       }
 
       event.preventDefault();
+      const containerWidth = getContainerWidth();
+      if (containerWidth <= 0) {
+        return;
+      }
+      const previousRatio = preferredRatioRef.current;
       const candidateRatio = nudgeReaderPaneSplitRatio(
         previewRatioRef.current,
         event.key === "ArrowLeft" ? "left" : "right",
-        getContainerWidth() || 1200
+        containerWidth
       );
-      const containerWidth = getContainerWidth() || 1200;
-      const nextRatio = clampPreviewRatio(candidateRatio, containerWidth);
-      preferredRatioRef.current = nextRatio;
-      applyPreviewRatio(nextRatio, containerWidth);
-      onCommitRatio(nextRatio);
+      const layout = applyPreviewRatio(candidateRatio, containerWidth);
+      const committedRatio = layout.constrainedRatio;
+      preferredRatioRef.current = committedRatio;
+      if (Math.abs(committedRatio - previousRatio) > 0.0001) {
+        onCommitRatio(committedRatio);
+      }
     },
     onPointerDown(event) {
       if (isStackedLayout) {
+        return;
+      }
+
+      const containerRect = containerRef.current?.getBoundingClientRect();
+      if (!containerRect) {
         return;
       }
 
@@ -309,10 +367,6 @@ export function useReaderPaneLayoutController({
       draggingPointerIdRef.current = event.pointerId;
       event.currentTarget.setPointerCapture(event.pointerId);
       setIsDragging(true);
-      const containerRect = containerRef.current?.getBoundingClientRect();
-      if (!containerRect) {
-        return;
-      }
       const nextRatio = getReaderPaneSplitRatioFromPointer(
         event.clientX,
         containerRect.left,
@@ -355,7 +409,10 @@ export function useReaderPaneLayoutController({
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
-      applyPreviewRatio(preferredRatioRef.current, getContainerWidth() || 1200);
+      const containerWidth = getContainerWidth();
+      if (containerWidth > 0) {
+        applyPreviewRatio(preferredRatioRef.current, containerWidth);
+      }
       draggingPointerIdRef.current = null;
       setIsDragging(false);
     },

@@ -103,7 +103,16 @@ export default function NotesWorkspace({
 
       <div className="reader-workspace__body reader-workspace__body--notes-only notes-workspace__body">
         <div className="reader-workspace__notes reader-workspace__notes--only">
-          {note ? (
+          {notesLoading ? (
+            <div className="notes-workspace__empty">
+              <div className="notes-workspace__empty-copy">
+                <p className="notes-workspace__empty-label">Loading note...</p>
+                <p className="notes-workspace__empty-help">
+                  Restoring your standalone note workspace.
+                </p>
+              </div>
+            </div>
+          ) : note ? (
             <NotesViewport
               note={note}
               loading={notesLoading}
@@ -120,7 +129,7 @@ export default function NotesWorkspace({
               onGoToPage={() => undefined}
               documentId={null}
               outlineItems={[]}
-              readerState={null}
+              bookmarks={[]}
               onNavigateToTarget={() => undefined}
               onSetBookmarks={() => undefined}
               currentPage={null}

@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 
 import {
   filterPdfPaths,
@@ -126,6 +126,12 @@ type DragPreview = {
   y: number;
 } | null;
 
+type ScrollbarState = {
+  thumbHeight: number;
+  thumbTop: number;
+  visible: boolean;
+};
+
 function documentBaseName(fileName: string) {
   return fileName.replace(/\.pdf$/i, "");
 }
@@ -204,6 +210,23 @@ function getVerticalLayouts(ids: string[], refs: Map<string, HTMLDivElement>): V
   });
 }
 
+function updateScrollbarStateIfChanged(
+  setState: Dispatch<SetStateAction<ScrollbarState>>,
+  nextState: ScrollbarState
+) {
+  setState((currentState) => {
+    if (
+      currentState.visible === nextState.visible &&
+      Math.abs(currentState.thumbHeight - nextState.thumbHeight) < 0.5 &&
+      Math.abs(currentState.thumbTop - nextState.thumbTop) < 0.5
+    ) {
+      return currentState;
+    }
+
+    return nextState;
+  });
+}
+
 export default function CollectionViewRefresh({
   tree,
   selectedLibrarySection,
@@ -232,9 +255,6 @@ export default function CollectionViewRefresh({
   onReorderDocuments,
   onShowStatus
 }: CollectionViewRefreshProps) {
-  startupTrace("component-render-start", {
-    selectedCollectionId
-  });
   const collections = tree?.folders ?? [];
   const [editingCollectionId, setEditingCollectionId] = useState<string | null>(null);
   const [editingCollectionValue, setEditingCollectionValue] = useState("");
@@ -268,6 +288,9 @@ export default function CollectionViewRefresh({
   const suppressBookActivationUntilRef = useRef(0);
   const skipNextCollectionSelectionRef = useRef(false);
   const skipNextDocumentActivationRef = useRef(false);
+  const skipNextStandaloneNoteActivationRef = useRef(false);
+  const collectionReorderVersionRef = useRef(0);
+  const bookReorderVersionRef = useRef(0);
   const collectionMenuButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const documentMenuButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const standaloneNoteMenuButtonRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -306,12 +329,12 @@ export default function CollectionViewRefresh({
   const headerCollectionMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const bookListRef = useRef<HTMLDivElement | null>(null);
   const importPanelRef = useRef<HTMLDivElement | null>(null);
-  const [collectionSidebarScrollbarState, setCollectionSidebarScrollbarState] = useState({
+  const [collectionSidebarScrollbarState, setCollectionSidebarScrollbarState] = useState<ScrollbarState>({
     thumbHeight: 0,
     thumbTop: 0,
     visible: false
   });
-  const [collectionMainScrollbarState, setCollectionMainScrollbarState] = useState({
+  const [collectionMainScrollbarState, setCollectionMainScrollbarState] = useState<ScrollbarState>({
     thumbHeight: 0,
     thumbTop: 0,
     visible: false
@@ -365,6 +388,15 @@ export default function CollectionViewRefresh({
           deleteState: documentDeleteState
         })
       : [];
+  const displayedCollectionsRef = useRef(displayedCollections);
+  const selectedCollectionRef = useRef(selectedCollection);
+  const onImportDocumentsRef = useRef(onImportDocuments);
+  const onShowStatusRef = useRef(onShowStatus);
+
+  displayedCollectionsRef.current = displayedCollections;
+  selectedCollectionRef.current = selectedCollection;
+  onImportDocumentsRef.current = onImportDocuments;
+  onShowStatusRef.current = onShowStatus;
 
   function suppressCollectionActivation() {
     suppressCollectionActivationUntilRef.current = window.performance.now() + 250;
@@ -536,7 +568,7 @@ export default function CollectionViewRefresh({
         maxScroll: 0,
         maxThumbTop: 0
       };
-      setCollectionSidebarScrollbarState({
+      updateScrollbarStateIfChanged(setCollectionSidebarScrollbarState, {
         thumbHeight: 0,
         thumbTop: 0,
         visible: false
@@ -557,7 +589,7 @@ export default function CollectionViewRefresh({
       maxScroll,
       maxThumbTop
     };
-    setCollectionSidebarScrollbarState({
+    updateScrollbarStateIfChanged(setCollectionSidebarScrollbarState, {
       thumbHeight,
       thumbTop,
       visible: true
@@ -591,7 +623,7 @@ export default function CollectionViewRefresh({
         maxScroll: 0,
         maxThumbTop: 0
       };
-      setCollectionMainScrollbarState({
+      updateScrollbarStateIfChanged(setCollectionMainScrollbarState, {
         thumbHeight: 0,
         thumbTop: 0,
         visible: false
@@ -612,7 +644,7 @@ export default function CollectionViewRefresh({
       maxScroll,
       maxThumbTop
     };
-    setCollectionMainScrollbarState({
+    updateScrollbarStateIfChanged(setCollectionMainScrollbarState, {
       thumbHeight,
       thumbTop,
       visible: true
@@ -810,7 +842,13 @@ export default function CollectionViewRefresh({
     if (currentCollection && nextName === currentCollection.folder.name) {
       return;
     }
-    await onRenameCollection(targetId, nextName);
+    try {
+      await onRenameCollection(targetId, nextName);
+    } catch {
+      setEditingCollectionId(targetId);
+      setEditingCollectionValue(nextName);
+      onShowStatus("Could not rename the collection.");
+    }
   }
 
   async function commitDocumentRename(
@@ -830,7 +868,13 @@ export default function CollectionViewRefresh({
     if (nextName === document.fileName) {
       return;
     }
-    await onRenameDocument(document.id, nextName);
+    try {
+      await onRenameDocument(document.id, nextName);
+    } catch {
+      setEditingDocumentId(document.id);
+      setEditingDocumentValue(documentBaseName(document.fileName));
+      onShowStatus("Could not rename the PDF.");
+    }
   }
 
   async function commitStandaloneNoteRename(
@@ -844,13 +888,19 @@ export default function CollectionViewRefresh({
     const nextTitle = editingStandaloneNoteValue.trim();
     suppressBookActivation();
     if (options?.skipNextActivation) {
-      skipNextDocumentActivationRef.current = true;
+      skipNextStandaloneNoteActivationRef.current = true;
     }
     setEditingStandaloneNoteId(null);
     if (!nextTitle || nextTitle === note.title) {
       return;
     }
-    await onRenameStandaloneNote(note.id, nextTitle);
+    try {
+      await onRenameStandaloneNote(note.id, nextTitle);
+    } catch {
+      setEditingStandaloneNoteId(note.id);
+      setEditingStandaloneNoteValue(nextTitle);
+      onShowStatus("Could not rename the note.");
+    }
   }
 
   function resetPointerFeedback() {
@@ -959,12 +1009,16 @@ export default function CollectionViewRefresh({
   }
 
   async function persistCollectionOrder(nextOrder: string[], previousOrder: string[]) {
+    const operationVersion = collectionReorderVersionRef.current + 1;
+    collectionReorderVersionRef.current = operationVersion;
     setOptimisticCollectionOrder(nextOrder);
     try {
       await onReorderCollections(nextOrder);
     } catch {
-      setOptimisticCollectionOrder(previousOrder);
-      onShowStatus("Could not reorder collections.");
+      if (collectionReorderVersionRef.current === operationVersion) {
+        setOptimisticCollectionOrder(previousOrder);
+        onShowStatus("Could not reorder collections.");
+      }
     }
   }
 
@@ -973,6 +1027,8 @@ export default function CollectionViewRefresh({
     nextOrder: string[],
     previousOrder: string[]
   ) {
+    const operationVersion = bookReorderVersionRef.current + 1;
+    bookReorderVersionRef.current = operationVersion;
     setOptimisticBookOrder({
       collectionId,
       ids: nextOrder
@@ -980,11 +1036,13 @@ export default function CollectionViewRefresh({
     try {
       await onReorderDocuments(collectionId, nextOrder);
     } catch {
-      setOptimisticBookOrder({
-        collectionId,
-        ids: previousOrder
-      });
-      onShowStatus("Could not reorder books.");
+      if (bookReorderVersionRef.current === operationVersion) {
+        setOptimisticBookOrder({
+          collectionId,
+          ids: previousOrder
+        });
+        onShowStatus("Could not reorder books.");
+      }
     }
   }
 
@@ -994,6 +1052,8 @@ export default function CollectionViewRefresh({
     sourceCollectionId: string,
     previousOrder: string[]
   ) {
+    const operationVersion = bookReorderVersionRef.current + 1;
+    bookReorderVersionRef.current = operationVersion;
     setOptimisticBookOrder({
       collectionId: sourceCollectionId,
       ids: previousOrder.filter((id) => id !== documentId)
@@ -1001,11 +1061,13 @@ export default function CollectionViewRefresh({
     try {
       await onMoveDocumentToCollection(documentId, destinationCollectionId);
     } catch {
-      setOptimisticBookOrder({
-        collectionId: sourceCollectionId,
-        ids: previousOrder
-      });
-      onShowStatus("Could not move the PDF.");
+      if (bookReorderVersionRef.current === operationVersion) {
+        setOptimisticBookOrder({
+          collectionId: sourceCollectionId,
+          ids: previousOrder
+        });
+        onShowStatus("Could not move the PDF.");
+      }
     }
   }
 
@@ -1123,6 +1185,48 @@ export default function CollectionViewRefresh({
     await onImportDocuments(target.collectionId, pdfPaths);
   }
 
+  function resolveNativeDropTargetAtPositionWithRefs(
+    clientX: number,
+    clientY: number
+  ): NativeDropTarget {
+    for (const collection of displayedCollectionsRef.current) {
+      const element = collectionRowRefs.current.get(collection.folder.id) ?? null;
+      if (!pointInsideRect(clientX, clientY, element)) {
+        continue;
+      }
+
+      return {
+        kind: "collection-row",
+        collectionId: collection.folder.id
+      };
+    }
+
+    const selectedCollectionSnapshot = selectedCollectionRef.current;
+    if (selectedCollectionSnapshot && pointInsideRect(clientX, clientY, importPanelRef.current)) {
+      return {
+        kind: "import-panel",
+        collectionId: selectedCollectionSnapshot.folder.id
+      };
+    }
+
+    return null;
+  }
+
+  async function importDroppedPdfPathsWithRefs(
+    target: Exclude<NativeDropTarget, null>,
+    paths: string[]
+  ) {
+    const pdfPaths = filterPdfPaths(paths);
+    if (pdfPaths.length === 0) {
+      if (paths.length > 0) {
+        onShowStatusRef.current("Only PDF files can be imported.");
+      }
+      return;
+    }
+
+    await onImportDocumentsRef.current(target.collectionId, pdfPaths);
+  }
+
   useEffect(() => {
     if (
       optimisticCollectionOrder &&
@@ -1185,7 +1289,7 @@ export default function CollectionViewRefresh({
     return () => {
       cancelled = true;
     };
-  }, [onGetDocumentDeleteState, openDocumentMenu]);
+  }, [onGetDocumentDeleteState, openDocumentMenu?.documentId]);
 
   useEffect(() => {
     if (!openStandaloneNoteMenu) {
@@ -1256,7 +1360,13 @@ export default function CollectionViewRefresh({
 
     updateFloatingCollectionMenuPosition();
 
-    function handleViewportChange() {
+    function handleViewportChange(event?: Event) {
+      if (
+        event?.target instanceof Node &&
+        floatingCollectionMenuRef.current?.contains(event.target)
+      ) {
+        return;
+      }
       updateFloatingCollectionMenuPosition();
     }
 
@@ -1277,7 +1387,13 @@ export default function CollectionViewRefresh({
 
     updateFloatingDocumentMenuPosition();
 
-    function handleViewportChange() {
+    function handleViewportChange(event?: Event) {
+      if (
+        event?.target instanceof Node &&
+        floatingDocumentMenuRef.current?.contains(event.target)
+      ) {
+        return;
+      }
       updateFloatingDocumentMenuPosition();
     }
 
@@ -1298,7 +1414,13 @@ export default function CollectionViewRefresh({
 
     updateFloatingNotesSectionMenuPosition();
 
-    function handleViewportChange() {
+    function handleViewportChange(event?: Event) {
+      if (
+        event?.target instanceof Node &&
+        floatingNotesSectionMenuRef.current?.contains(event.target)
+      ) {
+        return;
+      }
       updateFloatingNotesSectionMenuPosition();
     }
 
@@ -1319,7 +1441,13 @@ export default function CollectionViewRefresh({
 
     updateFloatingStandaloneNoteMenuPosition();
 
-    function handleViewportChange() {
+    function handleViewportChange(event?: Event) {
+      if (
+        event?.target instanceof Node &&
+        floatingStandaloneNoteMenuRef.current?.contains(event.target)
+      ) {
+        return;
+      }
       updateFloatingStandaloneNoteMenuPosition();
     }
 
@@ -1369,7 +1497,7 @@ export default function CollectionViewRefresh({
       if (event.payload.type === "over" || event.payload.type === "enter") {
         const scale = window.devicePixelRatio || 1;
         setNativeDropTarget(
-          resolveNativeDropTargetAtPosition(
+          resolveNativeDropTargetAtPositionWithRefs(
             event.payload.position.x / scale,
             event.payload.position.y / scale
           )
@@ -1379,7 +1507,7 @@ export default function CollectionViewRefresh({
 
       if (event.payload.type === "drop") {
         const scale = window.devicePixelRatio || 1;
-        const target = resolveNativeDropTargetAtPosition(
+        const target = resolveNativeDropTargetAtPositionWithRefs(
           event.payload.position.x / scale,
           event.payload.position.y / scale
         );
@@ -1387,9 +1515,13 @@ export default function CollectionViewRefresh({
         if (!target) {
           return;
         }
-        await importDroppedPdfPaths(target, event.payload.paths);
+        await importDroppedPdfPathsWithRefs(target, event.payload.paths);
       }
     }).then((dispose) => {
+      if (disposed) {
+        dispose();
+        return;
+      }
       unlisten = dispose;
       startupTrace("native-drop-listener-register-finish");
     });
@@ -1399,7 +1531,7 @@ export default function CollectionViewRefresh({
       unlisten?.();
       startupTrace("native-drop-listener-cleanup");
     };
-  }, [activeSessionRef, collections, onImportDocuments, onShowStatus, selectedCollection]);
+  }, [activeSessionRef]);
 
   function renderCollectionMenu(
     collection: FolderTreeNode,
@@ -1461,7 +1593,9 @@ export default function CollectionViewRefresh({
             type="button"
             onClick={() => {
               closeCollectionMenu();
-              void onDeleteCollection(collection.folder.id);
+              void Promise.resolve(onDeleteCollection(collection.folder.id)).catch(() => {
+                onShowStatus("Could not delete the collection.");
+              });
             }}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
@@ -1673,7 +1807,11 @@ export default function CollectionViewRefresh({
               return;
             }
 
-            void onOpenStandaloneNote(activeStandaloneNoteId ?? standaloneNotes[0]!.id);
+            void Promise.resolve(
+              onOpenStandaloneNote(activeStandaloneNoteId ?? standaloneNotes[0]!.id)
+            ).catch(() => {
+              onShowStatus("Could not open the note.");
+            });
           }}
         >
           <span>Open</span>
@@ -1683,7 +1821,9 @@ export default function CollectionViewRefresh({
           type="button"
           onClick={() => {
             closeNotesSectionMenu();
-            void onCreateStandaloneNote();
+            void Promise.resolve(onCreateStandaloneNote()).catch(() => {
+              onShowStatus("Could not create the note.");
+            });
           }}
         >
           <span>Create note</span>
@@ -1722,7 +1862,9 @@ export default function CollectionViewRefresh({
           type="button"
           onClick={() => {
             closeStandaloneNoteMenu();
-            void onOpenStandaloneNote(note.id);
+            void Promise.resolve(onOpenStandaloneNote(note.id)).catch(() => {
+              onShowStatus("Could not open the note.");
+            });
           }}
         >
           <span>Open</span>
@@ -2018,7 +2160,9 @@ export default function CollectionViewRefresh({
                   type="button"
                   aria-label="Create note"
                   onClick={() => {
-                    void onCreateStandaloneNote();
+                    void Promise.resolve(onCreateStandaloneNote()).catch(() => {
+                      onShowStatus("Could not create the note.");
+                    });
                   }}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
@@ -2156,7 +2300,9 @@ export default function CollectionViewRefresh({
                   className="collection-header__import-button"
                   type="button"
                   onClick={() => {
-                    void onCreateStandaloneNote();
+                    void Promise.resolve(onCreateStandaloneNote()).catch(() => {
+                      onShowStatus("Could not create the note.");
+                    });
                   }}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
@@ -2187,11 +2333,13 @@ export default function CollectionViewRefresh({
                       ) {
                         return;
                       }
-                      if (skipNextDocumentActivationRef.current) {
-                        skipNextDocumentActivationRef.current = false;
+                      if (skipNextStandaloneNoteActivationRef.current) {
+                        skipNextStandaloneNoteActivationRef.current = false;
                         return;
                       }
-                      void onOpenStandaloneNote(note.id);
+                      void Promise.resolve(onOpenStandaloneNote(note.id)).catch(() => {
+                        onShowStatus("Could not open the note.");
+                      });
                     }}
                     onKeyDown={(event) => {
                       if (
@@ -2201,13 +2349,15 @@ export default function CollectionViewRefresh({
                       ) {
                         return;
                       }
-                      if (skipNextDocumentActivationRef.current) {
-                        skipNextDocumentActivationRef.current = false;
+                      if (skipNextStandaloneNoteActivationRef.current) {
+                        skipNextStandaloneNoteActivationRef.current = false;
                         return;
                       }
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        void onOpenStandaloneNote(note.id);
+                        void Promise.resolve(onOpenStandaloneNote(note.id)).catch(() => {
+                          onShowStatus("Could not open the note.");
+                        });
                       }
                     }}
                   >

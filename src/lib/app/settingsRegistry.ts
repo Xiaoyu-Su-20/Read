@@ -24,7 +24,8 @@ import {
 } from "./themeProfile";
 
 export const APP_SETTINGS_STORAGE_KEY = "calm-reader.settings";
-export const APP_SETTINGS_VERSION = 7;
+export const APP_SETTINGS_VERSION = 8;
+const LEGACY_READER_PANE_SPLIT_RATIO = 0.46;
 
 export type ReaderPreferences = {
   fullscreenMode: boolean;
@@ -424,6 +425,21 @@ function migrateFromVersionSix(candidate: unknown): AppSettingsSchema {
   return normalizeAppSettings(candidate);
 }
 
+function migrateFromVersionSeven(candidate: unknown): AppSettingsSchema {
+  const normalized = normalizeAppSettings(candidate);
+  const usesLegacyDefaultSplitRatio =
+    Math.abs(normalized.readerPaneSplitRatio - LEGACY_READER_PANE_SPLIT_RATIO) < 0.0001;
+
+  if (!usesLegacyDefaultSplitRatio) {
+    return normalized;
+  }
+
+  return {
+    ...normalized,
+    readerPaneSplitRatio: DEFAULT_READER_PANE_SPLIT_RATIO
+  };
+}
+
 function generateThemeId() {
   return `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -539,6 +555,10 @@ export function migrateAppSettingsPayload(candidate: unknown): AppSettingsPayloa
       case 6:
         nextSettingsCandidate = migrateFromVersionSix(nextSettingsCandidate);
         version = 7;
+        break;
+      case 7:
+        nextSettingsCandidate = migrateFromVersionSeven(nextSettingsCandidate);
+        version = 8;
         break;
       default:
         version = APP_SETTINGS_VERSION;

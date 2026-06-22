@@ -259,8 +259,6 @@ export function createPdfRuntimeSession(
 
   const pageTextPromises = new Map<number, Promise<PageTextLayerData>>();
   const pageTextCache = new Map<number, PageTextLayerData>();
-  const plainTextPromises = new Map<number, Promise<string>>();
-  const plainTextCache = new Map<number, string>();
   const searchTextPromises = new Map<number, Promise<string>>();
   const searchTextCache = new Map<number, string>();
 
@@ -479,22 +477,10 @@ export function createPdfRuntimeSession(
     }
 
     const nextSearchTextPromise = (async () => {
-      const existingPageText = pageTextCache.get(pageNumber);
-      if (existingPageText) {
-        const text = existingPageText.textContent.items
-          .map((item) => (isTextItem(item) ? item.str : ""))
-          .join(" ");
-        searchTextCache.set(pageNumber, text);
-        searchTextPromises.delete(pageNumber);
-        return text;
-      }
+      const pageText = await getPageText(pageNumber);
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
-      const document = await ensureDocument();
-      const page = await document.getPage(pageNumber);
-      const textContent = await page.getTextContent();
-      assertActive();
-
-      const text = textContent.items
+      const text = pageText.textContent.items
         .map((item) => (isTextItem(item) ? item.str : ""))
         .join(" ");
 
@@ -512,32 +498,10 @@ export function createPdfRuntimeSession(
     return text;
   }
 
-  async function getPagePlainText(pageNumber: number) {
-    assertActive();
-    const cached = plainTextCache.get(pageNumber);
-    if (cached !== undefined) return cached;
-    const existing = plainTextPromises.get(pageNumber);
-    if (existing) return existing;
-    const nextPlainTextPromise = getPageSearchText(pageNumber)
-      .then((text) => {
-        const normalized = text.toLocaleLowerCase();
-        plainTextCache.set(pageNumber, normalized);
-        plainTextPromises.delete(pageNumber);
-        return normalized;
-      })
-      .catch((error) => {
-        plainTextPromises.delete(pageNumber);
-        throw error;
-      });
-    plainTextPromises.set(pageNumber, nextPlainTextPromise);
-    return nextPlainTextPromise;
-  }
-
   function getExtractedPageNumbers() {
     return new Set([
       ...pageTextCache.keys(),
-      ...searchTextCache.keys(),
-      ...plainTextCache.keys()
+      ...searchTextCache.keys()
     ]);
   }
 
@@ -549,10 +513,10 @@ export function createPdfRuntimeSession(
 
     const document = await ensureDocument();
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-      const pageText = await getPagePlainText(pageNumber);
+      const pageText = await getPageSearchText(pageNumber);
       assertActive();
 
-      if (pageText.includes(normalizedQuery)) {
+      if (pageText.toLowerCase().includes(normalizedQuery)) {
         return pageNumber;
       }
     }
@@ -568,7 +532,7 @@ export function createPdfRuntimeSession(
     debugAction("pdf-runtime:dispose-start", {
       documentId,
       cachedPageCount: pageTextCache.size,
-      cachedPlainTextCount: plainTextCache.size
+      cachedSearchTextCount: searchTextCache.size
     });
     disposed = true;
     outlinePromise = null;
@@ -576,8 +540,6 @@ export function createPdfRuntimeSession(
     documentPromise = null;
     pageTextPromises.clear();
     pageTextCache.clear();
-    plainTextPromises.clear();
-    plainTextCache.clear();
     searchTextPromises.clear();
     searchTextCache.clear();
 
@@ -609,7 +571,6 @@ export function createPdfRuntimeSession(
     getPageText,
     getPageSearchText,
     getExtractedPageNumbers,
-    getPagePlainText,
     search,
     dispose
   };

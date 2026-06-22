@@ -19,7 +19,7 @@ describe("settingsRegistry", () => {
     expect(createDefaultAppSettingsPayload()).toEqual({
       version: APP_SETTINGS_VERSION,
       settings: {
-        readerPaneSplitRatio: 0.46,
+        readerPaneSplitRatio: 0.42,
         readerPreferences: {
           fullscreenMode: false,
           showPageNumbers: true,
@@ -249,6 +249,30 @@ describe("settingsRegistry", () => {
     expect(parseStoredAppSettings("{nope")).toEqual(createDefaultAppSettingsPayload());
   });
 
+  it("migrates the untouched legacy reader split default to the wider notes layout", () => {
+    expect(
+      migrateAppSettingsPayload({
+        version: 7,
+        settings: {
+          ...createDefaultAppSettingsPayload().settings,
+          readerPaneSplitRatio: 0.46
+        }
+      }).settings.readerPaneSplitRatio
+    ).toBe(0.42);
+  });
+
+  it("preserves customized reader split ratios during version-7 migration", () => {
+    expect(
+      migrateAppSettingsPayload({
+        version: 7,
+        settings: {
+          ...createDefaultAppSettingsPayload().settings,
+          readerPaneSplitRatio: 0.52
+        }
+      }).settings.readerPaneSplitRatio
+    ).toBe(0.52);
+  });
+
   it("validates each setting and falls back to per-setting defaults", () => {
     expect(
       normalizeAppSettings({
@@ -281,7 +305,7 @@ describe("settingsRegistry", () => {
         ]
       })
     ).toEqual({
-      readerPaneSplitRatio: 0.46,
+      readerPaneSplitRatio: 0.42,
       readerPreferences: {
         fullscreenMode: false,
         showPageNumbers: true,
@@ -320,11 +344,11 @@ describe("settingsRegistry", () => {
 
     expect(viewerConfig).toMatchObject({
       mode: "light",
-      paperColor: "#e7d9bb",
-      inkColor: "#3c2d1b",
+      paperColor: "#eadcbd",
+      inkColor: "#3a2c1d",
       blendMode: "multiply"
     });
-    expect(viewerConfig.imageFilter).toContain("grayscale(1)");
+    expect(viewerConfig.imageFilter).toBe("none");
   });
 
   it("returns theme lists and reader preferences through typed selectors", () => {

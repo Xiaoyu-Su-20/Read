@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { loadAppSettings, saveAppSettings } from "../api";
 import type { AppSettingKey, AppSettingsPayload, AppSettingsSchema } from "./settingsRegistry";
 import {
   APP_SETTINGS_STORAGE_KEY,
@@ -20,14 +21,53 @@ function loadInitialSettingsPayload(): AppSettingsPayload {
 
 export function useAppSettings() {
   const [payload, setPayload] = useState<AppSettingsPayload>(() => loadInitialSettingsPayload());
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
+    let cancelled = false;
+
+    void loadAppSettings()
+      .then((storedRawValue) => {
+        if (cancelled) {
+          return;
+        }
+
+        const localRawValue =
+          typeof window === "undefined"
+            ? null
+            : window.localStorage.getItem(APP_SETTINGS_STORAGE_KEY);
+        const nextPayload = storedRawValue
+          ? parseStoredAppSettings(storedRawValue)
+          : parseStoredAppSettings(localRawValue);
+
+        setPayload(nextPayload);
+        setHydrated(true);
+
+        if (!storedRawValue && localRawValue) {
+          void saveAppSettings(serializeAppSettingsPayload(nextPayload));
+        }
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+
+        setPayload(loadInitialSettingsPayload());
+        setHydrated(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) {
       return;
     }
 
-    window.localStorage.setItem(APP_SETTINGS_STORAGE_KEY, serializeAppSettingsPayload(payload));
-  }, [payload]);
+    void saveAppSettings(serializeAppSettingsPayload(payload));
+  }, [hydrated, payload]);
 
   useEffect(() => {
     if (typeof document === "undefined") {

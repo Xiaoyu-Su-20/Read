@@ -1,7 +1,12 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
-import { debugAction, debugLocalAction } from "./lib/debugLog";
+import {
+  debugLocalAction,
+  initializeLoggingBridge,
+  reportFrontendError,
+  traceEvent
+} from "./lib/debugLog";
 import "./styles.css";
 
 function startupTrace(step: string, fields: Record<string, unknown> = {}) {
@@ -11,27 +16,27 @@ function startupTrace(step: string, fields: Record<string, unknown> = {}) {
     navigationMs: Math.round(performance.now()),
     ...fields
   };
-  console.info(`[CR-STARTUP][main] ${step}`, payload);
   debugLocalAction(`frontend.startup.main.${step}`, payload);
-  debugAction(`frontend.startup.main.${step}`, payload);
+  traceEvent(`frontend.startup.main.${step}`, payload);
 }
 
+initializeLoggingBridge();
+
 window.addEventListener("error", (event) => {
-  console.error("[CR-STARTUP][main] window-error", {
-    error: event.error,
+  reportFrontendError("frontend.startup.main.window-error", event.error, {
     message: event.message
   });
 });
 
 window.addEventListener("unhandledrejection", (event) => {
-  console.error("[CR-STARTUP][main] unhandled-rejection", {
-    reason: event.reason
+  reportFrontendError("frontend.startup.main.unhandled-rejection", event.reason, {
+    reasonType: typeof event.reason
   });
 });
 
 async function bootstrap() {
   startupTrace("module-loaded");
-  debugAction("frontend.main-module", {
+  traceEvent("frontend.main-module", {
     epochMs: Date.now(),
     navigationMs: performance.now()
   });
@@ -47,17 +52,6 @@ async function bootstrap() {
 
   const root = ReactDOM.createRoot(rootElement);
   startupTrace("after-create-root");
-  debugAction("frontend.before-render", {
-    epochMs: Date.now(),
-    navigationMs: performance.now()
-  });
-
-  root.render(
-    <div style={{ color: "#f66", padding: "16px", fontFamily: "sans-serif" }}>
-      Frontend bootstrap started
-    </div>
-  );
-  startupTrace("bootstrap-placeholder-rendered");
 
   const appImportStartedAt = performance.now();
   const { default: App } = await import("./App");
@@ -66,6 +60,10 @@ async function bootstrap() {
   });
 
   startupTrace("before-root-render");
+  traceEvent("frontend.before-render", {
+    epochMs: Date.now(),
+    navigationMs: performance.now()
+  });
   root.render(
     <React.StrictMode>
       <App />
@@ -75,7 +73,7 @@ async function bootstrap() {
 }
 
 void bootstrap().catch((error) => {
-  console.error("[CR-STARTUP][main] bootstrap-failed", error);
+  reportFrontendError("frontend.startup.main.bootstrap-failed", error);
   startupTrace("bootstrap-failed", {
     error: error instanceof Error ? error.message : String(error)
   });
