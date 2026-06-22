@@ -388,17 +388,8 @@ export default function SidebarDocumentSearchPopover({
                 </span>
                 <span className="palette__label sidebar-document-search__label">
                   <strong className="sidebar-document-search__title">
-                    {deferredNormalizedQuery ? (
-                      <HighlightedText text={result.snippet} ranges={result.highlights} />
-                    ) : (
-                      result.title
-                    )}
+                    {result.title}
                   </strong>
-                  {!deferredNormalizedQuery && result.fileName !== result.title ? (
-                    <span className="sidebar-document-search__meta">
-                      {result.snippet}
-                    </span>
-                  ) : null}
                 </span>
               </button>
             ))

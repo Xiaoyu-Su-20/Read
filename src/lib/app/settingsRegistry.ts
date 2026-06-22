@@ -7,6 +7,7 @@ import {
   createDefaultThemeSources,
   createThemeDraft,
   deriveThemeCssVariables,
+  editablePresetThemeDefinitions,
   isBuiltinThemeId,
   normalizeCustomThemeDefinition,
   normalizeDocumentRenderTheme,
@@ -24,7 +25,7 @@ import {
 } from "./themeProfile";
 
 export const APP_SETTINGS_STORAGE_KEY = "calm-reader.settings";
-export const APP_SETTINGS_VERSION = 8;
+export const APP_SETTINGS_VERSION = 13;
 const LEGACY_READER_PANE_SPLIT_RATIO = 0.46;
 
 export type ReaderPreferences = {
@@ -150,6 +151,125 @@ function normalizeCustomThemes(value: unknown): ThemeDefinition[] {
   }
 
   return nextThemes;
+}
+
+function cloneThemeDefinition(themeDefinition: ThemeDefinition): ThemeDefinition {
+  return {
+    ...themeDefinition,
+    source: { ...themeDefinition.source },
+    document: { ...themeDefinition.document }
+  };
+}
+
+function createDefaultEditablePresetThemes(): ThemeDefinition[] {
+  return editablePresetThemeDefinitions.map(cloneThemeDefinition);
+}
+
+const previousEditablePresetThemeSnapshots: ThemeDefinition[] = [
+  {
+    id: "preset-stone",
+    name: "Parchment",
+    kind: "custom",
+    source: {
+      chrome: "#e6ddd0",
+      uiText: "#3a3128",
+      documentPaper: "#f6f1e8",
+      documentInk: "#2f281f",
+      accent: "#8c7657",
+      interactive: "#6f86b3",
+      danger: "#b56658"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  }
+];
+
+function themeDefinitionMatches(left: ThemeDefinition, right: ThemeDefinition) {
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    left.kind === right.kind &&
+    left.document.surfaceTone === right.document.surfaceTone &&
+    left.source.chrome === right.source.chrome &&
+    left.source.uiText === right.source.uiText &&
+    left.source.documentPaper === right.source.documentPaper &&
+    left.source.documentInk === right.source.documentInk &&
+    left.source.accent === right.source.accent &&
+    left.source.interactive === right.source.interactive &&
+    left.source.danger === right.source.danger
+  );
+}
+
+function syncEditablePresetThemes(
+  customThemes: readonly ThemeDefinition[]
+): ThemeDefinition[] {
+  const latestPresetById = new Map(
+    editablePresetThemeDefinitions.map((themeDefinition) => [themeDefinition.id, themeDefinition] as const)
+  );
+  const previousPresetById = new Map(
+    previousEditablePresetThemeSnapshots.map((themeDefinition) => [themeDefinition.id, themeDefinition] as const)
+  );
+
+  return customThemes.map((themeDefinition) => {
+    const latestPreset = latestPresetById.get(themeDefinition.id);
+    if (!latestPreset) {
+      return cloneThemeDefinition(themeDefinition);
+    }
+
+    const previousPreset = previousPresetById.get(themeDefinition.id);
+    if (previousPreset && themeDefinitionMatches(themeDefinition, previousPreset)) {
+      return cloneThemeDefinition(latestPreset);
+    }
+
+    return cloneThemeDefinition(themeDefinition);
+  });
+}
+
+function removeLegacyEditablePresetThemes(
+  customThemes: readonly ThemeDefinition[]
+): ThemeDefinition[] {
+  return customThemes
+    .filter(
+      (themeDefinition) =>
+        !(themeDefinition.id === "preset-stone" && themeDefinition.name === "Stone")
+    )
+    .map(cloneThemeDefinition);
+}
+
+function orderEditablePresetThemes(
+  customThemes: readonly ThemeDefinition[]
+): ThemeDefinition[] {
+  const presetIds = new Set(editablePresetThemeDefinitions.map((themeDefinition) => themeDefinition.id));
+  const existingById = new Map(
+    customThemes.map((themeDefinition) => [themeDefinition.id, cloneThemeDefinition(themeDefinition)] as const)
+  );
+  const orderedPresets = editablePresetThemeDefinitions
+    .map((themeDefinition) => existingById.get(themeDefinition.id))
+    .filter((themeDefinition): themeDefinition is ThemeDefinition => themeDefinition !== undefined);
+  const otherThemes = customThemes
+    .filter((themeDefinition) => !presetIds.has(themeDefinition.id))
+    .map(cloneThemeDefinition);
+
+  return [...orderedPresets, ...otherThemes];
+}
+
+function appendMissingEditablePresetThemes(
+  customThemes: readonly ThemeDefinition[]
+): ThemeDefinition[] {
+  const cleanedThemes = removeLegacyEditablePresetThemes(customThemes);
+  const syncedThemes = syncEditablePresetThemes(cleanedThemes);
+  const existingIds = new Set(syncedThemes.map((themeDefinition) => themeDefinition.id));
+  const nextThemes = [...syncedThemes];
+
+  for (const themeDefinition of editablePresetThemeDefinitions) {
+    if (existingIds.has(themeDefinition.id)) {
+      continue;
+    }
+    nextThemes.push(cloneThemeDefinition(themeDefinition));
+  }
+
+  return orderEditablePresetThemes(nextThemes);
 }
 
 function normalizeActiveThemeId(
@@ -440,6 +560,46 @@ function migrateFromVersionSeven(candidate: unknown): AppSettingsSchema {
   };
 }
 
+function migrateFromVersionEight(candidate: unknown): AppSettingsSchema {
+  const normalized = normalizeAppSettings(candidate);
+  return normalizeAppSettings({
+    ...normalized,
+    customThemes: appendMissingEditablePresetThemes(normalized.customThemes)
+  });
+}
+
+function migrateFromVersionNine(candidate: unknown): AppSettingsSchema {
+  const normalized = normalizeAppSettings(candidate);
+  return normalizeAppSettings({
+    ...normalized,
+    customThemes: appendMissingEditablePresetThemes(normalized.customThemes)
+  });
+}
+
+function migrateFromVersionTen(candidate: unknown): AppSettingsSchema {
+  const normalized = normalizeAppSettings(candidate);
+  return normalizeAppSettings({
+    ...normalized,
+    customThemes: appendMissingEditablePresetThemes(normalized.customThemes)
+  });
+}
+
+function migrateFromVersionEleven(candidate: unknown): AppSettingsSchema {
+  const normalized = normalizeAppSettings(candidate);
+  return normalizeAppSettings({
+    ...normalized,
+    customThemes: appendMissingEditablePresetThemes(normalized.customThemes)
+  });
+}
+
+function migrateFromVersionTwelve(candidate: unknown): AppSettingsSchema {
+  const normalized = normalizeAppSettings(candidate);
+  return normalizeAppSettings({
+    ...normalized,
+    customThemes: appendMissingEditablePresetThemes(normalized.customThemes)
+  });
+}
+
 function generateThemeId() {
   return `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -482,7 +642,7 @@ export const appSettingsRegistry = {
     normalize: (value) => normalizeString(value, DEFAULT_ACTIVE_THEME_ID)
   },
   customThemes: {
-    defaultValue: [],
+    defaultValue: createDefaultEditablePresetThemes(),
     normalize: normalizeCustomThemes
   }
 } satisfies AppSettingsRegistry;
@@ -492,7 +652,7 @@ export function createDefaultAppSettings(): AppSettingsSchema {
     readerPaneSplitRatio: appSettingsRegistry.readerPaneSplitRatio.defaultValue,
     readerPreferences: appSettingsRegistry.readerPreferences.defaultValue,
     activeThemeId: appSettingsRegistry.activeThemeId.defaultValue,
-    customThemes: appSettingsRegistry.customThemes.defaultValue
+    customThemes: createDefaultEditablePresetThemes()
   };
 }
 
@@ -559,6 +719,26 @@ export function migrateAppSettingsPayload(candidate: unknown): AppSettingsPayloa
       case 7:
         nextSettingsCandidate = migrateFromVersionSeven(nextSettingsCandidate);
         version = 8;
+        break;
+      case 8:
+        nextSettingsCandidate = migrateFromVersionEight(nextSettingsCandidate);
+        version = 9;
+        break;
+      case 9:
+        nextSettingsCandidate = migrateFromVersionNine(nextSettingsCandidate);
+        version = 10;
+        break;
+      case 10:
+        nextSettingsCandidate = migrateFromVersionTen(nextSettingsCandidate);
+        version = 11;
+        break;
+      case 11:
+        nextSettingsCandidate = migrateFromVersionEleven(nextSettingsCandidate);
+        version = 12;
+        break;
+      case 12:
+        nextSettingsCandidate = migrateFromVersionTwelve(nextSettingsCandidate);
+        version = 13;
         break;
       default:
         version = APP_SETTINGS_VERSION;

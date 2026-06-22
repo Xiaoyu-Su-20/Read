@@ -526,6 +526,111 @@ export const builtinThemeDefinitions: ThemeDefinition[] = [
   }
 ];
 
+export const editablePresetThemeDefinitions: ThemeDefinition[] = [
+  {
+    id: "preset-forest",
+    name: "Forest",
+    kind: "custom",
+    source: {
+      chrome: "#1f2b20",
+      uiText: "#c7d3bf",
+      documentPaper: "#1d271d",
+      documentInk: "#c7d3bf",
+      accent: "#9ba86d",
+      interactive: "#7fa26f",
+      danger: "#b56a5d"
+    },
+    document: {
+      surfaceTone: "dark"
+    }
+  },
+  {
+    id: "preset-stone",
+    name: "Parchment",
+    kind: "custom",
+    source: {
+      chrome: "#d9b679",
+      uiText: "#4d3518",
+      documentPaper: "#f6ddb0",
+      documentInk: "#5a3d18",
+      accent: "#b98743",
+      interactive: "#b98743",
+      danger: "#b56658"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
+    id: "preset-ocean",
+    name: "Ocean",
+    kind: "custom",
+    source: {
+      chrome: "#536884",
+      uiText: "#dbe4f2",
+      documentPaper: "#e6ecf5",
+      documentInk: "#465b79",
+      accent: "#86a6ce",
+      interactive: "#89a9d8",
+      danger: "#c17468"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
+    id: "preset-clay",
+    name: "Clay",
+    kind: "custom",
+    source: {
+      chrome: "#c97147",
+      uiText: "#f6dbc6",
+      documentPaper: "#f5d4c0",
+      documentInk: "#934d2f",
+      accent: "#f0b18a",
+      interactive: "#de9468",
+      danger: "#b85b4e"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
+    id: "preset-sage",
+    name: "Sage",
+    kind: "custom",
+    source: {
+      chrome: "#bfc2ac",
+      uiText: "#56604f",
+      documentPaper: "#f1f0e4",
+      documentInk: "#68715f",
+      accent: "#8f9576",
+      interactive: "#9aa083",
+      danger: "#b56a5d"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
+    id: "preset-ink",
+    name: "Ink",
+    kind: "custom",
+    source: {
+      chrome: "#202125",
+      uiText: "#8d8e96",
+      documentPaper: "#2a2c31",
+      documentInk: "#8d8e96",
+      accent: "#737681",
+      interactive: "#6f7482",
+      danger: "#b86861"
+    },
+    document: {
+      surfaceTone: "dark"
+    }
+  }
+];
+
 const builtinThemeMap = new Map(
   builtinThemeDefinitions.map((themeDefinition) => [themeDefinition.id, themeDefinition] as const)
 );

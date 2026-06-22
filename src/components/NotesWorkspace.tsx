@@ -63,7 +63,7 @@ export default function NotesWorkspace({
       {showHeaders ? (
         <div className="reader-workspace__header-shell">
           <header className="reader-workspace__header" onMouseDown={onHeaderMouseDown}>
-            <div className="reader-workspace__toolbar">
+            <div className="reader-workspace__toolbar reader-workspace__toolbar--notes">
               <div className="reader-workspace__toolbar-side reader-workspace__toolbar-side--left">
                 <div className="reader-workspace__document-header-layout reader-workspace__header-left">
                   <div className="reader-workspace__header-group reader-workspace__header-group--title">

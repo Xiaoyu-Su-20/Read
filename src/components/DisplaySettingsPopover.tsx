@@ -83,7 +83,8 @@ function ThemePresetCard({
         style={{
           ["--preset-workspace-color" as string]: theme.source.chrome,
           ["--preset-paper-color" as string]: theme.source.documentPaper,
-          ["--preset-text-color" as string]: theme.source.uiText,
+          ["--preset-ui-text-color" as string]: theme.source.uiText,
+          ["--preset-document-text-color" as string]: theme.source.documentInk,
           ["--preset-chrome-color" as string]: theme.source.chrome,
           ["--preset-interactive-color" as string]: theme.source.interactive
         }}

@@ -271,7 +271,7 @@ export default function DocumentWorkspaceHeader({
   return (
     <div className="reader-workspace__header-shell">
       <header className="reader-workspace__header" onMouseDown={onHeaderMouseDown}>
-        <div className="reader-workspace__toolbar">
+        <div className="reader-workspace__toolbar reader-workspace__toolbar--document">
           <DocumentControls
             title={title}
             currentPage={currentPage}

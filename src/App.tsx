@@ -878,6 +878,10 @@ export default function App() {
       }
 
       if ((event.ctrlKey || event.metaKey) && normalizedKey === "p") {
+        if (workspace.workspaceMode === "collection") {
+          return;
+        }
+
         event.preventDefault();
         palette.openCommands(commandRegistry);
         return;
@@ -982,6 +986,7 @@ export default function App() {
 
   const collectionModeActive =
     workspace.workspaceMode === "collection" && !readerFullscreenActive;
+  const marksRailDisabled = workspace.workspaceMode === "collection";
 
   function handleTopbarMouseDown(event: ReactMouseEvent<HTMLElement>) {
     if (event.button !== 0) {
@@ -1221,6 +1226,8 @@ export default function App() {
           <button
             ref={setOutlineAnchorElement}
             className={`sidebar__icon-button${
+              marksRailDisabled ? " sidebar__icon-button--disabled" : ""
+            }${
               workspace.workspaceMode === "notes"
                 ? ""
                 : outlineOpen
@@ -1229,7 +1236,12 @@ export default function App() {
             }`}
             type="button"
             aria-label="Marks"
+            disabled={marksRailDisabled}
             onClick={() => {
+              if (marksRailDisabled) {
+                return;
+              }
+
               if (workspace.workspaceMode === "notes") {
                 openNotesNavigation();
                 return;
