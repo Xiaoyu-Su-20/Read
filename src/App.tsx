@@ -887,6 +887,19 @@ export default function App() {
         return;
       }
 
+      if ((event.ctrlKey || event.metaKey) && normalizedKey === "o") {
+        if (
+          !readerFullscreenActive ||
+          (workspace.workspaceMode !== "reader" && workspace.workspaceMode !== "notes")
+        ) {
+          return;
+        }
+
+        event.preventDefault();
+        setNotesNavigationOpenRequest((current) => current + 1);
+        return;
+      }
+
       if (event.key === "Escape") {
         if (settingsOpen) {
           setSettingsOpen(false);
@@ -1499,6 +1512,7 @@ export default function App() {
                 onHeaderMouseDown={handleTopbarMouseDown}
                 searchController={searchController}
                 searchFocusRequest={searchFocusRequest}
+                navigationOpenRequest={notesNavigationOpenRequest}
                 commandPaletteOpen={palette.paletteOpen}
                 onToggleCommandPalette={() => {
                   if (palette.paletteOpen) {

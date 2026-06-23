@@ -56,6 +56,18 @@ type NoteClipboardPayload = {
   text: string;
 };
 
+export type CollapsedRangeCaptureSource =
+  | "native-caret"
+  | "nearest-text"
+  | "block-end"
+  | "none";
+
+export type CollapsedRangeCaptureResult = {
+  range: Range | null;
+  source: CollapsedRangeCaptureSource;
+  blockId: string | null;
+};
+
 let internalClipboardPayload: NoteClipboardPayload | null = null;
 
 function stripPageLinkCaretAnchors(value: string) {
@@ -840,6 +852,85 @@ function getRangeAtPoint(root: HTMLElement, x: number, y: number) {
   return null;
 }
 
+function isEditableInlineContent(node: Node) {
+  const element = node instanceof HTMLElement ? node : node.parentElement;
+  if (!element) {
+    return true;
+  }
+
+  const nonEditableAncestor = element.closest<HTMLElement>("[contenteditable='false']");
+  return nonEditableAncestor == null;
+}
+
+function getRangeRectAtTextOffset(ownerDocument: Document, textNode: Text, offset: number) {
+  const textLength = textNode.textContent?.length ?? 0;
+  if (textLength === 0) {
+    return null;
+  }
+
+  const probeRange = ownerDocument.createRange();
+  if (offset < textLength) {
+    probeRange.setStart(textNode, offset);
+    probeRange.setEnd(textNode, offset + 1);
+  } else {
+    probeRange.setStart(textNode, offset - 1);
+    probeRange.setEnd(textNode, offset);
+  }
+
+  const rect = probeRange.getBoundingClientRect();
+  if (rect.width <= 0 && rect.height <= 0) {
+    return null;
+  }
+
+  return {
+    edgeX: offset < textLength ? rect.left : rect.right,
+    rect
+  };
+}
+
+function captureNearestTextRangeInBlock(block: HTMLElement, x: number, y: number) {
+  const ownerDocument = block.ownerDocument;
+  const walker = ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  let bestTextNode: Text | null = null;
+  let bestOffset = 0;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  let currentNode = walker.nextNode();
+  while (currentNode) {
+    if (currentNode instanceof Text && isEditableInlineContent(currentNode)) {
+      const textLength = currentNode.textContent?.length ?? 0;
+      for (let offset = 0; offset <= textLength; offset += 1) {
+        const probe = getRangeRectAtTextOffset(ownerDocument, currentNode, offset);
+        if (!probe) {
+          continue;
+        }
+
+        const centerY = probe.rect.top + probe.rect.height / 2;
+        const distanceX = Math.abs(x - probe.edgeX);
+        const distanceY = Math.abs(y - centerY);
+        const score = distanceX + distanceY * 3;
+
+        if (score < bestScore) {
+          bestScore = score;
+          bestTextNode = currentNode;
+          bestOffset = offset;
+        }
+      }
+    }
+
+    currentNode = walker.nextNode();
+  }
+
+  if (!bestTextNode) {
+    return null;
+  }
+
+  const range = ownerDocument.createRange();
+  range.setStart(bestTextNode, bestOffset);
+  range.collapse(true);
+  return range.cloneRange();
+}
+
 function findBlockFromRange(root: HTMLElement, range: Range) {
   const candidateNodes: Array<Node | null> = [
     range.startContainer,
@@ -858,26 +949,59 @@ function findBlockFromRange(root: HTMLElement, range: Range) {
 }
 
 export function captureCollapsedRangeAtPoint(root: HTMLElement, x: number, y: number) {
+  return resolveCollapsedRangeAtPoint(root, x, y).range;
+}
+
+export function resolveCollapsedRangeAtPoint(
+  root: HTMLElement,
+  x: number,
+  y: number
+): CollapsedRangeCaptureResult {
   const rangeAtPoint = getRangeAtPoint(root, x, y);
   if (rangeAtPoint) {
     const block = findBlockFromRange(root, rangeAtPoint);
     if (!block || !root.contains(block)) {
-      return null;
+      return {
+        range: null,
+        source: "none",
+        blockId: null
+      };
     }
 
-    return rangeAtPoint.cloneRange();
+    return {
+      range: rangeAtPoint.cloneRange(),
+      source: "native-caret",
+      blockId: block.dataset.blockId ?? null
+    };
   }
 
   const blockAtPoint = getBlockAtPoint(root, x, y);
   if (!blockAtPoint || !root.contains(blockAtPoint)) {
-    return null;
+    return {
+      range: null,
+      source: "none",
+      blockId: null
+    };
+  }
+
+  const nearestTextRange = captureNearestTextRangeInBlock(blockAtPoint, x, y);
+  if (nearestTextRange) {
+    return {
+      range: nearestTextRange,
+      source: "nearest-text",
+      blockId: blockAtPoint.dataset.blockId ?? null
+    };
   }
 
   const fallbackRange = root.ownerDocument.createRange();
   fallbackRange.selectNodeContents(blockAtPoint);
   fallbackRange.collapse(false);
 
-  return fallbackRange.cloneRange();
+  return {
+    range: fallbackRange.cloneRange(),
+    source: "block-end",
+    blockId: blockAtPoint.dataset.blockId ?? null
+  };
 }
 
 export function captureBlockEndRange(root: HTMLElement, block: HTMLElement) {

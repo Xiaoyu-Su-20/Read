@@ -23,8 +23,8 @@ export type NotesContextMenuState =
       target: "body";
       blockId: string;
       blockType: NoteBlockType;
-      canAddPageLink: boolean;
-      canTurnIntoTopicCard: boolean;
+      canInsertPageLinkAtPoint: boolean;
+      canCreateTopicCardFromSelection: boolean;
       anchor: PanePoint;
     }
   | {

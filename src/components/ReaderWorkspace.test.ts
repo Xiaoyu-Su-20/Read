@@ -146,6 +146,7 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
     onHeaderMouseDown: vi.fn(),
     searchController: createUnifiedSearchController(),
     searchFocusRequest: 0,
+    navigationOpenRequest: 0,
     commandPaletteOpen: false,
     onToggleCommandPalette: vi.fn(),
     registerCommandPaletteAnchor: vi.fn(),

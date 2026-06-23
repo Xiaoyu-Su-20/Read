@@ -56,6 +56,7 @@ type ReaderWorkspaceProps = {
   onHeaderMouseDown: (event: ReactMouseEvent<HTMLElement>) => void;
   searchController: UnifiedSearchController;
   searchFocusRequest: number;
+  navigationOpenRequest: number;
   commandPaletteOpen: boolean;
   onToggleCommandPalette: () => void;
   registerCommandPaletteAnchor: (node: HTMLButtonElement | null) => void;
@@ -135,6 +136,7 @@ export default function ReaderWorkspace({
   onHeaderMouseDown,
   searchController,
   searchFocusRequest,
+  navigationOpenRequest,
   commandPaletteOpen,
   onToggleCommandPalette,
   registerCommandPaletteAnchor,
@@ -223,7 +225,7 @@ export default function ReaderWorkspace({
             fullscreen={fullscreen}
             onToggleFullscreen={onToggleFullscreen}
             titleMode="hidden"
-            navigationOpenRequest={0}
+            navigationOpenRequest={navigationOpenRequest}
             navigationItems={noteNavigationItems}
             onChangeTitle={onChangeNoteTitle}
             onChangeBlocks={onChangeNoteBlocks}

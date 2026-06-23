@@ -7,7 +7,6 @@ import {
 
 import {
   captureEditorSelection,
-  captureBlockEndRange,
   copySelectedBlock,
   clearSelectedPageLink,
   copyPageLinkReference,
@@ -41,6 +40,7 @@ import {
   restoreEditorSelection,
   renderNoteBlocksHtml,
   replaceBlockElementType,
+  resolveCollapsedRangeAtPoint,
   canTurnSelectionIntoTopicCard,
   selectBlockElement,
   selectTextMatchInBlock,
@@ -54,6 +54,7 @@ import {
   readTopicCardFromElement
 } from "../../lib/noteEditorDom";
 import { logNoteDebugEvent } from "../../lib/api";
+import { debugAction } from "../../lib/debugLog";
 import { computeCenteredChildScrollTop } from "./noteEditorScroll";
 import {
   commitNoteHistoryState,
@@ -81,8 +82,8 @@ export type NoteEditorContextTarget =
       target: "body";
       blockId: string;
       blockType: NoteBlockType;
-      canAddPageLink: boolean;
-      canTurnIntoTopicCard: boolean;
+      canInsertPageLinkAtPoint: boolean;
+      canCreateTopicCardFromSelection: boolean;
     }
   | {
       target: "page-link";
@@ -556,16 +557,28 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     updateSelectedTopic(null);
 
     const selectionResolvedBlock = getBlockFromSelection(bodyRef.current);
+    const selectedText = getSelectedText(bodyRef.current).trim();
+    const hasSelectedText = selectedText.length > 0;
     const selectionContainsPoint = isPointWithinSelectionContent(bodyRef.current, x, y);
     const pointResolvedBlock = getBlockAtPoint(bodyRef.current, x, y);
     const pointResolvedContentBlock = pointResolvedBlock;
+    const selectionMatchesPointBlock =
+      Boolean(selectionResolvedBlock) &&
+      Boolean(pointResolvedContentBlock) &&
+      selectionResolvedBlock?.dataset.blockId === pointResolvedContentBlock?.dataset.blockId;
+    const preserveTextSelection =
+      hasSelectedText && (selectionContainsPoint || selectionMatchesPointBlock);
 
-    let resolvedBlock = selectionContainsPoint ? selectionResolvedBlock : pointResolvedContentBlock;
+    let resolvedBlock = preserveTextSelection ? selectionResolvedBlock : pointResolvedContentBlock;
     if (!resolvedBlock && pointResolvedContentBlock) {
       resolvedBlock = pointResolvedContentBlock;
     }
+    if (!resolvedBlock && hasSelectedText && selectionResolvedBlock) {
+      resolvedBlock = selectionResolvedBlock;
+    }
 
-    if (!resolvedBlock || !pointResolvedContentBlock) {
+    const contentBlock = pointResolvedContentBlock ?? selectionResolvedBlock;
+    if (!resolvedBlock || !contentBlock) {
       pendingPageLinkRangeRef.current = null;
       updateSelectedBlock(null);
       return null;
@@ -578,33 +591,49 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       return null;
     }
 
-    const selectedText = getSelectedText(bodyRef.current).trim();
-    const pointBlockText = pointResolvedContentBlock.textContent?.trim() ?? "";
+    const pointBlockText = contentBlock.textContent?.trim() ?? "";
     const blockType = (resolvedBlock.dataset.blockType ?? "paragraph") as NoteBlockType;
-    const blockHasPageLink = Boolean(
-      pointResolvedContentBlock.querySelector("[data-inline-type='page-link']")
-    );
-    const canAddPageLink =
-      !blockHasPageLink &&
-      ((blockType === "paragraph" && pointBlockText.length > 0) ||
-        blockType === "heading1" ||
-        blockType === "heading2" ||
-        blockType === "heading3");
-    const canTurnIntoTopicCard = canTurnSelectionIntoTopicCard(bodyRef.current);
-    const preserveTextSelection = selectionContainsPoint && selectedText.length > 0;
-
-    pendingPageLinkRangeRef.current =
-      canAddPageLink && !preserveTextSelection
-        ? captureBlockEndRange(bodyRef.current, pointResolvedContentBlock)
-        : null;
+    const canInsertPageLinkAtPoint =
+      (blockType === "paragraph" && pointBlockText.length > 0) ||
+      blockType === "heading1" ||
+      blockType === "heading2" ||
+      blockType === "heading3";
+    const canCreateTopicCardFromSelection =
+      preserveTextSelection && canTurnSelectionIntoTopicCard(bodyRef.current);
+    const pageLinkRangeResolution =
+      canInsertPageLinkAtPoint && !preserveTextSelection
+        ? resolveCollapsedRangeAtPoint(bodyRef.current, x, y)
+        : {
+            range: null,
+            source: "none" as const,
+            blockId: null
+          };
+    pendingPageLinkRangeRef.current = pageLinkRangeResolution.range;
 
     updateSelectedBlock(preserveTextSelection ? null : blockId);
+    debugAction("notes.context-menu.range-resolution", {
+      blockId,
+      canCreateTopicCardFromSelection,
+      canInsertPageLinkAtPoint,
+      noteId: note?.id ?? null,
+      pointBlockId: pointResolvedContentBlock?.dataset.blockId ?? null,
+      preserveTextSelection,
+      rangeBlockId: pageLinkRangeResolution.blockId,
+      rangeSource: pageLinkRangeResolution.source,
+      selectionBlockId: selectionResolvedBlock?.dataset.blockId ?? null,
+      selectionContainsPoint,
+      selectionMatchesPointBlock,
+      x,
+      y
+    });
     void logNoteDebugEvent("notes.turn_into.context_menu_opened", {
       blockId,
       fallbackBlockId: selectionResolvedBlock?.dataset.blockId ?? null,
       noteId: note?.id ?? null,
       pointBlockId: pointResolvedContentBlock?.dataset.blockId ?? null,
       preserveTextSelection,
+      rangeBlockId: pageLinkRangeResolution.blockId,
+      rangeSource: pageLinkRangeResolution.source,
       selectedText,
       target: "body",
       x,
@@ -615,8 +644,8 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         target: "body",
         blockId,
         blockType,
-        canAddPageLink,
-        canTurnIntoTopicCard
+        canInsertPageLinkAtPoint: canInsertPageLinkAtPoint && !preserveTextSelection,
+        canCreateTopicCardFromSelection
       } satisfies NoteEditorContextTarget;
   }
 

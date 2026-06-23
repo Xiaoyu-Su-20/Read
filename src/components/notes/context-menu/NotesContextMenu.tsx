@@ -137,16 +137,15 @@ export default function NotesContextMenu({
           </>
         ) : (
           <>
-            {state.target === "body" && documentCapabilities && state.canAddPageLink ? (
+            {state.target === "body" && documentCapabilities && state.canInsertPageLinkAtPoint ? (
               <button className="editor-context-menu__item" type="button" onClick={onAddPageLink}>
                 Add PageLink
               </button>
             ) : null}
-            {state.target === "body" ? (
+            {state.target === "body" && state.canCreateTopicCardFromSelection ? (
               <button
                 className="editor-context-menu__item"
                 type="button"
-                disabled={!state.canTurnIntoTopicCard}
                 onClick={onTurnIntoTopicCard}
               >
                 Create Topic Card

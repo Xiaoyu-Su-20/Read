@@ -2894,6 +2894,13 @@ body.reader-pane-resizing .notes-pane img {
   flex: 0 0 auto;
 }
 
+.notes-pane__floating-tools {
+  position: absolute;
+  top: 0.9rem;
+  right: 1rem;
+  z-index: 22;
+}
+
 .notes-header-tools__item {
   position: relative;
 }

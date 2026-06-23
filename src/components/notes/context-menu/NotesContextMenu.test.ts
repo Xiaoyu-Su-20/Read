@@ -10,8 +10,8 @@ function renderMenu(
         target: "body";
         blockId: string;
         blockType: "paragraph" | "heading1" | "heading2" | "heading3";
-        canAddPageLink: boolean;
-        canTurnIntoTopicCard: boolean;
+        canInsertPageLinkAtPoint: boolean;
+        canCreateTopicCardFromSelection: boolean;
         anchor: { x: number; y: number };
       }
     | {
@@ -60,15 +60,29 @@ describe("NotesContextMenu", () => {
       target: "body",
       blockId: "paragraph-1",
       blockType: "paragraph",
-      canAddPageLink: true,
-      canTurnIntoTopicCard: false,
+      canInsertPageLinkAtPoint: true,
+      canCreateTopicCardFromSelection: false,
       anchor: { x: 12, y: 24 }
     });
 
     expect(markup).toContain("Add PageLink");
-    expect(markup).toContain("Create Topic Card");
+    expect(markup).not.toContain("Create Topic Card");
     expect(markup).toContain("Turn into");
     expect(markup).not.toContain("Section Break");
+  });
+
+  it("renders topic-card creation only for selection-driven body actions", () => {
+    const markup = renderMenu({
+      target: "body",
+      blockId: "paragraph-1",
+      blockType: "paragraph",
+      canInsertPageLinkAtPoint: false,
+      canCreateTopicCardFromSelection: true,
+      anchor: { x: 12, y: 24 }
+    });
+
+    expect(markup).not.toContain("Add PageLink");
+    expect(markup).toContain("Create Topic Card");
   });
 
   it("renders topic-card actions with a color submenu trigger", () => {

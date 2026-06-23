@@ -927,8 +927,8 @@ const NotesPane = memo(function NotesPane({
               target: "body",
               blockId: resolvedTarget.blockId,
               blockType: resolvedTarget.blockType,
-              canAddPageLink: resolvedTarget.canAddPageLink,
-              canTurnIntoTopicCard: resolvedTarget.canTurnIntoTopicCard,
+              canInsertPageLinkAtPoint: resolvedTarget.canInsertPageLinkAtPoint,
+              canCreateTopicCardFromSelection: resolvedTarget.canCreateTopicCardFromSelection,
               anchor
             };
 
@@ -1321,7 +1321,15 @@ const NotesPane = memo(function NotesPane({
           }}
         />
       </div>
-      {headerActionsContainer ? createPortal(notesHeaderTools, headerActionsContainer) : null}
+      {headerActionsContainer
+        ? createPortal(notesHeaderTools, headerActionsContainer)
+        : fullscreen
+          ? (
+            <div className="notes-pane__floating-tools" data-no-window-drag>
+              {notesHeaderTools}
+            </div>
+          )
+          : null}
 
       {pageLinkDialog || topicDialog ? (
         <form

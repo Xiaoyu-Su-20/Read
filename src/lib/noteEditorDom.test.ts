@@ -5,6 +5,7 @@ import {
   getAdjacentPageLink,
   normalizeNoteEditorDom,
   parseNoteBlocksFromEditor,
+  resolveCollapsedRangeAtPoint,
   renderNoteBlocksHtml,
   turnSelectionIntoTopicCard
 } from "./noteEditorDom";
@@ -200,6 +201,95 @@ describe("noteEditorDom accessibility behavior", () => {
 
     expect(capturedRange?.collapsed).toBe(true);
     expect(selection?.toString()).toBe("Selected");
+  });
+
+  it.skipIf(!hasDom)("resolves the nearest text insertion point when native caret hit-testing misses", () => {
+    document.body.innerHTML = `<div id="root">${renderNoteBlocksHtml([
+      {
+        id: "paragraph-nearest-range",
+        type: "paragraph",
+        children: [createTextNode("Universalism: Any event from the environment can be consumed.")]
+      }
+    ])}</div>`;
+
+    const root = document.getElementById("root") as HTMLDivElement;
+    normalizeNoteEditorDom(root);
+    const block = root.querySelector("[data-block-id]") as HTMLDivElement;
+    const textNode = block.firstChild as Text;
+
+    const originalCaretPosition = (document as Document & { caretPositionFromPoint?: unknown })
+      .caretPositionFromPoint;
+    const originalCaretRange = (document as Document & { caretRangeFromPoint?: unknown })
+      .caretRangeFromPoint;
+    const originalElementFromPoint = document.elementFromPoint.bind(document);
+    const originalGetBoundingClientRect = Range.prototype.getBoundingClientRect;
+
+    Object.defineProperty(document, "caretPositionFromPoint", {
+      configurable: true,
+      value: undefined
+    });
+    Object.defineProperty(document, "caretRangeFromPoint", {
+      configurable: true,
+      value: () => null
+    });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => block
+    });
+    Range.prototype.getBoundingClientRect = function getBoundingClientRectMock() {
+      if (this.startContainer === textNode && this.endContainer === textNode) {
+        const left = this.startOffset * 8;
+        const right = Math.max(left + 8, this.endOffset * 8);
+        return {
+          x: left,
+          y: 0,
+          left,
+          top: 0,
+          right,
+          bottom: 16,
+          width: right - left,
+          height: 16,
+          toJSON: () => ""
+        } as DOMRect;
+      }
+
+      return {
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ""
+      } as DOMRect;
+    };
+
+    try {
+      const targetOffset = "Universalism: Any event from the environment ".length;
+      const result = resolveCollapsedRangeAtPoint(root, targetOffset * 8 + 2, 8);
+
+      expect(result.source).toBe("nearest-text");
+      expect(result.blockId).toBe("paragraph-nearest-range");
+      expect(result.range?.collapsed).toBe(true);
+      expect(result.range?.startContainer).toBe(textNode);
+      expect(result.range?.startOffset).toBe(targetOffset);
+    } finally {
+      Object.defineProperty(document, "caretPositionFromPoint", {
+        configurable: true,
+        value: originalCaretPosition
+      });
+      Object.defineProperty(document, "caretRangeFromPoint", {
+        configurable: true,
+        value: originalCaretRange
+      });
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: originalElementFromPoint
+      });
+      Range.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+    }
   });
 
   it.skipIf(!hasDom)("keeps adjacent pagelink deletion within the current block", () => {
