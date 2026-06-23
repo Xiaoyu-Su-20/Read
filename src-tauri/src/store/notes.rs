@@ -7,7 +7,7 @@ use crate::{
     models::{
         DocumentDeleteState, DocumentRecord, DocumentSourceReference,
         DocumentSourceReferenceKind, NoteBlock, NoteBlockType, NoteDocument, NoteIndex,
-        NoteIndexEntry, NoteInlineNode, NotePageLinkNode, NoteTextNode,
+        NoteIndexEntry, NoteInlineNode, NotePageLinkNode, NoteTextNode, NoteTopicCardNode,
         StandaloneNoteSearchHit,
     },
 };
@@ -21,6 +21,24 @@ const NON_STANDALONE_NOTE_DELETE_REASON: &str = "Only standalone notes can be de
 const STANDALONE_NOTE_DELETE_BLOCKED_REASON: &str = "Clear the note before deleting it.";
 
 impl NoteStore {
+    fn normalize_topic_color(&self, color: &str) -> String {
+        match color.trim() {
+            "accent"
+            | "interactive"
+            | "accentSoft"
+            | "interactiveSoft"
+            | "neutral"
+            | "emphasis" => color.trim().to_string(),
+            "blue" => "interactive".to_string(),
+            "green" => "interactiveSoft".to_string(),
+            "amber" => "accent".to_string(),
+            "rose" => "emphasis".to_string(),
+            "violet" => "accentSoft".to_string(),
+            "slate" => "neutral".to_string(),
+            _ => "accent".to_string(),
+        }
+    }
+
     pub fn document_delete_state(
         &self,
         paths: &StorePaths,
@@ -326,11 +344,11 @@ impl NoteStore {
         let mut excerpt = note
             .blocks
             .iter()
-            .filter(|block| block.r#type != NoteBlockType::SectionBreak)
             .flat_map(|block| block.children.iter())
             .map(|child| match child {
                 NoteInlineNode::Text(text) => text.text.trim(),
                 NoteInlineNode::PageLink(page_link) => page_link.text.trim(),
+                NoteInlineNode::TopicCard(topic_card) => topic_card.text.trim(),
             })
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>()
@@ -364,16 +382,6 @@ impl NoteStore {
                 block.id = Uuid::new_v4().to_string();
             }
 
-            if matches!(
-                block.r#type,
-                NoteBlockType::SectionBreak
-            ) {
-                block.children.clear();
-                block.source_reference = None;
-                block.spans.clear();
-                continue;
-            }
-
             if block.children.is_empty() {
                 if block.spans.is_empty() {
                     block.children.push(NoteInlineNode::Text(NoteTextNode {
@@ -403,16 +411,10 @@ impl NoteStore {
         }
 
         let mut normalized_blocks = Vec::with_capacity(note.blocks.len());
-        let mut previous_was_break = false;
         for block in note.blocks.drain(..) {
-            let is_break = matches!(
-                block.r#type,
-                NoteBlockType::SectionBreak
-            );
-            if is_break && previous_was_break {
+            if matches!(block.r#type, NoteBlockType::SectionBreak) {
                 continue;
             }
-            previous_was_break = is_break;
             normalized_blocks.push(block);
         }
 
@@ -441,19 +443,13 @@ impl NoteStore {
     }
 
     fn note_block_text(&self, block: &NoteBlock) -> String {
-        if matches!(
-            block.r#type,
-            NoteBlockType::SectionBreak
-        ) {
-            return String::new();
-        }
-
         block
             .children
             .iter()
             .map(|child| match child {
                 NoteInlineNode::Text(text) => text.text.as_str(),
                 NoteInlineNode::PageLink(page_link) => page_link.text.as_str(),
+                NoteInlineNode::TopicCard(topic_card) => topic_card.text.as_str(),
             })
             .collect::<Vec<_>>()
             .join("")
@@ -486,13 +482,6 @@ impl NoteStore {
         fallback_document_id: Option<&str>,
     ) -> Option<DocumentSourceReference> {
         if block_type == NoteBlockType::Paragraph {
-            return None;
-        }
-
-        if matches!(
-            block_type,
-            NoteBlockType::SectionBreak
-        ) {
             return None;
         }
 
@@ -627,6 +616,26 @@ impl NoteStore {
                         } else {
                             page_link.created_at.clone()
                         },
+                    }));
+                }
+                NoteInlineNode::TopicCard(topic_card) => {
+                    if let Some(current) = pending_text.take() {
+                        normalized.push(NoteInlineNode::Text(current));
+                    }
+
+                    let text = topic_card.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if text.is_empty() {
+                        continue;
+                    }
+
+                    normalized.push(NoteInlineNode::TopicCard(NoteTopicCardNode {
+                        id: if topic_card.id.trim().is_empty() {
+                            Uuid::new_v4().to_string()
+                        } else {
+                            topic_card.id.clone()
+                        },
+                        text,
+                        color: self.normalize_topic_color(&topic_card.color),
                     }));
                 }
             }

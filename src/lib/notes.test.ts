@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  createSectionBreakBlock,
   createPageLinkNode,
   createSaveScheduler,
   createTextNode,
+  createTopicCardNode,
   deriveNoteNavigationItems,
   formatPageLinkText,
   normalizeDocumentSourceReference,
@@ -59,6 +59,47 @@ describe("notes helpers", () => {
     ]);
   });
 
+  it("ignores empty headings when deriving navigation entries", () => {
+    const items = deriveNoteNavigationItems([
+      {
+        id: "heading-empty",
+        type: "heading1",
+        children: [createTextNode("")]
+      },
+      {
+        id: "heading-topic-only",
+        type: "heading2",
+        children: [
+          createTopicCardNode({
+            id: "topic-1",
+            text: "Inline topic",
+            color: "accent"
+          })!
+        ]
+      },
+      {
+        id: "heading-real",
+        type: "heading2",
+        children: [createTextNode("Section")]
+      }
+    ]);
+
+    expect(items).toEqual([
+      {
+        id: "navigation-heading-topic-only",
+        blockId: "heading-topic-only",
+        title: "[Inline topic]",
+        level: 2
+      },
+      {
+        id: "navigation-heading-real",
+        blockId: "heading-real",
+        title: "Section",
+        level: 2
+      }
+    ]);
+  });
+
   it("replaces only the targeted block type", () => {
     const blocks: NoteBlock[] = [
       {
@@ -79,7 +120,7 @@ describe("notes helpers", () => {
     expect(updated[1]?.type).toBe("heading3");
   });
 
-  it("normalizes paragraph topics, drops empty ones, and strips them from headings", () => {
+  it("normalizes inline topic cards and migrates legacy paragraph topics into children", () => {
     const blocks = normalizeNoteBlocks([
       {
         id: "paragraph-with-topics",
@@ -88,41 +129,48 @@ describe("notes helpers", () => {
           {
             id: "topic-1",
             text: "  Program   signals  ",
-            color: "amber"
+            color: "accent"
           },
           {
             id: "topic-2",
             text: "   ",
-            color: "blue"
+            color: "interactive"
           }
         ],
         children: [createTextNode("Body")]
       },
       {
-        id: "heading-with-topic",
+        id: "heading-with-inline-topic",
         type: "heading2",
-        topics: [
-          {
+        children: [
+          createTopicCardNode({
             id: "topic-3",
-            text: "Should clear",
-            color: "rose"
-          }
-        ],
-        children: [createTextNode("Heading")]
+            text: "  Heading topic  ",
+            color: "emphasis"
+          })!,
+          createTextNode("Heading")
+        ]
       }
     ] as NoteBlock[]);
 
-    expect(blocks[0]?.topics).toEqual([
+    expect(blocks[0]?.children.slice(0, 2)).toEqual([
       {
+        type: "topic-card",
         id: "topic-1",
         text: "Program signals",
-        color: "amber"
-      }
+        color: "accent"
+      },
+      createTextNode("Body")
     ]);
-    expect(blocks[1]?.topics).toEqual([]);
+    expect(blocks[1]?.children[0]).toEqual({
+      type: "topic-card",
+      id: "topic-3",
+      text: "Heading topic",
+      color: "emphasis"
+    });
   });
 
-  it("prefixes paragraph topics in plain text export", () => {
+  it("includes inline topic cards in plain text export", () => {
     const note = normalizeNoteDocument({
       id: "note-topic-export",
       title: "Topics",
@@ -134,19 +182,19 @@ describe("notes helpers", () => {
         {
           id: "paragraph-topics",
           type: "paragraph",
-          topics: [
-            {
+          children: [
+            createTopicCardNode({
               id: "topic-1",
               text: "Program signals",
-              color: "amber"
-            },
-            {
+              color: "accent"
+            })!,
+            createTopicCardNode({
               id: "topic-2",
               text: "Observation",
-              color: "slate"
-            }
-          ],
-          children: [createTextNode("Particular signals are needed.")]
+              color: "neutral"
+            })!,
+            createTextNode("Particular signals are needed.")
+          ]
         }
       ]
     });
@@ -156,10 +204,18 @@ describe("notes helpers", () => {
     );
   });
 
-  it("stores section breaks as real blocks, preserves plain text separators, and collapses adjacent breaks", () => {
+  it("drops legacy section-break blocks during normalization", () => {
     const blocks = normalizeNoteBlocks([
-      createSectionBreakBlock(),
-      createSectionBreakBlock(),
+      {
+        id: "legacy-break-1",
+        type: "sectionBreak" as NoteBlock["type"],
+        children: []
+      },
+      {
+        id: "legacy-break-2",
+        type: "sectionBreak" as NoteBlock["type"],
+        children: []
+      },
       {
         id: "body",
         type: "paragraph",
@@ -167,9 +223,9 @@ describe("notes helpers", () => {
       }
     ]);
 
-    expect(blocks).toHaveLength(2);
-    expect(blocks[0]?.type).toBe("sectionBreak");
-    expect(blocks[0]?.children).toEqual([]);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.type).toBe("paragraph");
+    expect(blocks[0]?.children).toEqual([createTextNode("After break")]);
 
     const note = normalizeNoteDocument({
       id: "note-1",
@@ -181,7 +237,7 @@ describe("notes helpers", () => {
       blocks
     });
 
-    expect(noteToPlainText(note)).toContain("---");
+    expect(noteToPlainText(note)).not.toContain("---");
   });
 
   it("merges adjacent spans that share the same inline marks", () => {

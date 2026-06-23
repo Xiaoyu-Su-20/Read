@@ -1,3 +1,5 @@
+import type { TopicColorRole } from "../types";
+
 export type ThemeSurfaceTone = "light" | "dark";
 
 export type ThemeSources = {
@@ -413,6 +415,150 @@ function ensureReadableTextColor(
   return contrastRatio(darkCandidate, backgroundHint) >= contrastRatio(lightCandidate, backgroundHint)
     ? darkCandidate
     : lightCandidate;
+}
+
+function mixOklchColors(base: string, blend: string, blendAmount: number) {
+  const safeBlendAmount = clampUnit(blendAmount);
+  const baseColor = toOklchColor(base);
+  const blendColor = toOklchColor(blend);
+  const hueDelta = ((((blendColor.hue - baseColor.hue) % 360) + 540) % 360) - 180;
+
+  return fromOklchColor({
+    lightness: clampUnit(
+      baseColor.lightness + (blendColor.lightness - baseColor.lightness) * safeBlendAmount
+    ),
+    chroma: clampNumber(
+      baseColor.chroma + (blendColor.chroma - baseColor.chroma) * safeBlendAmount,
+      0,
+      0.32
+    ),
+    hue: (baseColor.hue + hueDelta * safeBlendAmount + 360) % 360
+  });
+}
+
+function topicRoleVariableSuffix(role: TopicColorRole) {
+  return role.replace(/[A-Z]/g, (character) => `-${character.toLowerCase()}`);
+}
+
+type TopicRoleAppearance = {
+  background: string;
+  border: string;
+  text: string;
+  hoverBackground: string;
+  hoverBorder: string;
+  focus: string;
+  ring: string;
+  swatch: string;
+};
+
+function ensureTopicBackgroundSeparation(
+  background: string,
+  surface: string,
+  seed: string,
+  direction: "lighter" | "darker"
+) {
+  if (contrastRatio(background, surface) >= 1.12) {
+    return background;
+  }
+
+  const target = direction === "lighter" ? lighten(seed, 0.12) : darken(seed, 0.12);
+  return mixOklchColors(surface, target, 0.26);
+}
+
+function createTopicRoleAppearance(
+  seed: string,
+  surface: string,
+  foreground: string,
+  focusRing: string,
+  direction: "lighter" | "darker",
+  softness: number
+): TopicRoleAppearance {
+  const backgroundBlend = 0.14 + softness * 0.08;
+  const borderBlend = 0.24 + softness * 0.1;
+  const hoverBackgroundBlend = Math.min(backgroundBlend + 0.05, 0.34);
+  const hoverBorderBlend = Math.min(borderBlend + 0.06, 0.42);
+
+  let background = mixOklchColors(surface, seed, backgroundBlend);
+  background = ensureTopicBackgroundSeparation(background, surface, seed, direction);
+  const border = mixOklchColors(surface, seed, borderBlend);
+  const hoverBackground = mixOklchColors(surface, seed, hoverBackgroundBlend);
+  const hoverBorder = mixOklchColors(surface, seed, hoverBorderBlend);
+  const preferredText = mixOklchColors(seed, foreground, 0.7);
+  const text =
+    contrastRatio(preferredText, background) >= 4.5
+      ? preferredText
+      : ensureReadableTextColor(foreground, background, 4.5);
+  const focus = mixOklchColors(seed, focusRing, 0.35);
+  const ring = withAlpha(focus, 0.42);
+  const swatch = mixOklchColors(seed, surface, softness * 0.18);
+
+  return {
+    background,
+    border,
+    text,
+    hoverBackground,
+    hoverBorder,
+    focus,
+    ring,
+    swatch
+  };
+}
+
+function createTopicPalette(args: {
+  accent: string;
+  interactive: string;
+  surface: string;
+  foreground: string;
+  focusRing: string;
+  surfaceTone: ThemeSurfaceTone;
+}) {
+  const {
+    accent,
+    interactive,
+    surface,
+    foreground,
+    focusRing,
+    surfaceTone
+  } = args;
+  const accentOklch = toOklchColor(accent);
+  const interactiveOklch = toOklchColor(interactive);
+  const similarSeeds =
+    Math.abs(accentOklch.lightness - interactiveOklch.lightness) < 0.08 &&
+    Math.abs(accentOklch.chroma - interactiveOklch.chroma) < 0.05 &&
+    Math.abs(
+      ((((accentOklch.hue - interactiveOklch.hue) % 360) + 540) % 360) - 180
+    ) < 24;
+  const emphasisSeed =
+    contrastRatio(accent, surface) >= contrastRatio(interactive, surface) ? accent : interactive;
+  const neutralSeed = mixOklchColors(surface, foreground, 0.34);
+  const accentSoftSeed = mixOklchColors(accent, surface, 0.58);
+  const interactiveSoftSeed = similarSeeds
+    ? mixOklchColors(interactive, surfaceTone === "dark" ? lighten(surface, 0.18) : darken(surface, 0.12), 0.68)
+    : mixOklchColors(interactive, surface, 0.64);
+  const direction = surfaceTone === "dark" ? "lighter" : "darker";
+
+  return {
+    accent: createTopicRoleAppearance(accent, surface, foreground, focusRing, direction, 0.1),
+    interactive: createTopicRoleAppearance(interactive, surface, foreground, focusRing, direction, 0.14),
+    accentSoft: createTopicRoleAppearance(accentSoftSeed, surface, foreground, focusRing, direction, 0.42),
+    interactiveSoft: createTopicRoleAppearance(
+      interactiveSoftSeed,
+      surface,
+      foreground,
+      focusRing,
+      direction,
+      similarSeeds ? 0.52 : 0.48
+    ),
+    neutral: createTopicRoleAppearance(neutralSeed, surface, foreground, focusRing, direction, 0.22),
+    emphasis: createTopicRoleAppearance(
+      mixOklchColors(emphasisSeed, foreground, 0.08),
+      surface,
+      foreground,
+      focusRing,
+      direction,
+      0.04
+    )
+  } satisfies Record<TopicColorRole, TopicRoleAppearance>;
 }
 
 function createViewerFilterRecipe(
@@ -953,6 +1099,14 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
   const notesSurface = withAlpha(source.chrome, 0.9);
   const notesText = lighten(textPrimary, 0.1);
   const notesMuted = withAlpha(lighten(textPrimary, 0.12), 0.76);
+  const topicPalette = createTopicPalette({
+    accent: source.accent,
+    interactive: source.interactive,
+    surface: source.chrome,
+    foreground: textPrimary,
+    focusRing,
+    surfaceTone: themeDefinition.document.surfaceTone
+  });
   const dangerSurface = withAlpha(source.danger, 0.18);
   const dangerSurfaceStrong = withAlpha(source.danger, 0.85);
   const dangerText = lighten(source.danger, 0.36);
@@ -1113,6 +1267,23 @@ export function resolveTheme(themeDefinition: ThemeDefinition): ResolvedTheme {
       "--notes-surface": notesSurface,
       "--notes-text": notesText,
       "--notes-text-muted": notesMuted,
+      ...Object.fromEntries(
+        (Object.entries(topicPalette) as Array<[TopicColorRole, TopicRoleAppearance]>).flatMap(
+          ([role, appearance]) => {
+            const suffix = topicRoleVariableSuffix(role);
+            return [
+              [`--topic-role-${suffix}-bg`, appearance.background],
+              [`--topic-role-${suffix}-border`, appearance.border],
+              [`--topic-role-${suffix}-text`, appearance.text],
+              [`--topic-role-${suffix}-hover-bg`, appearance.hoverBackground],
+              [`--topic-role-${suffix}-hover-border`, appearance.hoverBorder],
+              [`--topic-role-${suffix}-focus`, appearance.focus],
+              [`--topic-role-${suffix}-ring`, appearance.ring],
+              [`--topic-role-${suffix}-swatch`, appearance.swatch]
+            ];
+          }
+        )
+      ),
       "--paper-surface": source.documentPaper,
       "--paper-surface-dark": source.documentPaper,
       "--paper-shadow": withAlpha(

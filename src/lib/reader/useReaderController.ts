@@ -787,12 +787,26 @@ export function useReaderController({
     smoothWheelState.lastFrameAt = 0;
   }
 
+  function cancelSmoothWheelScrollOwnership(scrollSurface?: HTMLDivElement | null) {
+    cancelSmoothWheelAnimation();
+
+    const smoothWheelState = smoothWheelStateRef.current;
+    if (scrollSurface) {
+      smoothWheelState.surface = scrollSurface;
+      smoothWheelState.targetScrollTop = scrollSurface.scrollTop;
+    }
+
+    wheelGestureRef.current.accumulatedBoundaryDistance = 0;
+    wheelGestureRef.current.pageTurned = false;
+  }
+
   function syncSmoothWheelStateToSurface(
     scrollSurface: HTMLDivElement,
     options?: { cancelAnimation?: boolean }
   ) {
     if (options?.cancelAnimation) {
-      cancelSmoothWheelAnimation();
+      cancelSmoothWheelScrollOwnership(scrollSurface);
+      return;
     }
 
     const smoothWheelState = smoothWheelStateRef.current;
@@ -986,6 +1000,8 @@ export function useReaderController({
       fitMode?: ReaderFitMode;
     }
   ) {
+    cancelSmoothWheelScrollOwnership(smoothWheelStateRef.current.surface);
+
     const resolvedFitMode = options?.fitMode ?? readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
     const normalizedZoom = resolveZoomForFitMode(nextZoom, resolvedFitMode);
     if (options?.fitMode && options.fitMode !== readerStateRef.current?.preferences.fitMode) {
@@ -1315,6 +1331,8 @@ export function useReaderController({
     reason: string,
     intent?: RapidTurnIntent
   ) {
+    cancelSmoothWheelScrollOwnership(smoothWheelStateRef.current.surface);
+
     setTargetPage((currentTargetPage) => {
       if (currentTargetPage === nextPage) {
         debugAction("reader.page-request-ignored", {
@@ -2652,6 +2670,16 @@ export function useReaderController({
       }
 
       if (event.shiftKey) {
+        return;
+      }
+
+      if (
+        event.key === "ArrowUp" ||
+        event.key === "ArrowDown" ||
+        event.key === "Home" ||
+        event.key === "End"
+      ) {
+        cancelSmoothWheelScrollOwnership(event.currentTarget);
         return;
       }
 

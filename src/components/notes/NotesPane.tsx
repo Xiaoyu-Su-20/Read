@@ -9,12 +9,14 @@ import {
 import { makeBookmark } from "../../lib/app/helpers";
 import { findBookmarkAtPage } from "../../lib/commands";
 import { noteBlockText, parsePageLinkTargetInput } from "../../lib/notes";
+import { MAX_TOPIC_LENGTH, normalizeTopicText } from "../../lib/paragraphTopics";
 import type {
   Bookmark,
   NoteBlockType,
   NoteDocument,
   NoteNavigationItem,
   NotePageLinkNode,
+  ParagraphTopic,
   NoteRevealRequest,
   OutlineItem,
   PdfNavigationTarget
@@ -82,7 +84,6 @@ function NavigationButton({
 function isContextMenuTarget(target: EventTarget | null) {
   return (
     target instanceof Element &&
-    !target.closest(".paragraph-topic-editor") &&
     Boolean(target.closest(".note-editor"))
   );
 }
@@ -92,7 +93,7 @@ function isMenuInteractiveTarget(target: EventTarget | null) {
     target instanceof Element &&
     Boolean(
       target.closest(
-        ".editor-context-menu, .block-type-submenu, .notes-find-panel, .notes-inline-dialog, .notes-popover, .notes-header-tools, .notes-pane__scrollbar, .paragraph-topic-editor"
+        ".editor-context-menu, .block-type-submenu, .notes-find-panel, .notes-inline-dialog, .notes-popover, .notes-header-tools, .notes-pane__scrollbar"
       )
     )
   );
@@ -210,7 +211,7 @@ const NotesPane = memo(function NotesPane({
   const documentCapabilities = capabilityMode === "document";
   const editorRef = useRef<NoteEditorHandle | null>(null);
   const findInputRef = useRef<HTMLInputElement | null>(null);
-  const pageLinkInputRef = useRef<HTMLInputElement | null>(null);
+  const dialogInputRef = useRef<HTMLInputElement | null>(null);
   const paneRef = useRef<HTMLElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -247,6 +248,12 @@ const NotesPane = memo(function NotesPane({
     blockId: string | null;
     blockType: NoteBlockType | null;
     value: string;
+    error: string | null;
+  } | null>(null);
+  const [topicDialog, setTopicDialog] = useState<{
+    topicId: string;
+    value: string;
+    originalText: string;
     error: string | null;
   } | null>(null);
   const headerActionsContainer =
@@ -499,6 +506,7 @@ const NotesPane = memo(function NotesPane({
   function closeInlineOverlays() {
     setNavigationOpen(false);
     setPageLinkDialog(null);
+    setTopicDialog(null);
     setFindOpen(false);
   }
 
@@ -514,6 +522,28 @@ const NotesPane = memo(function NotesPane({
     return {
       ok: true as const,
       pageNumber: parsed.pageNumber
+    };
+  }
+
+  function validateTopicInput(value: string) {
+    const normalized = normalizeTopicText(value);
+    if (!normalized) {
+      return {
+        ok: false as const,
+        message: "Topic cards need a short label."
+      };
+    }
+
+    if (normalized.length > MAX_TOPIC_LENGTH) {
+      return {
+        ok: false as const,
+        message: `Topic cards must stay under ${MAX_TOPIC_LENGTH} characters.`
+      };
+    }
+
+    return {
+      ok: true as const,
+      text: normalized
     };
   }
 
@@ -577,6 +607,68 @@ const NotesPane = memo(function NotesPane({
     setPageLinkDialog(null);
     window.requestAnimationFrame(() => {
       editorRef.current?.focus();
+    });
+  }
+
+  function submitTopicDialog() {
+    const current = topicDialog;
+    if (!current) {
+      return;
+    }
+
+    const parsed = validateTopicInput(current.value);
+    if (!parsed.ok) {
+      setTopicDialog((dialog) =>
+        dialog
+          ? {
+              ...dialog,
+              error: parsed.message
+            }
+          : dialog
+      );
+      return;
+    }
+
+    const unchanged = parsed.text === current.originalText;
+    if (unchanged) {
+      setTopicDialog(null);
+      window.requestAnimationFrame(() => {
+        editorRef.current?.focus();
+      });
+      return;
+    }
+
+    const result = editorRef.current?.editTopic(current.topicId, { text: parsed.text });
+    if (!result) {
+      return;
+    }
+
+    if (!result.ok) {
+      setTopicDialog((dialog) =>
+        dialog
+          ? {
+              ...dialog,
+              error: result.message
+            }
+          : dialog
+      );
+      return;
+    }
+
+    editorRef.current?.clearSelectedBlock();
+    setTopicDialog(null);
+    window.requestAnimationFrame(() => {
+      editorRef.current?.focus();
+    });
+  }
+
+  function openTopicDialog(topic: ParagraphTopic) {
+    setPageLinkDialog(null);
+    setTopicDialog({
+      topicId: topic.id,
+      value: topic.text,
+      originalText: topic.text,
+      error: null
     });
   }
 
@@ -668,14 +760,14 @@ const NotesPane = memo(function NotesPane({
   }, []);
 
   useEffect(() => {
-    if (!pageLinkDialog) {
+    if (!pageLinkDialog && !topicDialog) {
       return;
     }
 
     window.requestAnimationFrame(() => {
-      pageLinkInputRef.current?.focus();
+      dialogInputRef.current?.focus();
     });
-  }, [pageLinkDialog]);
+  }, [pageLinkDialog, topicDialog]);
 
   useEffect(() => {
     setActiveFindIndex(0);
@@ -713,6 +805,10 @@ const NotesPane = memo(function NotesPane({
           setPageLinkDialog(null);
           return;
         }
+        if (topicDialog) {
+          setTopicDialog(null);
+          return;
+        }
         closeMenu();
       }
     }
@@ -721,7 +817,7 @@ const NotesPane = memo(function NotesPane({
     return () => {
       window.removeEventListener("keydown", closeOnEscape, true);
     };
-  }, [closeMenu, findOpen, pageLinkDialog]);
+  }, [closeMenu, findOpen, pageLinkDialog, topicDialog]);
 
   useEffect(() => {
     function closeOnWindowPointerDown(event: PointerEvent) {
@@ -738,6 +834,10 @@ const NotesPane = memo(function NotesPane({
         setPageLinkDialog(null);
       }
 
+      if (topicDialog && !isMenuInteractiveTarget(event.target)) {
+        setTopicDialog(null);
+      }
+
       if (navigationOpen && !isMenuInteractiveTarget(event.target)) {
         closeInlineOverlays();
       }
@@ -747,7 +847,7 @@ const NotesPane = memo(function NotesPane({
     return () => {
       window.removeEventListener("pointerdown", closeOnWindowPointerDown, true);
     };
-  }, [closeMenu, contextMenuState, navigationOpen, pageLinkDialog]);
+  }, [closeMenu, contextMenuState, navigationOpen, pageLinkDialog, topicDialog]);
 
   useEffect(() => {
     const paneElement = paneRef.current;
@@ -907,6 +1007,7 @@ const NotesPane = memo(function NotesPane({
         closeMenu();
         setNavigationOpen(false);
         setPageLinkDialog(null);
+        setTopicDialog(null);
         onToggleCommandPalette();
       }}
       fullscreen={fullscreen}
@@ -918,6 +1019,7 @@ const NotesPane = memo(function NotesPane({
             onToggle={() => {
               closeMenu();
               setPageLinkDialog(null);
+              setTopicDialog(null);
               setNavigationOpen((current) => !current);
             }}
           />
@@ -1023,7 +1125,7 @@ const NotesPane = memo(function NotesPane({
           return;
         }
 
-        if ((isUndo || isRedo) && !pageLinkDialog) {
+        if ((isUndo || isRedo) && !pageLinkDialog && !topicDialog) {
           const handled = isUndo ? editorRef.current?.undo() : editorRef.current?.redo();
           if (handled) {
             event.preventDefault();
@@ -1221,43 +1323,79 @@ const NotesPane = memo(function NotesPane({
       </div>
       {headerActionsContainer ? createPortal(notesHeaderTools, headerActionsContainer) : null}
 
-      {pageLinkDialog ? (
+      {pageLinkDialog || topicDialog ? (
         <form
           className="notes-inline-dialog"
           role="dialog"
-          aria-label={pageLinkDialog.mode === "insert" ? "Insert PageLink" : "Edit PageLink"}
+          aria-label={
+            pageLinkDialog
+              ? pageLinkDialog.mode === "insert"
+                ? "Insert PageLink"
+                : "Edit PageLink"
+              : "Edit Topic Card"
+          }
           onSubmit={(event) => {
             event.preventDefault();
-            submitPageLinkDialog();
+            if (pageLinkDialog) {
+              submitPageLinkDialog();
+              return;
+            }
+            submitTopicDialog();
           }}
         >
           <div className="notes-inline-dialog__header">
             <strong className="notes-inline-dialog__title">
-              {pageLinkDialog.mode === "insert" ? "Add PageLink" : "Edit PageLink"}
+              {pageLinkDialog
+                ? pageLinkDialog.mode === "insert"
+                  ? "Add PageLink"
+                  : "Edit PageLink"
+                : "Edit Topic Card"}
             </strong>
             <button
               className="notes-inline-dialog__close"
               type="button"
-              aria-label="Close PageLink dialog"
+              aria-label={pageLinkDialog ? "Close PageLink dialog" : "Close topic dialog"}
               onClick={() => {
-                setPageLinkDialog(null);
+                if (pageLinkDialog) {
+                  setPageLinkDialog(null);
+                  return;
+                }
+                setTopicDialog(null);
               }}
             >
               x
             </button>
           </div>
-          <p className="notes-inline-dialog__help">Enter the page number shown in the book.</p>
+          <p className="notes-inline-dialog__help">
+            {pageLinkDialog
+              ? "Enter the page number shown in the book."
+              : "Enter a short label for this topic card."}
+          </p>
           <input
-            ref={pageLinkInputRef}
+            ref={dialogInputRef}
             className="notes-inline-dialog__input"
             type="text"
-            inputMode="numeric"
-            pattern="[0-9]*"
-            placeholder="40"
-            value={pageLinkDialog.value}
+            inputMode={pageLinkDialog ? "numeric" : "text"}
+            pattern={pageLinkDialog ? "[0-9]*" : undefined}
+            placeholder={pageLinkDialog ? "40" : "Norm violation"}
+            value={pageLinkDialog ? pageLinkDialog.value : (topicDialog?.value ?? "")}
+            maxLength={pageLinkDialog ? undefined : MAX_TOPIC_LENGTH}
             spellCheck={false}
             onChange={(event) => {
-              setPageLinkDialog((current) =>
+              if (pageLinkDialog) {
+                setPageLinkDialog((current) =>
+                  current
+                    ? {
+                        ...current,
+                        value: event.target.value,
+                        error: null
+                      }
+                    : current
+                );
+                return;
+              }
+
+              setTopicDialog((current) =>
                 current
                   ? {
                       ...current,
@@ -1270,25 +1408,37 @@ const NotesPane = memo(function NotesPane({
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault();
-                setPageLinkDialog(null);
+                if (pageLinkDialog) {
+                  setPageLinkDialog(null);
+                  return;
+                }
+                setTopicDialog(null);
               }
             }}
           />
-          {pageLinkDialog.error ? (
-            <p className="notes-inline-dialog__error">{pageLinkDialog.error}</p>
+          {(pageLinkDialog?.error || topicDialog?.error) ? (
+            <p className="notes-inline-dialog__error">{pageLinkDialog?.error ?? topicDialog?.error}</p>
           ) : null}
           <div className="notes-inline-dialog__actions">
             <button
               className="notes-inline-dialog__button"
               type="submit"
             >
-              {pageLinkDialog.mode === "insert" ? "Insert" : "Save"}
+              {pageLinkDialog
+                ? pageLinkDialog.mode === "insert"
+                  ? "Insert"
+                  : "Save"
+                : "Save"}
             </button>
             <button
               className="notes-inline-dialog__button notes-inline-dialog__button--ghost"
               type="button"
               onClick={() => {
-                setPageLinkDialog(null);
+                if (pageLinkDialog) {
+                  setPageLinkDialog(null);
+                  return;
+                }
+                setTopicDialog(null);
               }}
             >
               Cancel
@@ -1330,6 +1480,7 @@ const NotesPane = memo(function NotesPane({
             contextMenuState?.target === "body" ? contextMenuState.blockId : null;
           const targetBlockType =
             contextMenuState?.target === "body" ? contextMenuState.blockType : null;
+          setTopicDialog(null);
           setPageLinkDialog({
             mode: "insert",
             pageLinkId: null,
@@ -1346,24 +1497,6 @@ const NotesPane = memo(function NotesPane({
             showToast(result.message);
             return;
           }
-          editorRef.current?.clearSelectedBlock();
-          closeMenu();
-        }}
-        onInsertSectionBreak={() => {
-          if (contextMenuState?.target === "body") {
-            editorRef.current?.insertSectionBreak({
-              referenceBlockId: contextMenuState.blockId,
-              position: "after"
-            });
-          }
-          editorRef.current?.clearSelectedBlock();
-          closeMenu();
-        }}
-        onRemoveSectionBreak={() => {
-          if (contextMenuState?.target !== "body") {
-            return;
-          }
-          editorRef.current?.removeBlock(contextMenuState.blockId);
           editorRef.current?.clearSelectedBlock();
           closeMenu();
         }}
@@ -1387,6 +1520,7 @@ const NotesPane = memo(function NotesPane({
             showToast("Unable to edit PageLink.");
             return;
           }
+          setTopicDialog(null);
           setPageLinkDialog({
             mode: "edit",
             pageLinkId: contextMenuState.pageLinkId,
@@ -1411,7 +1545,12 @@ const NotesPane = memo(function NotesPane({
           if (contextMenuState?.target !== "topic-card") {
             return;
           }
-          editorRef.current?.startTopicEdit(contextMenuState.topicId);
+          const topic = editorRef.current?.getTopic(contextMenuState.topicId);
+          if (!topic) {
+            showToast("Unable to edit topic.");
+            return;
+          }
+          openTopicDialog(topic);
           closeMenu();
         }}
         onChangeTopicColor={(color) => {

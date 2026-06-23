@@ -345,11 +345,21 @@ pub struct NotePageLinkNode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTopicCardNode {
+    pub id: String,
+    pub text: String,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum NoteInlineNode {
     Text(NoteTextNode),
     #[serde(rename = "page-link")]
     PageLink(NotePageLinkNode),
+    #[serde(rename = "topic-card")]
+    TopicCard(NoteTopicCardNode),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

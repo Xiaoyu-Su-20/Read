@@ -53,43 +53,31 @@ type PersistedWorkspaceSession = {
 const WORKSPACE_SESSION_STORAGE_KEY = "calm-reader.workspace-session";
 
 function readPersistedWorkspaceSession(): PersistedWorkspaceSession {
+  const defaultSession: PersistedWorkspaceSession = {
+    activeStandaloneNoteId: null,
+    librarySelection: "collections",
+    workspaceMode: "collection"
+  };
+
   if (typeof window === "undefined") {
-    return {
-      activeStandaloneNoteId: null,
-      librarySelection: "collections",
-      workspaceMode: "collection"
-    };
+    return defaultSession;
   }
 
   try {
     const raw = window.localStorage.getItem(WORKSPACE_SESSION_STORAGE_KEY);
     if (!raw) {
-      return {
-        activeStandaloneNoteId: null,
-        librarySelection: "collections",
-        workspaceMode: "collection"
-      };
+      return defaultSession;
     }
 
     const parsed = JSON.parse(raw) as Partial<PersistedWorkspaceSession>;
     return {
-      activeStandaloneNoteId:
-        typeof parsed.activeStandaloneNoteId === "string" ? parsed.activeStandaloneNoteId : null,
-      librarySelection: parsed.librarySelection === "notes" ? "notes" : "collections",
-      workspaceMode:
-        parsed.workspaceMode === "reader" ||
-        parsed.workspaceMode === "collection" ||
-        parsed.workspaceMode === "notes" ||
-        parsed.workspaceMode === "book"
-          ? parsed.workspaceMode
-          : "collection"
-    };
-  } catch {
-    return {
+      // Always boot into the library entry point instead of restoring the last workspace.
       activeStandaloneNoteId: null,
       librarySelection: "collections",
       workspaceMode: "collection"
     };
+  } catch {
+    return defaultSession;
   }
 }
 

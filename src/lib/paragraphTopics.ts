@@ -1,36 +1,48 @@
 import type { CSSProperties } from "react";
 
-import type { InteractiveColorKey, ParagraphTopic } from "./types";
+import type { ParagraphTopic, TopicColorRole } from "./types";
 
-export const INTERACTIVE_COLOR_KEYS = [
-  "blue",
-  "green",
-  "amber",
-  "rose",
-  "violet",
-  "slate"
-] as const satisfies readonly InteractiveColorKey[];
+export const TOPIC_COLOR_ROLES = [
+  "accent",
+  "interactive",
+  "accentSoft",
+  "interactiveSoft",
+  "neutral",
+  "emphasis"
+] as const satisfies readonly TopicColorRole[];
 
-export const DEFAULT_TOPIC_COLOR: InteractiveColorKey = "blue";
+export const DEFAULT_TOPIC_COLOR: TopicColorRole = "accent";
 export const MAX_TOPIC_LENGTH = 80;
 
-export const interactiveColorLabels: Record<InteractiveColorKey, string> = {
-  blue: "Blue",
-  green: "Green",
-  amber: "Amber",
-  rose: "Rose",
-  violet: "Violet",
-  slate: "Slate"
+export const topicColorRoleLabels: Record<TopicColorRole, string> = {
+  accent: "Theme accent",
+  interactive: "Theme interactive",
+  accentSoft: "Soft accent",
+  interactiveSoft: "Soft interactive",
+  neutral: "Neutral",
+  emphasis: "Emphasis"
 };
 
-const INTERACTIVE_COLOR_BASES: Record<InteractiveColorKey, string> = {
-  blue: "#5d81e6",
-  green: "#5d9a74",
-  amber: "#c38a45",
-  rose: "#c96f87",
-  violet: "#8a72cb",
-  slate: "#7f8999"
+const LEGACY_TOPIC_COLOR_MAP: Record<string, TopicColorRole> = {
+  blue: "interactive",
+  green: "interactiveSoft",
+  amber: "accent",
+  rose: "emphasis",
+  violet: "accentSoft",
+  slate: "neutral"
 };
+
+function normalizeTopicColorRole(value: string | null | undefined): TopicColorRole {
+  if (!value) {
+    return DEFAULT_TOPIC_COLOR;
+  }
+
+  if (TOPIC_COLOR_ROLES.includes(value as TopicColorRole)) {
+    return value as TopicColorRole;
+  }
+
+  return LEGACY_TOPIC_COLOR_MAP[value] ?? DEFAULT_TOPIC_COLOR;
+}
 
 export function normalizeTopicText(value: string) {
   return value.replace(/\s+/g, " ").trim();
@@ -48,9 +60,7 @@ export function normalizeParagraphTopic(
     return null;
   }
 
-  const color = INTERACTIVE_COLOR_KEYS.includes(topic.color)
-    ? topic.color
-    : DEFAULT_TOPIC_COLOR;
+  const color = normalizeTopicColorRole(topic.color);
 
   return {
     id: topic.id || crypto.randomUUID(),
@@ -61,25 +71,12 @@ export function normalizeParagraphTopic(
 
 export function normalizeParagraphTopics(topics: ParagraphTopic[] | null | undefined) {
   const normalized: ParagraphTopic[] = [];
-  const seenIds = new Set<string>();
 
   for (const topic of topics ?? []) {
     const nextTopic = normalizeParagraphTopic(topic);
     if (!nextTopic) {
       continue;
     }
-
-    if (seenIds.has(nextTopic.id)) {
-      const nextId = crypto.randomUUID();
-      seenIds.add(nextId);
-      normalized.push({
-        ...nextTopic,
-        id: nextId
-      });
-      continue;
-    }
-
-    seenIds.add(nextTopic.id);
     normalized.push(nextTopic);
   }
 
@@ -100,23 +97,20 @@ export function paragraphTopicsMarkdown(topics: ParagraphTopic[]) {
   return normalized.map((topic) => `**${normalizeTopicText(topic.text)}:**`).join(" ");
 }
 
-export function topicBaseColor(color: InteractiveColorKey) {
-  return INTERACTIVE_COLOR_BASES[color];
-}
-
 export function resolveTopicAppearance(
-  color: InteractiveColorKey
+  color: TopicColorRole
 ): CSSProperties & Record<`--${string}`, string> {
-  const base = topicBaseColor(color);
+  const role = normalizeTopicColorRole(color);
+  const suffix = role.replace(/[A-Z]/g, (character) => `-${character.toLowerCase()}`);
 
   return {
-    "--topic-base": base,
-    "--topic-bg": `color-mix(in srgb, ${base} 18%, transparent)`,
-    "--topic-border": `color-mix(in srgb, ${base} 30%, transparent)`,
-    "--topic-text": `color-mix(in srgb, ${base} 56%, var(--text-primary))`,
-    "--topic-hover-bg": `color-mix(in srgb, ${base} 24%, transparent)`,
-    "--topic-hover-border": `color-mix(in srgb, ${base} 36%, transparent)`,
-    "--topic-focus": `color-mix(in srgb, ${base} 34%, transparent)`,
-    "--topic-ring": `color-mix(in srgb, ${base} 54%, var(--focus-ring))`
+    "--topic-bg": `var(--topic-role-${suffix}-bg)`,
+    "--topic-border": `var(--topic-role-${suffix}-border)`,
+    "--topic-text": `var(--topic-role-${suffix}-text)`,
+    "--topic-hover-bg": `var(--topic-role-${suffix}-hover-bg)`,
+    "--topic-hover-border": `var(--topic-role-${suffix}-hover-border)`,
+    "--topic-focus": `var(--topic-role-${suffix}-focus)`,
+    "--topic-ring": `var(--topic-role-${suffix}-ring)`,
+    "--topic-swatch": `var(--topic-role-${suffix}-swatch)`
   };
 }

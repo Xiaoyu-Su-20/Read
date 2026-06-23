@@ -8,12 +8,10 @@ import type {
   NoteNavigationItem,
   NotePageLinkNode,
   NoteSpan,
+  NoteTopicCardNode,
   NoteTextNode
 } from "./types";
-import {
-  normalizeParagraphTopics,
-  paragraphTopicsPlainText
-} from "./paragraphTopics";
+import { normalizeParagraphTopic } from "./paragraphTopics";
 
 export const NOTE_SAVE_DEBOUNCE_MS = 1000;
 export const PAGE_LINK_TEXT_PATTERN = /^\(p\.\s*(\d+)\)$/;
@@ -28,32 +26,33 @@ export function createTextNode(text = "", marks?: Pick<NoteTextNode, "bold" | "i
   };
 }
 
+export function createTopicCardNode(args: {
+  text: string;
+  color: NoteTopicCardNode["color"];
+  id?: string;
+}) {
+  const normalizedTopic = normalizeParagraphTopic({
+    id: args.id || crypto.randomUUID(),
+    text: args.text,
+    color: args.color
+  });
+
+  if (!normalizedTopic) {
+    return null;
+  }
+
+  return {
+    type: "topic-card" as const,
+    ...normalizedTopic
+  };
+}
+
 export function createEmptyNoteBlock(id = crypto.randomUUID()): NoteBlock {
   return {
     id,
     type: "paragraph",
     children: [createTextNode("")]
   };
-}
-
-export function createSectionBreakBlock(id = crypto.randomUUID()): NoteBlock {
-  return {
-    id,
-    type: "sectionBreak",
-    children: []
-  };
-}
-
-export function isSectionBreakBlockType(type: NoteBlockType) {
-  return type === "sectionBreak";
-}
-
-export function isSectionBreakBlock(block: NoteBlock) {
-  return isSectionBreakBlockType(block.type);
-}
-
-export function sectionBreakPlainText() {
-  return "---";
 }
 
 function sourceReferencesEqual(
@@ -150,33 +149,23 @@ export function pageLinkText(node: NotePageLinkNode) {
 }
 
 export function noteInlineText(node: NoteInlineNode) {
-  return node.type === "page-link" ? pageLinkText(node) : node.text;
+  if (node.type === "page-link") {
+    return pageLinkText(node);
+  }
+
+  if (node.type === "topic-card") {
+    return `[${node.text}] `;
+  }
+
+  return node.text;
 }
 
 export function noteBlockText(block: NoteBlock) {
-  if (isSectionBreakBlock(block)) {
-    return "";
-  }
-
   return block.children.map(noteInlineText).join("");
 }
 
 function noteBlockPlainText(block: NoteBlock) {
-  if (isSectionBreakBlock(block)) {
-    return sectionBreakPlainText();
-  }
-
-  const topicPrefix =
-    block.type === "paragraph" && (block.topics?.length ?? 0) > 0
-      ? paragraphTopicsPlainText(block.topics ?? [])
-      : "";
-  const bodyText = noteBlockText(block).trim();
-
-  if (topicPrefix && bodyText) {
-    return `${topicPrefix} ${bodyText}`;
-  }
-
-  return topicPrefix || bodyText;
+  return noteBlockText(block).trim();
 }
 
 export function noteToPlainText(note: NoteDocument) {
@@ -189,7 +178,6 @@ export function noteToPlainText(note: NoteDocument) {
 
 export function noteExcerpt(note: NoteDocument) {
   const excerpt = note.blocks
-    .filter((block) => !isSectionBreakBlock(block))
     .map(noteBlockText)
     .map((text) => text.trim())
     .filter(Boolean)
@@ -263,8 +251,16 @@ function normalizePageLinkNode(node: NotePageLinkNode): NotePageLinkNode {
   };
 }
 
-function normalizeBlockTopics(block: NoteBlock) {
-  return block.type === "paragraph" ? normalizeParagraphTopics(block.topics) : [];
+function normalizeTopicCardNode(node: NoteTopicCardNode): NoteTopicCardNode | null {
+  const normalizedTopic = normalizeParagraphTopic(node);
+  if (!normalizedTopic) {
+    return null;
+  }
+
+  return {
+    type: "topic-card",
+    ...normalizedTopic
+  };
 }
 
 function spansToChildren(spans: NoteSpan[]): NoteInlineNode[] {
@@ -295,6 +291,15 @@ export function normalizeNoteInlineNodes(nodes: NoteInlineNode[], fallbackDocume
       continue;
     }
 
+    if (node.type === "topic-card") {
+      flushText();
+      const normalizedTopicNode = normalizeTopicCardNode(node);
+      if (normalizedTopicNode) {
+        normalized.push(normalizedTopicNode);
+      }
+      continue;
+    }
+
     pendingText.push(createTextNode(node.text, node));
   }
 
@@ -307,6 +312,10 @@ export function normalizeNoteBlocks(blocks: NoteBlock[], fallbackDocumentId?: st
   const normalized: NoteBlock[] = [];
 
   for (const block of blocks) {
+    if ((block.type as string) === "sectionBreak") {
+      continue;
+    }
+
     let blockId = block.id;
 
     if (!blockId || seenIds.has(blockId)) {
@@ -315,29 +324,23 @@ export function normalizeNoteBlocks(blocks: NoteBlock[], fallbackDocumentId?: st
 
     seenIds.add(blockId);
 
-    if (isSectionBreakBlockType(block.type)) {
-      if (normalized.length > 0 && isSectionBreakBlock(normalized[normalized.length - 1] as NoteBlock)) {
-        continue;
-      }
-
-      normalized.push({
-        id: blockId,
-        type: block.type,
-        children: [],
-        topics: [],
-        sourceReference: null
-      });
-      continue;
-    }
-
+    const hasInlineTopicCards = Array.isArray(block.children)
+      ? block.children.some((child) => child.type === "topic-card")
+      : false;
+    const legacyTopicNodes =
+      hasInlineTopicCards
+        ? []
+        : (block.topics?.flatMap((topic) => {
+            const topicNode = createTopicCardNode(topic);
+            return topicNode ? [topicNode] : [];
+          }) ?? []);
+    const fallbackChildren = spansToChildren(block.spans ?? []);
     const children =
       Array.isArray(block.children) && block.children.length > 0
-        ? block.children
-        : spansToChildren(block.spans ?? []);
+        ? [...legacyTopicNodes, ...block.children]
+        : [...legacyTopicNodes, ...fallbackChildren];
     let normalizedChildren = normalizeNoteInlineNodes(children, fallbackDocumentId);
-    const hasVisibleText = normalizedChildren.some((child) =>
-      child.type === "page-link" ? child.text.trim().length > 0 : child.text.trim().length > 0
-    );
+    const hasVisibleText = normalizedChildren.some((child) => child.text.trim().length > 0);
 
     const normalizedSourceReference =
       block.type === "paragraph" || !hasVisibleText
@@ -369,11 +372,6 @@ export function normalizeNoteBlocks(blocks: NoteBlock[], fallbackDocumentId?: st
       id: blockId,
       type: block.type,
       children: normalizedChildren,
-      topics: normalizeBlockTopics({
-        ...block,
-        id: blockId,
-        children: normalizedChildren
-      }),
       sourceReference
     });
   }
@@ -391,11 +389,15 @@ export function normalizeNoteDocument(note: NoteDocument): NoteDocument {
 
 export function deriveNoteNavigationItems(blocks: NoteBlock[]): NoteNavigationItem[] {
   return blocks.flatMap((block) => {
-    if (block.type === "paragraph" || isSectionBreakBlock(block)) {
+    if (block.type === "paragraph") {
       return [];
     }
 
-    const title = noteBlockText(block).trim() || "Untitled section";
+    const title = noteBlockText(block).trim();
+    if (!title) {
+      return [];
+    }
+
     const level = Number.parseInt(block.type.replace("heading", ""), 10) as 1 | 2 | 3;
     return [
       {
@@ -419,12 +421,9 @@ export function replaceBlockType(
         ? {
             ...block,
             type: nextType,
-            children: isSectionBreakBlockType(nextType)
-              ? []
-              : block.children,
-            topics: nextType === "paragraph" ? normalizeParagraphTopics(block.topics) : [],
+            children: block.children,
             sourceReference:
-              nextType === "paragraph" || isSectionBreakBlockType(nextType)
+              nextType === "paragraph"
                 ? null
                 : block.sourceReference ?? null
           }
@@ -444,9 +443,8 @@ export function replaceBlockSourceReference(
       block.id === blockId
         ? {
             ...block,
-            topics: block.type === "paragraph" ? normalizeParagraphTopics(block.topics) : [],
             sourceReference:
-              block.type === "paragraph" || isSectionBreakBlockType(block.type)
+              block.type === "paragraph"
                 ? null
                 : normalizeDocumentSourceReference(sourceReference, fallbackDocumentId)
           }

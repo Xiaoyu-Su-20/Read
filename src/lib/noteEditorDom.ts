@@ -1,10 +1,9 @@
 import {
   createEmptyNoteBlock,
-  createSectionBreakBlock,
   createPageLinkNode,
+  createTopicCardNode,
   createTextNode,
   formatPageLinkText,
-  isSectionBreakBlockType,
   normalizeDocumentSourceReference,
   normalizeNoteBlocks,
   normalizeNoteInlineNodes,
@@ -14,7 +13,6 @@ import {
   DEFAULT_TOPIC_COLOR,
   MAX_TOPIC_LENGTH,
   normalizeParagraphTopic,
-  normalizeParagraphTopics,
   normalizeTopicText,
   resolveTopicAppearance
 } from "./paragraphTopics";
@@ -34,7 +32,6 @@ import type {
 
 const NOTE_CLIPBOARD_MIME = "application/x-calmreader-note-fragment";
 const PAGE_LINK_CARET_ANCHOR = "\u200B";
-const SECTION_BREAK_TEXT = "---";
 const TOPIC_INLINE_TYPE = "topic-card";
 const PAGE_LINK_INLINE_TYPE = "page-link";
 
@@ -78,7 +75,9 @@ function createPageLinkCaretAnchor(ownerDocument: Document) {
 }
 
 function normalizePageLinkCaretAnchorNode(node: Text) {
-  node.textContent = PAGE_LINK_CARET_ANCHOR;
+  if (node.textContent !== PAGE_LINK_CARET_ANCHOR) {
+    node.textContent = PAGE_LINK_CARET_ANCHOR;
+  }
 }
 
 function escapeHtml(value: string) {
@@ -154,22 +153,39 @@ function blockTypeFromTagName(tagName: string): NoteBlockType {
   }
 }
 
+function isNoteBlockType(value: string | undefined): value is NoteBlockType {
+  return (
+    value === "paragraph" ||
+    value === "heading1" ||
+    value === "heading2" ||
+    value === "heading3"
+  );
+}
+
 function blockTypeFromElement(element: HTMLElement): NoteBlockType {
   const datasetType = element.dataset.blockType as NoteBlockType | undefined;
-  if (datasetType && isSectionBreakBlockType(datasetType)) {
+  if (datasetType && isNoteBlockType(datasetType)) {
     return datasetType;
   }
 
   return blockTypeFromTagName(element.tagName);
 }
 
-function configureSectionBreakElement(element: HTMLElement, type: Extract<NoteBlockType, "sectionBreak">) {
-  element.className = "note-section-break note-section-break--short";
-  element.dataset.blockType = type;
-  element.contentEditable = "false";
-  element.setAttribute("role", "separator");
-  element.setAttribute("aria-orientation", "horizontal");
-  element.replaceChildren();
+function rebuildBlockElementTag(element: HTMLElement, blockType: NoteBlockType) {
+  const nextTagName = blockTagName(blockType);
+  if (element.tagName.toLowerCase() === nextTagName) {
+    return element;
+  }
+
+  const replacement = element.ownerDocument.createElement(nextTagName);
+  replacement.dataset.blockId = element.dataset.blockId ?? crypto.randomUUID();
+  replacement.dataset.blockType = blockType;
+  if (element.dataset.sourceReference) {
+    replacement.dataset.sourceReference = element.dataset.sourceReference;
+  }
+  replacement.replaceChildren(...Array.from(element.childNodes));
+  element.replaceWith(replacement);
+  return replacement;
 }
 
 function nextUniqueBlockId(existingId: string | undefined, seenIds: Set<string>) {
@@ -225,31 +241,30 @@ function renderTopicCardHtml(topic: ParagraphTopic) {
   )}</span><span class="paragraph-topic__bracket" aria-hidden="true">]</span><span class="paragraph-topic__separator" aria-hidden="true"> </span></span>`;
 }
 
-function renderTopicCardsHtml(topics: ParagraphTopic[]) {
-  return normalizeParagraphTopics(topics)
-    .map((topic) => renderTopicCardHtml(topic))
-    .join("");
-}
-
 export function renderNoteInlineNodesHtml(children: NoteInlineNode[]) {
   return normalizeNoteInlineNodes(children)
-    .map((node) => (node.type === "page-link" ? renderPageLinkNodeHtml(node) : renderTextNodeHtml(node)))
+    .map((node) => {
+      if (node.type === "page-link") {
+        return renderPageLinkNodeHtml(node);
+      }
+
+      if (node.type === "topic-card") {
+        return renderTopicCardHtml(node);
+      }
+
+      return renderTextNodeHtml(node);
+    })
     .join("");
 }
 
 export function renderNoteBlocksHtml(blocks: NoteBlock[]) {
   return normalizeNoteBlocks(blocks)
     .map((block) => {
-      if (isSectionBreakBlockType(block.type)) {
-        return `<div data-block-id="${escapeHtml(block.id)}" data-block-type="${block.type}" class="note-section-break note-section-break--short" contenteditable="false" role="separator" aria-orientation="horizontal"></div>`;
-      }
-
       const tagName = blockTagName(block.type);
       const sourceReference = block.sourceReference
         ? ` data-source-reference="${escapeHtml(encodeDataJson(block.sourceReference))}"`
         : "";
-      const topicMarkup = block.type === "paragraph" ? renderTopicCardsHtml(block.topics ?? []) : "";
-      const contentMarkup = `${topicMarkup}${renderNoteInlineNodesHtml(block.children)}`;
+      const contentMarkup = renderNoteInlineNodesHtml(block.children) || "<br>";
       return `<${tagName} data-block-id="${escapeHtml(block.id)}" data-block-type="${block.type}"${sourceReference}>${contentMarkup}</${tagName}>`;
     })
     .join("");
@@ -271,6 +286,28 @@ function pageLinkNodeFromElement(element: HTMLElement): NotePageLinkNode {
     bookPageLabel: element.dataset.bookPageLabel?.trim() || "",
     createdAt: element.dataset.createdAt || new Date().toISOString()
   };
+}
+
+function applyCanonicalPageLinkMarkup(element: HTMLElement, node: NotePageLinkNode) {
+  const parsedText = parsePageLinkText(node.text);
+  const visibleLabel = parsedText?.bookPageLabel ?? node.bookPageLabel ?? node.text;
+  const leadingParen = document.createElement("span");
+  leadingParen.className = "page-link__paren";
+  leadingParen.setAttribute("aria-hidden", "true");
+  leadingParen.textContent = "(";
+  const icon = document.createElement("span");
+  icon.className = "page-link__icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.innerHTML =
+    '<svg viewBox="5 3 14 18" focusable="false"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" /></svg>';
+  const label = document.createElement("span");
+  label.className = "page-link__label";
+  label.textContent = visibleLabel;
+  const trailingParen = document.createElement("span");
+  trailingParen.className = "page-link__paren";
+  trailingParen.setAttribute("aria-hidden", "true");
+  trailingParen.textContent = ")";
+  element.replaceChildren(icon, leadingParen, label, trailingParen);
 }
 
 function topicFromElement(element: HTMLElement): ParagraphTopic | null {
@@ -306,7 +343,15 @@ function inlineNodesFromNode(node: Node, activeMarks: MarkState): NoteInlineNode
   }
 
   if (element.dataset.inlineType === TOPIC_INLINE_TYPE) {
-    return [];
+    const topic = topicFromElement(element);
+    return topic
+      ? [
+          {
+            type: "topic-card",
+            ...topic
+          }
+        ]
+      : [];
   }
 
   if (element.dataset.inlineType === PAGE_LINK_INLINE_TYPE) {
@@ -350,28 +395,13 @@ export function parseNoteBlocksFromEditor(root: HTMLElement): NoteBlock[] {
 
     const element = childNode as HTMLElement;
     const type = blockTypeFromElement(element);
-    const topics =
-      type === "paragraph"
-        ? normalizeParagraphTopics(
-            Array.from(element.children)
-              .filter(
-                (child): child is HTMLElement =>
-                  child instanceof HTMLElement && child.dataset.inlineType === TOPIC_INLINE_TYPE
-              )
-              .map((child) => topicFromElement(child))
-              .filter((topic): topic is ParagraphTopic => topic != null)
-          )
-        : [];
     return [
       {
         id: element.dataset.blockId || crypto.randomUUID(),
         type,
-        topics,
-        children: isSectionBreakBlockType(type)
-          ? []
-          : normalizeNoteInlineNodes(inlineNodesFromNode(element, { bold: false, italic: false })),
+        children: normalizeNoteInlineNodes(inlineNodesFromNode(element, { bold: false, italic: false })),
         sourceReference:
-          type === "paragraph" || isSectionBreakBlockType(type)
+          type === "paragraph"
             ? null
             : decodeSourceReference(element.dataset.sourceReference)
       }
@@ -382,10 +412,17 @@ export function parseNoteBlocksFromEditor(root: HTMLElement): NoteBlock[] {
 }
 
 function configurePageLinkElement(element: HTMLElement) {
+  const node = pageLinkNodeFromElement(element);
   element.classList.add("page-link");
   element.dataset.inlineType = PAGE_LINK_INLINE_TYPE;
+  element.dataset.pageLinkId = node.id;
+  element.dataset.documentId = node.documentId ?? "";
+  element.dataset.pdfPageIndex = node.pdfPageIndex == null ? "" : String(node.pdfPageIndex);
+  element.dataset.bookPageLabel = node.bookPageLabel;
+  element.dataset.createdAt = node.createdAt;
   element.contentEditable = "false";
   element.tabIndex = -1;
+  applyCanonicalPageLinkMarkup(element, node);
 }
 
 function createTopicCardElement(topic: ParagraphTopic) {
@@ -463,24 +500,67 @@ function removeAdjacentAnchorDuplicates(anchorNode: Text, direction: "backward" 
   }
 }
 
+function extractAdjacentCaretAnchor(
+  pageLink: HTMLElement,
+  direction: "before" | "after"
+): Text | null {
+  const sibling = direction === "before" ? pageLink.previousSibling : pageLink.nextSibling;
+  if (sibling?.nodeType !== Node.TEXT_NODE) {
+    return null;
+  }
+  const textSibling = sibling as Node & { textContent: string | null };
+
+  if (isPageLinkCaretAnchorNode(sibling)) {
+    normalizePageLinkCaretAnchorNode(sibling);
+    return sibling;
+  }
+
+  const value = textSibling.textContent ?? "";
+  if (direction === "before") {
+    if (!value.endsWith(PAGE_LINK_CARET_ANCHOR)) {
+      return null;
+    }
+    const nextValue = value.slice(0, -PAGE_LINK_CARET_ANCHOR.length);
+    if (nextValue.length === 0) {
+      textSibling.textContent = PAGE_LINK_CARET_ANCHOR;
+      return sibling as Text;
+    }
+    textSibling.textContent = nextValue;
+    const anchor = createPageLinkCaretAnchor(pageLink.ownerDocument);
+    pageLink.before(anchor);
+    return anchor;
+  }
+
+  if (!value.startsWith(PAGE_LINK_CARET_ANCHOR)) {
+    return null;
+  }
+  const nextValue = value.slice(PAGE_LINK_CARET_ANCHOR.length);
+  if (nextValue.length === 0) {
+    textSibling.textContent = PAGE_LINK_CARET_ANCHOR;
+    return sibling as Text;
+  }
+  textSibling.textContent = nextValue;
+  const anchor = createPageLinkCaretAnchor(pageLink.ownerDocument);
+  pageLink.after(anchor);
+  return anchor;
+}
+
 function ensurePageLinkCaretAnchors(pageLink: HTMLElement) {
   const ownerDocument = pageLink.ownerDocument;
-  const previousSibling = pageLink.previousSibling;
-  const nextSibling = pageLink.nextSibling;
 
   let leadingAnchor: Text;
-  if (isPageLinkCaretAnchorNode(previousSibling)) {
-    leadingAnchor = previousSibling;
-    normalizePageLinkCaretAnchorNode(leadingAnchor);
+  const existingLeadingAnchor = extractAdjacentCaretAnchor(pageLink, "before");
+  if (existingLeadingAnchor) {
+    leadingAnchor = existingLeadingAnchor;
   } else {
     leadingAnchor = createPageLinkCaretAnchor(ownerDocument);
     pageLink.before(leadingAnchor);
   }
 
   let trailingAnchor: Text;
-  if (isPageLinkCaretAnchorNode(nextSibling)) {
-    trailingAnchor = nextSibling;
-    normalizePageLinkCaretAnchorNode(trailingAnchor);
+  const existingTrailingAnchor = extractAdjacentCaretAnchor(pageLink, "after");
+  if (existingTrailingAnchor) {
+    trailingAnchor = existingTrailingAnchor;
   } else {
     trailingAnchor = createPageLinkCaretAnchor(ownerDocument);
     pageLink.after(trailingAnchor);
@@ -514,40 +594,8 @@ function removeOrphanPageLinkCaretAnchors(root: HTMLElement) {
   }
 }
 
-function collectBlockTopicElements(block: HTMLElement) {
-  return Array.from(block.querySelectorAll<HTMLElement>(`[data-inline-type='${TOPIC_INLINE_TYPE}']`)).filter(
-    (element) => findClosestBlockElement(block, element) === block
-  );
-}
-
-function normalizeTopicElementsInBlock(block: HTMLElement, blockType: NoteBlockType) {
-  const topicElements = collectBlockTopicElements(block);
-  if (topicElements.length === 0) {
-    return;
-  }
-
-  if (blockType !== "paragraph") {
-    for (const topicElement of topicElements) {
-      topicElement.remove();
-    }
-    return;
-  }
-
-  let insertionPoint = block.firstChild;
-  for (const topicElement of topicElements) {
-    const configured = configureTopicElement(topicElement);
-    if (!configured) {
-      continue;
-    }
-
-    if (configured !== insertionPoint) {
-      block.insertBefore(configured, insertionPoint);
-    }
-    insertionPoint = configured.nextSibling;
-  }
-}
-
 export function normalizeNoteEditorDom(root: HTMLElement) {
+  const selectionBeforeNormalization = captureEditorSelection(root);
   const children = Array.from(root.childNodes);
   const seenBlockIds = new Set<string>();
   let previousBlockType: NoteBlockType | null = null;
@@ -564,7 +612,11 @@ export function normalizeNoteEditorDom(root: HTMLElement) {
       const block = document.createElement("div");
       block.dataset.blockId = nextUniqueBlockId(undefined, seenBlockIds);
       block.dataset.blockType = "paragraph";
-      block.textContent = text;
+      if (text.length > 0) {
+        block.appendChild(document.createTextNode(text));
+      } else {
+        block.appendChild(document.createElement("br"));
+      }
       root.replaceChild(block, child);
       previousBlockType = "paragraph";
       previousSourceReference = null;
@@ -587,46 +639,35 @@ export function normalizeNoteEditorDom(root: HTMLElement) {
     }
 
     child.dataset.blockId = nextUniqueBlockId(child.dataset.blockId, seenBlockIds);
-    const blockType = blockTypeFromElement(child);
+    const blockType =
+      child.dataset.blockType === "sectionBreak" ? "paragraph" : blockTypeFromElement(child);
     child.dataset.blockType = blockType;
 
-    if (isSectionBreakBlockType(blockType)) {
-      configureSectionBreakElement(
-        child,
-        blockType as Extract<NoteBlockType, "sectionBreak">
-      );
-      previousBlockType = blockType;
-      previousSourceReference = null;
-      continue;
-    }
+    const currentChild = rebuildBlockElementTag(child, blockType);
 
     if (blockType === "paragraph") {
-      delete child.dataset.sourceReference;
-      normalizeTopicElementsInBlock(child, blockType);
+      delete currentChild.dataset.sourceReference;
       previousBlockType = blockType;
       previousSourceReference = null;
     } else {
-      normalizeTopicElementsInBlock(child, blockType);
-      const hasVisibleText = (child.textContent ?? "").trim().length > 0;
+      const hasVisibleText = (currentChild.textContent ?? "").trim().length > 0;
       if (!hasVisibleText) {
-        delete child.dataset.sourceReference;
-        previousBlockType = blockType;
+        const paragraph = createParagraphBlockElement(
+          currentChild.dataset.blockId ?? nextUniqueBlockId(undefined, seenBlockIds)
+        );
+        currentChild.replaceWith(paragraph);
+        previousBlockType = "paragraph";
         previousSourceReference = null;
-        child.querySelectorAll<HTMLElement>("[data-inline-type='page-link']").forEach((pageLink) => {
-          configurePageLinkElement(pageLink);
-          ensurePageLinkCaretAnchors(pageLink);
-        });
-        removeOrphanPageLinkCaretAnchors(child);
         continue;
       }
 
-      const sourceReference = decodeSourceReference(child.dataset.sourceReference);
+      const sourceReference = decodeSourceReference(currentChild.dataset.sourceReference);
       if (
         sourceReference &&
         previousBlockType === blockType &&
         sourceReferencesEqual(previousSourceReference, sourceReference)
       ) {
-        delete child.dataset.sourceReference;
+        delete currentChild.dataset.sourceReference;
         previousSourceReference = null;
       } else {
         previousSourceReference = sourceReference;
@@ -634,13 +675,18 @@ export function normalizeNoteEditorDom(root: HTMLElement) {
       previousBlockType = blockType;
     }
 
-    child.querySelectorAll<HTMLElement>("[data-inline-type='page-link']").forEach((pageLink) => {
+    currentChild.querySelectorAll<HTMLElement>("[data-inline-type='page-link']").forEach((pageLink) => {
       configurePageLinkElement(pageLink);
       ensurePageLinkCaretAnchors(pageLink);
     });
+    currentChild.querySelectorAll<HTMLElement>(`[data-inline-type='${TOPIC_INLINE_TYPE}']`).forEach((topicElement) => {
+      configureTopicElement(topicElement);
+    });
 
-    removeOrphanPageLinkCaretAnchors(child);
+    removeOrphanPageLinkCaretAnchors(currentChild);
   }
+
+  restoreEditorSelection(root, selectionBeforeNormalization);
 }
 
 export function findBlockElement(root: HTMLElement, blockId: string) {
@@ -819,12 +865,6 @@ export function captureCollapsedRangeAtPoint(root: HTMLElement, x: number, y: nu
       return null;
     }
 
-    const selection = window.getSelection();
-    if (selection) {
-      selection.removeAllRanges();
-      selection.addRange(rangeAtPoint);
-    }
-
     return rangeAtPoint.cloneRange();
   }
 
@@ -837,12 +877,6 @@ export function captureCollapsedRangeAtPoint(root: HTMLElement, x: number, y: nu
   fallbackRange.selectNodeContents(blockAtPoint);
   fallbackRange.collapse(false);
 
-  const selection = window.getSelection();
-  if (selection) {
-    selection.removeAllRanges();
-    selection.addRange(fallbackRange);
-  }
-
   return fallbackRange.cloneRange();
 }
 
@@ -854,12 +888,6 @@ export function captureBlockEndRange(root: HTMLElement, block: HTMLElement) {
   const range = root.ownerDocument.createRange();
   range.selectNodeContents(block);
   range.collapse(false);
-
-  const selection = window.getSelection();
-  if (selection) {
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
 
   return range.cloneRange();
 }
@@ -1052,43 +1080,6 @@ function isCollapsedSelectionAtBoundary(
     : selectionRange.compareBoundaryPoints(Range.END_TO_END, blockRange) === 0;
 }
 
-function getSectionBreakAtCaretBoundary(
-  root: HTMLElement,
-  direction: "backward" | "forward"
-) {
-  const block = getBlockFromSelection(root);
-  if (!block) {
-    return null;
-  }
-
-  const atBoundary =
-    direction === "backward"
-      ? isCollapsedSelectionAtBoundary(root, "start")
-      : isCollapsedSelectionAtBoundary(root, "end");
-  if (!atBoundary) {
-    return null;
-  }
-
-  const adjacent =
-    direction === "backward"
-      ? block.previousElementSibling
-      : block.nextElementSibling;
-  if (!(adjacent instanceof HTMLElement)) {
-    return null;
-  }
-
-  const blockType = blockTypeFromElement(adjacent);
-  return isSectionBreakBlockType(blockType) ? adjacent : null;
-}
-
-export function getSectionBreakBeforeCaret(root: HTMLElement) {
-  return getSectionBreakAtCaretBoundary(root, "backward");
-}
-
-export function getSectionBreakAfterCaret(root: HTMLElement) {
-  return getSectionBreakAtCaretBoundary(root, "forward");
-}
-
 export function getPageLinkFromSelection(root: HTMLElement) {
   const selection = getSelectionInRoot(root);
   if (!selection) {
@@ -1168,14 +1159,7 @@ export function replaceBlockElementType(root: HTMLElement, blockId: string, next
   const replacement = document.createElement(blockTagName(nextType));
   replacement.dataset.blockId = blockId;
   replacement.dataset.blockType = nextType;
-  if (isSectionBreakBlockType(nextType)) {
-    configureSectionBreakElement(
-      replacement,
-      nextType as Extract<NoteBlockType, "sectionBreak">
-    );
-  } else {
-    replacement.innerHTML = current.innerHTML;
-  }
+  replacement.innerHTML = current.innerHTML;
   current.replaceWith(replacement);
   return true;
 }
@@ -1188,61 +1172,6 @@ function createParagraphBlockElement(blockId: string) {
   return element;
 }
 
-export function insertSectionBreak(
-  root: HTMLElement,
-  args: {
-    referenceBlockId: string;
-    position: "before" | "after";
-  }
-) {
-  normalizeNoteEditorDom(root);
-  const referenceBlock = findBlockElement(root, args.referenceBlockId);
-  if (!referenceBlock) {
-    return null;
-  }
-
-  const referenceType = blockTypeFromElement(referenceBlock);
-  const referenceText = referenceBlock.textContent?.trim() ?? "";
-  if (referenceType === "paragraph" && referenceText.length === 0) {
-    const replaced = replaceBlockElementType(root, args.referenceBlockId, "sectionBreak");
-    if (!replaced) {
-      return null;
-    }
-
-    focusElementWithoutScroll(root);
-    return {
-      sectionBreakId: args.referenceBlockId
-    };
-  }
-
-  const adjacentSibling =
-    args.position === "after"
-      ? referenceBlock.nextElementSibling
-      : referenceBlock.previousElementSibling;
-  if (adjacentSibling instanceof HTMLElement) {
-    const adjacentType = blockTypeFromElement(adjacentSibling);
-    if (isSectionBreakBlockType(adjacentType)) {
-      return null;
-    }
-  }
-
-  const breakBlock = createSectionBreakBlock();
-  const breakElement = document.createElement("div");
-  breakElement.dataset.blockId = breakBlock.id;
-  configureSectionBreakElement(breakElement, "sectionBreak");
-
-  if (args.position === "after") {
-    referenceBlock.after(breakElement);
-  } else {
-    referenceBlock.before(breakElement);
-  }
-
-  focusElementWithoutScroll(root);
-  return {
-    sectionBreakId: breakBlock.id
-  };
-}
-
 function createPageLinkElement(node: NotePageLinkNode) {
   const element = document.createElement("span");
   element.dataset.pageLinkId = node.id;
@@ -1251,25 +1180,6 @@ function createPageLinkElement(node: NotePageLinkNode) {
   element.dataset.bookPageLabel = node.bookPageLabel;
   element.dataset.createdAt = node.createdAt;
   configurePageLinkElement(element);
-  const parsedText = parsePageLinkText(node.text);
-  const visibleLabel = parsedText?.bookPageLabel ?? node.bookPageLabel ?? node.text;
-  const leadingParen = document.createElement("span");
-  leadingParen.className = "page-link__paren";
-  leadingParen.setAttribute("aria-hidden", "true");
-  leadingParen.textContent = "(";
-  const icon = document.createElement("span");
-  icon.className = "page-link__icon";
-  icon.setAttribute("aria-hidden", "true");
-  icon.innerHTML =
-    '<svg viewBox="5 3 14 18" focusable="false"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" /></svg>';
-  const label = document.createElement("span");
-  label.className = "page-link__label";
-  label.textContent = visibleLabel;
-  const trailingParen = document.createElement("span");
-  trailingParen.className = "page-link__paren";
-  trailingParen.setAttribute("aria-hidden", "true");
-  trailingParen.textContent = ")";
-  element.append(icon, leadingParen, label, trailingParen);
   return element;
 }
 
@@ -1582,17 +1492,6 @@ function cleanupWhitespaceAroundOffset(block: HTMLElement, caretOffset: number) 
   replaceVisibleTextRange(block, start, end, replacement);
 }
 
-function insertTopicCardAtBlockStart(block: HTMLElement, topic: ParagraphTopic) {
-  const topicElement = createTopicCardElement(topic);
-  const topicElements = Array.from(block.children).filter(
-    (child): child is HTMLElement =>
-      child instanceof HTMLElement && child.dataset.inlineType === TOPIC_INLINE_TYPE
-  );
-  const insertionPoint = topicElements[topicElements.length - 1]?.nextSibling ?? block.firstChild;
-  block.insertBefore(topicElement, insertionPoint);
-  return topicElement;
-}
-
 function readTopicCard(element: HTMLElement) {
   return topicFromElement(element);
 }
@@ -1675,7 +1574,7 @@ export function turnSelectionIntoTopicCard(
   cleanupEmptyWrappingDelimiters(block, caretOffset);
   cleanupWhitespaceAroundOffset(block, caretOffset);
 
-  const topic = normalizeParagraphTopic({
+  const topic = createTopicCardNode({
     id: crypto.randomUUID(),
     text,
     color
@@ -1684,7 +1583,9 @@ export function turnSelectionIntoTopicCard(
     return topicCommandError("Unable to create Topic card.");
   }
 
-  const topicElement = insertTopicCardAtBlockStart(block, topic);
+  const topicElement = createTopicCardElement(topic);
+  workingRange.insertNode(topicElement);
+  placeCaretAfterNode(topicElement);
   return {
     ok: true as const,
     blockId: block.dataset.blockId ?? null,
@@ -1856,8 +1757,8 @@ export function updateTopicCard(
     };
   }
 
-  const nextTopic = normalizeParagraphTopic({
-    ...current,
+  const nextTopic = createTopicCardNode({
+    id: current.id,
     text: updates.text ?? current.text,
     color: updates.color ?? current.color
   });
@@ -1882,9 +1783,15 @@ export function removeTopicCard(root: HTMLElement, topicId: string) {
     return false;
   }
 
+  const nextSibling = topicCard.nextSibling;
+  const previousSibling = topicCard.previousSibling;
   const block = findClosestBlockElement(root, topicCard);
   topicCard.remove();
-  if (block) {
+  if (nextSibling) {
+    placeCaretBeforeNode(nextSibling);
+  } else if (previousSibling) {
+    placeCaretAfterNode(previousSibling);
+  } else if (block) {
     focusElementWithoutScroll(root);
     const selection = window.getSelection();
     if (selection) {
@@ -1940,15 +1847,10 @@ export function textFromEditable(root: HTMLElement) {
 }
 
 function serializeBlockForClipboard(block: HTMLElement): NoteClipboardPayload | null {
-  const blockType = blockTypeFromElement(block);
-  if (!isSectionBreakBlockType(blockType)) {
-    return null;
-  }
-
   return {
     internalHtml: block.outerHTML,
-    html: "<hr />",
-    text: SECTION_BREAK_TEXT
+    html: block.outerHTML,
+    text: stripPageLinkCaretAnchors(block.textContent ?? "")
   };
 }
 
@@ -2005,11 +1907,13 @@ export function copyPageLinkReference(root: HTMLElement, pageLinkId: string) {
 
   const text = pageLink.textContent ?? "";
   if (navigator.clipboard?.writeText) {
-    void navigator.clipboard.writeText(text);
+    void navigator.clipboard.writeText(text).catch(() => {
+      fallbackCopyTextWithoutMutatingEditor(root, text);
+    });
     return;
   }
 
-  insertTextAtSelection(text);
+  fallbackCopyTextWithoutMutatingEditor(root, text);
 }
 
 export function selectTextMatchInBlock(
@@ -2211,6 +2115,50 @@ export function cutSelection(root: HTMLElement) {
   }
 }
 
+function fallbackCopyTextWithoutMutatingEditor(root: HTMLElement, text: string) {
+  const ownerDocument = root.ownerDocument;
+  const selectionSnapshot = captureEditorSelection(root);
+  const activeElement =
+    ownerDocument.activeElement instanceof HTMLElement ? ownerDocument.activeElement : null;
+  const textarea = ownerDocument.createElement("textarea");
+
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.setAttribute("aria-hidden", "true");
+  textarea.tabIndex = -1;
+  textarea.style.position = "fixed";
+  textarea.style.top = "0";
+  textarea.style.left = "0";
+  textarea.style.width = "1px";
+  textarea.style.height = "1px";
+  textarea.style.padding = "0";
+  textarea.style.border = "0";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+
+  ownerDocument.body.appendChild(textarea);
+  textarea.focus({ preventScroll: true });
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  let copied = false;
+  try {
+    copied = ownerDocument.execCommand("copy");
+  } catch {
+    copied = false;
+  } finally {
+    textarea.remove();
+    if (selectionSnapshot) {
+      restoreEditorSelection(root, selectionSnapshot);
+      focusElementWithoutScroll(root);
+    } else if (activeElement && ownerDocument.contains(activeElement)) {
+      activeElement.focus({ preventScroll: true });
+    }
+  }
+
+  return copied;
+}
+
 function insertHtmlAtSelection(html: string) {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) {
@@ -2290,7 +2238,14 @@ export function insertTextAtSelection(text: string) {
 function deepestVisibleNode(node: Node, direction: "first" | "last"): Node {
   let current = node;
 
-  while (current.childNodes.length > 0 && !(current instanceof HTMLElement && current.dataset.inlineType === "page-link")) {
+  while (
+    current.childNodes.length > 0 &&
+    !(
+      current instanceof HTMLElement &&
+      (current.dataset.inlineType === PAGE_LINK_INLINE_TYPE ||
+        current.dataset.inlineType === TOPIC_INLINE_TYPE)
+    )
+  ) {
     current =
       direction === "first"
         ? current.childNodes[0]
@@ -2332,8 +2287,49 @@ function nextNodeInRoot(root: HTMLElement, node: Node): Node | null {
   return null;
 }
 
+function previousNodeInBlock(root: HTMLElement, block: HTMLElement, node: Node): Node | null {
+  if (node.previousSibling) {
+    return deepestVisibleNode(node.previousSibling, "last");
+  }
+
+  let current: Node | null = node;
+  while (current && current !== block) {
+    const parent: Node | null = current.parentNode;
+    if (!parent || parent === root) {
+      return null;
+    }
+    if (parent.previousSibling) {
+      return deepestVisibleNode(parent.previousSibling, "last");
+    }
+    current = parent;
+  }
+
+  return null;
+}
+
+function nextNodeInBlock(root: HTMLElement, block: HTMLElement, node: Node): Node | null {
+  if (node.nextSibling) {
+    return deepestVisibleNode(node.nextSibling, "first");
+  }
+
+  let current: Node | null = node;
+  while (current && current !== block) {
+    const parent: Node | null = current.parentNode;
+    if (!parent || parent === root) {
+      return null;
+    }
+    if (parent.nextSibling) {
+      return deepestVisibleNode(parent.nextSibling, "first");
+    }
+    current = parent;
+  }
+
+  return null;
+}
+
 function resolveAdjacentPageLinkFromNode(
   root: HTMLElement,
+  block: HTMLElement,
   node: Node | null,
   direction: "backward" | "forward"
 ) {
@@ -2351,7 +2347,9 @@ function resolveAdjacentPageLinkFromNode(
   }
 
   const neighboringNode =
-    direction === "backward" ? previousNodeInRoot(root, node) : nextNodeInRoot(root, node);
+    direction === "backward"
+      ? previousNodeInBlock(root, block, node)
+      : nextNodeInBlock(root, block, node);
 
   return neighboringNode ? findClosestPageLinkElement(root, neighboringNode) : null;
 }
@@ -2365,6 +2363,10 @@ export function getAdjacentPageLink(root: HTMLElement, direction: "backward" | "
   const range = selection.getRangeAt(0);
   const container = range.startContainer;
   const offset = range.startOffset;
+  const block = findClosestBlockElement(root, container);
+  if (!block) {
+    return null;
+  }
 
   let adjacentNode: Node | null = null;
 
@@ -2373,21 +2375,21 @@ export function getAdjacentPageLink(root: HTMLElement, direction: "backward" | "
     if (isPageLinkCaretAnchorNode(container)) {
       adjacentNode =
         direction === "backward"
-          ? previousNodeInRoot(root, container)
-          : nextNodeInRoot(root, container);
-      return resolveAdjacentPageLinkFromNode(root, adjacentNode, direction);
+          ? previousNodeInBlock(root, block, container)
+          : nextNodeInBlock(root, block, container);
+      return resolveAdjacentPageLinkFromNode(root, block, adjacentNode, direction);
     }
 
     if (direction === "backward") {
       if (offset > 0) {
         return null;
       }
-      adjacentNode = previousNodeInRoot(root, container);
+      adjacentNode = previousNodeInBlock(root, block, container);
     } else {
       if (offset < textLength) {
         return null;
       }
-      adjacentNode = nextNodeInRoot(root, container);
+      adjacentNode = nextNodeInBlock(root, block, container);
     }
   } else if (container.nodeType === Node.ELEMENT_NODE) {
     const element = container as Element;
@@ -2395,16 +2397,16 @@ export function getAdjacentPageLink(root: HTMLElement, direction: "backward" | "
       adjacentNode =
         offset > 0
           ? deepestVisibleNode(element.childNodes[offset - 1], "last")
-          : previousNodeInRoot(root, element);
+          : previousNodeInBlock(root, block, element);
     } else {
       adjacentNode =
         offset < element.childNodes.length
           ? deepestVisibleNode(element.childNodes[offset], "first")
-          : nextNodeInRoot(root, element);
+          : nextNodeInBlock(root, block, element);
     }
   }
 
-  return resolveAdjacentPageLinkFromNode(root, adjacentNode, direction);
+  return resolveAdjacentPageLinkFromNode(root, block, adjacentNode, direction);
 }
 
 export function moveCaretAroundPageLink(root: HTMLElement, pageLinkId: string, direction: "before" | "after") {

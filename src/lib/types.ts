@@ -31,13 +31,15 @@ export type NoteDeleteState = {
   reason: string | null;
 };
 
-export type InteractiveColorKey =
-  | "blue"
-  | "green"
-  | "amber"
-  | "rose"
-  | "violet"
-  | "slate";
+export type TopicColorRole =
+  | "accent"
+  | "interactive"
+  | "accentSoft"
+  | "interactiveSoft"
+  | "neutral"
+  | "emphasis";
+
+export type InteractiveColorKey = TopicColorRole;
 
 export type Bookmark = {
   id: string;
@@ -224,8 +226,7 @@ export type NoteBlockType =
   | "paragraph"
   | "heading1"
   | "heading2"
-  | "heading3"
-  | "sectionBreak";
+  | "heading3";
 
 export type NoteSpan = {
   text: string;
@@ -250,13 +251,17 @@ export type NotePageLinkNode = {
   createdAt: string;
 };
 
-export type NoteInlineNode = NoteTextNode | NotePageLinkNode;
-
 export type ParagraphTopic = {
   id: string;
   text: string;
-  color: InteractiveColorKey;
+  color: TopicColorRole;
 };
+
+export type NoteTopicCardNode = ParagraphTopic & {
+  type: "topic-card";
+};
+
+export type NoteInlineNode = NoteTextNode | NotePageLinkNode | NoteTopicCardNode;
 
 export type NoteBlock = {
   id: string;

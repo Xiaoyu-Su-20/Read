@@ -6,7 +6,9 @@ use super::{
     super::{timestamp, LibraryStore, DEFAULT_COLLECTION_ID, NOTE_DOCUMENT_VERSION},
     support::write_sample_pdf,
 };
-use crate::models::{NoteBlock, NoteDocument, NoteInlineNode, NoteSpan, NoteTextNode};
+use crate::models::{
+    NoteBlock, NoteDocument, NoteInlineNode, NoteSpan, NoteTextNode, NoteTopicCardNode,
+};
 
 fn note_block(text: &str) -> NoteBlock {
     NoteBlock {
@@ -241,7 +243,7 @@ fn save_note_migrates_legacy_spans_into_children() {
 }
 
 #[test]
-fn save_note_preserves_section_breaks_as_block_nodes() {
+fn save_note_drops_legacy_section_break_blocks() {
     let temp = tempdir().unwrap();
     let app_dir = temp.path().join("app");
     let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
@@ -278,10 +280,64 @@ fn save_note_preserves_section_breaks_as_block_nodes() {
         })
         .unwrap();
 
-    assert_eq!(saved.blocks[0].r#type, crate::models::NoteBlockType::SectionBreak);
-    assert!(saved.blocks[0].children.is_empty());
-    assert_eq!(saved.blocks[2].r#type, crate::models::NoteBlockType::SectionBreak);
-    assert!(saved.blocks[2].children.is_empty());
+    assert_eq!(saved.blocks.len(), 1);
+    assert_eq!(saved.blocks[0].r#type, crate::models::NoteBlockType::Paragraph);
+    assert_eq!(saved.blocks[0].id, "body");
+}
+
+#[test]
+fn save_note_preserves_inline_topic_cards() {
+    let temp = tempdir().unwrap();
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+
+    let saved = store
+        .save_note(NoteDocument {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: "Topics".to_string(),
+            book_id: None,
+            created_at: timestamp(),
+            updated_at: timestamp(),
+            version: NOTE_DOCUMENT_VERSION,
+            blocks: vec![NoteBlock {
+                id: "body".to_string(),
+                r#type: crate::models::NoteBlockType::Paragraph,
+                children: vec![
+                    NoteInlineNode::Text(NoteTextNode {
+                        text: "Before ".to_string(),
+                        bold: false,
+                        italic: false,
+                    }),
+                    NoteInlineNode::TopicCard(NoteTopicCardNode {
+                        id: "topic-1".to_string(),
+                        text: "Norm Violation".to_string(),
+                        color: "accent".to_string(),
+                    }),
+                    NoteInlineNode::Text(NoteTextNode {
+                        text: " after".to_string(),
+                        bold: false,
+                        italic: false,
+                    }),
+                ],
+                source_reference: None,
+                spans: Vec::new(),
+            }],
+        })
+        .unwrap();
+
+    let persisted = store
+        .notes
+        .load_note_document(&store.paths, &saved.id)
+        .unwrap();
+
+    assert_eq!(persisted.blocks[0].children.len(), 3);
+    match &persisted.blocks[0].children[1] {
+        NoteInlineNode::TopicCard(topic) => {
+            assert_eq!(topic.text, "Norm Violation");
+            assert_eq!(topic.color, "accent");
+        }
+        _ => panic!("expected topic card node"),
+    }
 }
 
 #[test]

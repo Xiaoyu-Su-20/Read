@@ -20,8 +20,6 @@ type NotesContextMenuProps = {
   onCut: () => void;
   onPaste: () => void | Promise<void>;
   onTurnInto: (type: NoteBlockType) => void;
-  onInsertSectionBreak: () => void;
-  onRemoveSectionBreak: () => void;
   onAddPageLink: () => void;
   onOpenPage: () => void;
   onEditPageLink: () => void;
@@ -48,8 +46,6 @@ export default function NotesContextMenu({
   onCut,
   onPaste,
   onTurnInto,
-  onInsertSectionBreak,
-  onRemoveSectionBreak,
   onAddPageLink,
   onOpenPage,
   onEditPageLink,
@@ -67,9 +63,6 @@ export default function NotesContextMenu({
   }
 
   const menuPosition = position ?? state.anchor;
-  const isSectionBreakTarget =
-    state.target === "body" && state.blockType === "sectionBreak";
-
   return (
     <div className="notes-context-menu-layer" role="presentation">
       <div
@@ -144,30 +137,19 @@ export default function NotesContextMenu({
           </>
         ) : (
           <>
-            <button className="editor-context-menu__item" type="button" onClick={onCopy}>
-              Copy
-            </button>
-            {!isSectionBreakTarget ? (
-              <button className="editor-context-menu__item" type="button" onClick={onPaste}>
-                Paste
-              </button>
-            ) : null}
-            <button className="editor-context-menu__item" type="button" onClick={onCut}>
-              Cut
-            </button>
             {state.target === "body" && documentCapabilities && state.canAddPageLink ? (
               <button className="editor-context-menu__item" type="button" onClick={onAddPageLink}>
                 Add PageLink
               </button>
             ) : null}
-            {state.target === "body" && !isSectionBreakTarget ? (
-              <button className="editor-context-menu__item" type="button" onClick={onInsertSectionBreak}>
-                Insert Section Break
-              </button>
-            ) : null}
-            {isSectionBreakTarget ? (
-              <button className="editor-context-menu__item" type="button" onClick={onRemoveSectionBreak}>
-                Remove Section Break
+            {state.target === "body" ? (
+              <button
+                className="editor-context-menu__item"
+                type="button"
+                disabled={!state.canTurnIntoTopicCard}
+                onClick={onTurnIntoTopicCard}
+              >
+                Create Topic Card
               </button>
             ) : null}
             {state.target === "body" ? (
@@ -198,11 +180,9 @@ export default function NotesContextMenu({
                     innerRef={submenuRef}
                     onMouseEnter={() => onOpenSubmenu("turn-into")}
                     onMouseLeave={onScheduleCloseSubmenu}
-                    canTurnIntoTopicCard={state.canTurnIntoTopicCard}
                     onSelect={(type) => {
                       onTurnInto(type);
                     }}
-                    onSelectTopicCard={onTurnIntoTopicCard}
                   />
                 ) : null}
               </div>
