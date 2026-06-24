@@ -9,10 +9,12 @@ import {
   removeInlineNode,
   removeModelBlock,
   replaceModelRange,
+  textMarksAtPoint,
   splitBlockAtSelection
 } from "./noteBlockModel";
-import { createPageLinkNode, createTopicCardNode, createTextNode } from "./notes";
-import type { NoteBlock, NoteModelSelection } from "./types";
+import { toggleTextMarkInSelection } from "./noteBlockModel";
+import { createPageLinkNode, createTopicCardNode, createTextNode } from "../../../lib/notes";
+import type { NoteBlock, NoteModelSelection } from "../../../lib/types";
 
 function block(id: string, type: NoteBlock["type"], text: string): NoteBlock {
   return {
@@ -228,5 +230,75 @@ describe("note block model", () => {
         sourceReference: null
       }
     ]);
+  });
+
+  it("replaces a whole-document deletion with one empty paragraph", () => {
+    const blocks = [
+      block("a", "heading1", "Chapter"),
+      block("b", "paragraph", "Body")
+    ];
+
+    const result = replaceModelRange(
+      blocks,
+      selection(blocks, "a", 0, "b", 4)
+    );
+
+    expect(result.blocks).toHaveLength(1);
+    expect(result.blocks[0]).toMatchObject({
+      type: "paragraph",
+      children: [{ type: "text", text: "" }]
+    });
+  });
+
+  it("toggles bold across the selected text range without changing text offsets", () => {
+    const blocks: NoteBlock[] = [
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello world")]
+      }
+    ];
+
+    const result = toggleTextMarkInSelection(blocks, selection(blocks, "a", 6, "a", 11), "bold");
+
+    expect(result?.blocks[0].children).toEqual([
+      createTextNode("Hello "),
+      createTextNode("world", { bold: true })
+    ]);
+    expect(result?.selection.anchor).toMatchObject({ blockId: "a" });
+    expect(result?.selection.focus).toMatchObject({ blockId: "a" });
+  });
+
+  it("removes bold when the full selected text range already has it", () => {
+    const blocks: NoteBlock[] = [
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello ", { bold: true }), createTextNode("world", { bold: true })]
+      }
+    ];
+
+    const result = toggleTextMarkInSelection(blocks, selection(blocks, "a", 0, "a", 11), "bold");
+
+    expect(result?.blocks[0].children).toEqual([createTextNode("Hello world")]);
+  });
+
+  it("derives active marks at a collapsed caret from nearby text", () => {
+    const blocks: NoteBlock[] = [
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello"), createTextNode(" world", { italic: true })]
+      }
+    ];
+
+    expect(textMarksAtPoint(blocks, blockOffsetToPoint(blocks[0], 2))).toEqual({
+      bold: false,
+      italic: false
+    });
+    expect(textMarksAtPoint(blocks, blockOffsetToPoint(blocks[0], 8))).toEqual({
+      bold: false,
+      italic: true
+    });
   });
 });

@@ -3,7 +3,7 @@ import type {
   NoteBlockType,
   NotePageLinkNode,
   ParagraphTopic
-} from "../../lib/types";
+} from "../../../lib/types";
 
 export type NoteEditorContextTarget =
   | {
@@ -38,7 +38,7 @@ export type NoteEditorHandle = {
   focus: () => void;
   scrollToBlock: (blockId: string) => void;
   copySelection: () => void;
-  cutSelection: () => void;
+  cutSelection: () => Promise<boolean>;
   pasteSelection: () => Promise<void>;
   turnInto: (blockId: string, type: NoteBlockType) => void;
   removeBlock: (blockId: string) => boolean;

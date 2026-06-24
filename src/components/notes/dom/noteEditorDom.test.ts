@@ -17,7 +17,7 @@ import {
   createPageLinkNode,
   createTopicCardNode,
   createTextNode
-} from "./notes";
+} from "../../../lib/notes";
 
 const hasDom = typeof document !== "undefined";
 

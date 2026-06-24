@@ -1,6 +1,6 @@
 import { memo } from "react";
 
-import NotesPane from "./notes/NotesPane";
+import NotesPane from "./notes/ui/NotesPane";
 import type {
   Bookmark,
   NoteDocument,

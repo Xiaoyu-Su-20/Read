@@ -1,16 +1,16 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import { logNoteDebugEvent } from "../../lib/api";
+import { logNoteDebugEvent } from "../../../lib/api";
 import {
   headingLevel,
   headingTitle
-} from "../../lib/documentReferences";
-import { makeBookmark } from "../../lib/app/helpers";
-import { findBookmarkAtPage } from "../../lib/commands";
-import { noteBlockText, parsePageLinkTargetInput } from "../../lib/notes";
-import { MAX_TOPIC_LENGTH, normalizeTopicText } from "../../lib/paragraphTopics";
-import { canonicalSpellcheckWord } from "../../lib/spellcheck";
+} from "../../../lib/documentReferences";
+import { makeBookmark } from "../../../lib/app/helpers";
+import { findBookmarkAtPage } from "../../../lib/commands";
+import { noteBlockText, parsePageLinkTargetInput } from "../../../lib/notes";
+import { MAX_TOPIC_LENGTH, normalizeTopicText } from "../../../lib/paragraphTopics";
+import { canonicalSpellcheckWord } from "../../../lib/spellcheck";
 import type {
   Bookmark,
   NoteBlockType,
@@ -21,7 +21,7 @@ import type {
   NoteRevealRequest,
   OutlineItem,
   PdfNavigationTarget
-} from "../../lib/types";
+} from "../../../lib/types";
 import NotesContextMenu from "./context-menu/NotesContextMenu";
 import { toPanePoint } from "./context-menu/menuPlacement";
 import {
@@ -30,7 +30,7 @@ import {
 } from "./context-menu/useContextMenuController";
 import NoteEditor from "./ModelNoteEditor";
 import type { NoteEditorHandle } from "./noteEditorTypes";
-import WorkspaceHeaderTools from "../WorkspaceHeaderTools";
+import WorkspaceHeaderTools from "../../WorkspaceHeaderTools";
 
 type NotesPaneProps = {
   note: NoteDocument | null;
@@ -1473,8 +1473,8 @@ const NotesPane = memo(function NotesPane({
           editorRef.current?.clearSelectedBlock();
           closeMenu();
         }}
-        onCut={() => {
-          editorRef.current?.cutSelection();
+        onCut={async () => {
+          await editorRef.current?.cutSelection();
           editorRef.current?.clearSelectedBlock();
           closeMenu();
         }}

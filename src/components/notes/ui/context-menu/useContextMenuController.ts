@@ -1,4 +1,4 @@
-import type { InteractiveColorKey, NoteBlockType } from "../../../lib/types";
+import type { InteractiveColorKey, NoteBlockType } from "../../../../lib/types";
 import {
   useCallback,
   useEffect,

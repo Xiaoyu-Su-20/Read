@@ -1,6 +1,6 @@
 import type { Ref } from "react";
 
-import type { NoteBlockType } from "../../../lib/types";
+import type { NoteBlockType } from "../../../../lib/types";
 import type { SubmenuDirection } from "./menuPlacement";
 
 type BlockTypeSubmenuProps = {

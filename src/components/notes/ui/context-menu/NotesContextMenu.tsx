@@ -1,4 +1,4 @@
-import type { InteractiveColorKey, NoteBlockType } from "../../../lib/types";
+import type { InteractiveColorKey, NoteBlockType } from "../../../../lib/types";
 import BlockTypeSubmenu from "./BlockTypeSubmenu";
 import TopicColorSubmenu from "./TopicColorSubmenu";
 import type { PanePoint } from "./menuPlacement";

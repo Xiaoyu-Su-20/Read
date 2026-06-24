@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { blockOffsetToPoint, collapsedModelSelection } from "./noteBlockModel";
+import { blockOffsetToPoint, collapsedModelSelection } from "../model/noteBlockModel";
 import {
   commitNoteModelHistory,
   createNoteModelHistory,
   redoNoteModelHistory,
   undoNoteModelHistory
 } from "./noteModelHistory";
-import { createTextNode } from "./notes";
-import type { NoteBlock } from "./types";
+import { createTextNode } from "../../../lib/notes";
+import type { NoteBlock } from "../../../lib/types";
 
 function entry(text: string) {
   const block: NoteBlock = {

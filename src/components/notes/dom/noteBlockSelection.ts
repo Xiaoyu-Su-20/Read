@@ -1,12 +1,12 @@
 import {
   blockOffsetToPoint,
   pointToBlockOffset
-} from "./noteBlockModel";
+} from "../model/noteBlockModel";
 import type {
   NoteBlock,
   NoteModelPoint,
   NoteModelSelection
-} from "./types";
+} from "../../../lib/types";
 
 const ATOMIC_SELECTOR = "[data-inline-type='page-link'], [data-inline-type='topic-card']";
 
@@ -18,6 +18,35 @@ function closestBlock(root: HTMLElement, node: Node | null) {
 
 function blockContent(block: HTMLElement) {
   return block.querySelector<HTMLElement>(":scope > .note-editor__block-content") ?? block;
+}
+
+function rootBoundaryPoint(root: HTMLElement, blocks: NoteBlock[], offset: number) {
+  if (blocks.length === 0) {
+    return null;
+  }
+
+  const clampedOffset = Math.max(0, Math.min(offset, root.childNodes.length));
+  if (clampedOffset <= 0) {
+    return blockOffsetToPoint(blocks[0], 0, "after");
+  }
+
+  if (clampedOffset >= root.childNodes.length) {
+    const lastBlock = blocks[blocks.length - 1];
+    return blockOffsetToPoint(lastBlock, pointToBlockOffset(lastBlock, {
+      blockId: lastBlock.id,
+      inlineIndex: lastBlock.children.length,
+      textOffset: 0,
+      affinity: "after"
+    }), "after");
+  }
+
+  const nextChild = root.childNodes[clampedOffset];
+  const nextBlockElement =
+    nextChild instanceof HTMLElement ? nextChild.closest<HTMLElement>("[data-block-id]") : null;
+  const nextBlock = nextBlockElement
+    ? blocks.find((candidate) => candidate.id === nextBlockElement.dataset.blockId)
+    : null;
+  return nextBlock ? blockOffsetToPoint(nextBlock, 0, "after") : null;
 }
 
 function isAtomic(element: Element) {
@@ -101,6 +130,9 @@ export function modelPointFromDomPoint(
   offset: number,
   affinity: NoteModelPoint["affinity"]
 ) {
+  if (container === root) {
+    return rootBoundaryPoint(root, blocks, offset);
+  }
   const blockElement = closestBlock(root, container);
   const block = blockElement
     ? blocks.find((candidate) => candidate.id === blockElement.dataset.blockId)
@@ -226,9 +258,7 @@ export function restoreModelSelection(
     return false;
   }
 
-  const focusBlock = closestBlock(root, focus.node);
-  const focusContent = focusBlock ? blockContent(focusBlock) : null;
-  focusContent?.focus({ preventScroll: true });
+  root.focus({ preventScroll: true });
   selection.removeAllRanges();
   if (typeof selection.setBaseAndExtent === "function") {
     selection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);

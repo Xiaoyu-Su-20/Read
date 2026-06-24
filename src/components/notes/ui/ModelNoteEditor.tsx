@@ -7,8 +7,8 @@ import {
   useState
 } from "react";
 
-import { logNoteDebugEvent } from "../../lib/api";
-import { debugAction, debugLocalAction } from "../../lib/debugLog";
+import { logNoteDebugEvent } from "../../../lib/api";
+import { debugAction, debugLocalAction } from "../../../lib/debugLog";
 import {
   blockLogicalLength,
   blockOffsetToPoint,
@@ -25,14 +25,16 @@ import {
   replaceModelRange,
   selectedPlainText,
   splitBlockAtSelection,
+  textMarksAtPoint,
+  toggleTextMarkInSelection,
   updateInlineNode,
   type NoteModelEdit
-} from "../../lib/noteBlockModel";
+} from "../model/noteBlockModel";
 import {
   captureModelSelection,
   modelPointFromDomPoint,
   restoreModelSelection
-} from "../../lib/noteBlockSelection";
+} from "../dom/noteBlockSelection";
 import {
   clearSelectedPageLink,
   copyPageLinkReference,
@@ -44,7 +46,6 @@ import {
   getPageLinkAtPoint,
   getSelectedText,
   getTopicCardAtPoint,
-  handleCopy,
   isPointWithinPageLinkContent,
   isPointWithinSelectionContent,
   isPointWithinTopicCardContent,
@@ -57,7 +58,7 @@ import {
   selectPageLinkToken,
   selectTextMatchInBlock,
   selectTopicCardToken
-} from "../../lib/noteEditorDom";
+} from "../dom/noteEditorDom";
 import {
   commitNoteModelHistory,
   createNoteModelHistory,
@@ -65,7 +66,7 @@ import {
   replaceNoteModelHistorySelection,
   undoNoteModelHistory,
   type NoteModelHistoryState
-} from "../../lib/noteModelHistory";
+} from "../state/noteModelHistory";
 import {
   createEmptyNoteBlock,
   createPageLinkNode,
@@ -73,9 +74,9 @@ import {
   createTopicCardNode,
   formatPageLinkText,
   normalizeNoteBlocks
-} from "../../lib/notes";
-import { DEFAULT_TOPIC_COLOR, normalizeTopicText } from "../../lib/paragraphTopics";
-import { extractStandaloneSpellcheckWord } from "../../lib/spellcheck";
+} from "../../../lib/notes";
+import { DEFAULT_TOPIC_COLOR, normalizeTopicText } from "../../../lib/paragraphTopics";
+import { extractStandaloneSpellcheckWord } from "../../../lib/spellcheck";
 import type {
   NoteEditorContextTarget,
   NoteEditorHandle
@@ -91,7 +92,7 @@ import type {
   NoteModelSelection,
   NotePageLinkNode,
   ParagraphTopic
-} from "../../lib/types";
+} from "../../../lib/types";
 import { computeCenteredChildScrollTop } from "./noteEditorScroll";
 
 const NOTE_CLIPBOARD_MIME = "application/x-calmreader-note-fragment";
@@ -117,18 +118,28 @@ type TopicCommandResult =
   | { ok: true; topic: ParagraphTopic }
   | { ok: false; message: string };
 
+type PendingTextMarks = {
+  bold: boolean;
+  italic: boolean;
+};
+
+type ClipboardPayload = {
+  internalHtml: string;
+  html: string;
+  text: string;
+};
+
+type AtomicInlineSelection = {
+  id: string;
+  type: "page-link" | "topic-card";
+};
+
 function blocksEqual(left: NoteBlock[], right: NoteBlock[]) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function cloneBlocks(blocks: NoteBlock[]) {
   return JSON.parse(JSON.stringify(blocks)) as NoteBlock[];
-}
-
-function blockContentElement(node: EventTarget | null) {
-  return node instanceof HTMLElement
-    ? node.closest<HTMLElement>(".note-editor__block-content")
-    : null;
 }
 
 function inlineNodeLength(node: NoteInlineNode) {
@@ -156,6 +167,10 @@ function clipboardBlocksFromText(text: string) {
       ...createEmptyNoteBlock(),
       children: [createTextNode(line)]
     }));
+}
+
+function sanitizeClipboardText(text: string) {
+  return text.replace(/\u200b/g, "");
 }
 
 function atomicBoundaryAtPoint(
@@ -205,6 +220,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     const pendingPageLinkPointRef = useRef<NoteModelPoint | null>(null);
     const pendingTopicSelectionRef = useRef<NoteModelSelection | null>(null);
     const pendingSelectionRestoreRef = useRef<NoteModelSelection | null>(null);
+    const pendingTextMarksRef = useRef<PendingTextMarks | null>(null);
     const historyRef = useRef<NoteModelHistoryState | null>(null);
     const applyingHistoryRef = useRef(false);
     void ignoredSpellcheckWords;
@@ -248,6 +264,152 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       updateSelectedTopic(null);
     }
 
+    function selectedAtomicInline(): AtomicInlineSelection | null {
+      if (selectedPageLinkIdRef.current) {
+        return { id: selectedPageLinkIdRef.current, type: "page-link" };
+      }
+      if (selectedTopicIdRef.current) {
+        return { id: selectedTopicIdRef.current, type: "topic-card" };
+      }
+      return null;
+    }
+
+    function setSelectedAtomicInline(atomic: AtomicInlineSelection | null) {
+      if (!atomic) {
+        clearTokenSelection();
+        return;
+      }
+      if (atomic.type === "page-link") {
+        updateSelectedTopic(null);
+        updateSelectedPageLink(atomic.id);
+        return;
+      }
+      updateSelectedPageLink(null);
+      updateSelectedTopic(atomic.id);
+    }
+
+    function normalizePendingTextMarks(marks: PendingTextMarks | null) {
+      if (!marks) {
+        return null;
+      }
+      return marks.bold || marks.italic ? marks : null;
+    }
+
+    function clearPendingTextMarks() {
+      pendingTextMarksRef.current = null;
+    }
+
+    function serializeSelectionFragmentPayload(
+      fragment: DocumentFragment,
+      text: string
+    ): ClipboardPayload {
+      const wrapper = document.createElement("div");
+      wrapper.appendChild(fragment.cloneNode(true));
+      const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_TEXT);
+      const emptyNodes: Text[] = [];
+      while (walker.nextNode()) {
+        const node = walker.currentNode as Text;
+        const sanitized = sanitizeClipboardText(node.textContent ?? "");
+        if (sanitized.length === 0) {
+          emptyNodes.push(node);
+          continue;
+        }
+        node.textContent = sanitized;
+      }
+      for (const node of emptyNodes) {
+        node.remove();
+      }
+      return {
+        internalHtml: wrapper.innerHTML,
+        html: wrapper.innerHTML,
+        text: sanitizeClipboardText(text)
+      };
+    }
+
+    function serializeElementPayload(element: HTMLElement): ClipboardPayload {
+      return {
+        internalHtml: element.outerHTML,
+        html: element.outerHTML,
+        text: sanitizeClipboardText(element.textContent ?? "")
+      };
+    }
+
+    function serializeCurrentRangePayload(root: HTMLElement): ClipboardPayload | null {
+      const selection = root.ownerDocument.defaultView?.getSelection();
+      if (
+        !selection ||
+        selection.rangeCount === 0 ||
+        !root.contains(selection.anchorNode) ||
+        !root.contains(selection.focusNode)
+      ) {
+        return null;
+      }
+      const range = selection.getRangeAt(0);
+      if (range.collapsed) {
+        return null;
+      }
+      return serializeSelectionFragmentPayload(range.cloneContents(), selection.toString());
+    }
+
+    function currentClipboardPayload() {
+      if (!bodyRef.current) {
+        return null;
+      }
+      if (selectedBlockIdRef.current) {
+        const block = findBlockElement(bodyRef.current, selectedBlockIdRef.current);
+        return block ? serializeElementPayload(block) : null;
+      }
+      const atomic = selectedAtomicInline();
+      if (atomic) {
+        const selector =
+          atomic.type === "page-link"
+            ? `[data-inline-type='page-link'][data-page-link-id="${CSS.escape(atomic.id)}"]`
+            : `[data-inline-type='topic-card'][data-topic-id="${CSS.escape(atomic.id)}"]`;
+        const element = bodyRef.current.querySelector<HTMLElement>(selector);
+        return element ? serializeElementPayload(element) : null;
+      }
+      return serializeCurrentRangePayload(bodyRef.current);
+    }
+
+    function writeClipboardDataTransfer(clipboardData: DataTransfer, payload: ClipboardPayload) {
+      try {
+        clipboardData.setData("text/plain", payload.text);
+        clipboardData.setData("text/html", payload.html);
+        clipboardData.setData(NOTE_CLIPBOARD_MIME, payload.internalHtml);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    async function writeClipboardPayload(payload: ClipboardPayload) {
+      const clipboard = navigator.clipboard;
+      if (!clipboard) {
+        return false;
+      }
+      try {
+        if (typeof clipboard.write === "function" && typeof ClipboardItem !== "undefined") {
+          await clipboard.write([
+            new ClipboardItem({
+              "text/plain": new Blob([payload.text], { type: "text/plain" }),
+              "text/html": new Blob([payload.html], { type: "text/html" }),
+              [NOTE_CLIPBOARD_MIME]: new Blob([payload.internalHtml], {
+                type: NOTE_CLIPBOARD_MIME
+              })
+            })
+          ]);
+          return true;
+        }
+        if (typeof clipboard.writeText === "function") {
+          await clipboard.writeText(payload.text);
+          return true;
+        }
+      } catch {
+        return false;
+      }
+      return false;
+    }
+
     function commitBlocks(
       nextBlocks: NoteBlock[],
       selection: NoteModelSelection | null,
@@ -283,20 +445,15 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     function applyModelEdit(edit: NoteModelEdit, mergeKey: NoteHistoryMergeKey | null) {
       clearTokenSelection();
       updateSelectedBlock(null);
+       clearPendingTextMarks();
       commitBlocks(edit.blocks, edit.selection, mergeKey, true);
     }
 
-    function syncActiveBlock(content: HTMLElement, mergeKey: NoteHistoryMergeKey | null) {
-      const blockId = content.parentElement?.dataset.blockId;
-      if (!blockId) {
+    function syncEditorDom(mergeKey: NoteHistoryMergeKey | null) {
+      if (!bodyRef.current) {
         return;
       }
-      const nextBlocks = blocksRef.current.map((block) =>
-        block.id === blockId
-          ? { ...block, children: parseNoteInlineNodesFromElement(content) }
-          : block
-      );
-      commitBlocks(nextBlocks, currentSelection(), mergeKey, false);
+      commitBlocks(parseNoteBlocksFromEditor(bodyRef.current), currentSelection(), mergeKey, false);
     }
 
     function updateHistorySelectionFromDom() {
@@ -318,6 +475,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       onChangeBlocks(blocksRef.current);
       clearTokenSelection();
       updateSelectedBlock(null);
+      clearPendingTextMarks();
       applyingHistoryRef.current = false;
       return true;
     }
@@ -334,24 +492,101 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       return next ? applyHistoryState(next) : false;
     }
 
+    function handleBeforeInputEvent(inputEvent: InputEvent) {
+      logInteraction("beforeinput", {
+        inputType: inputEvent.inputType,
+        data: inputEvent.data
+      });
+      if (inputEvent.inputType === "historyUndo") {
+        performUndo();
+        return true;
+      }
+      if (inputEvent.inputType === "historyRedo") {
+        performRedo();
+        return true;
+      }
+      if (inputEvent.inputType === "insertParagraph") {
+        const selection = currentSelection();
+        if (selection) {
+          applyModelEdit(splitBlockAtSelection(blocksRef.current, selection), null);
+        }
+        return true;
+      }
+
+      const selection = currentSelection();
+      if (
+        selection &&
+        isCollapsedModelSelection(selection) &&
+        inputEvent.inputType === "insertText" &&
+        typeof inputEvent.data === "string" &&
+        pendingTextMarksRef.current
+      ) {
+        applyModelEdit(
+          replaceModelRange(blocksRef.current, selection, [
+            createTextNode(inputEvent.data, pendingTextMarksRef.current)
+          ]),
+          "typing"
+        );
+        return true;
+      }
+      if (
+        selection &&
+        !isCollapsedModelSelection(selection) &&
+        inputEvent.inputType === "insertText" &&
+        typeof inputEvent.data === "string"
+      ) {
+        applyModelEdit(
+          replaceModelRange(blocksRef.current, selection, [createTextNode(inputEvent.data)]),
+          "typing"
+        );
+        return true;
+      }
+      if (
+        inputEvent.inputType === "deleteContentBackward" ||
+        inputEvent.inputType === "deleteContentForward"
+      ) {
+        return handleBoundaryDelete(
+          inputEvent.inputType === "deleteContentBackward" ? "backward" : "forward"
+        );
+      }
+
+      const selectedAtomic = selectedAtomicInline();
+      if (
+        selectedAtomic &&
+        (inputEvent.inputType === "insertText" || inputEvent.inputType === "insertLineBreak")
+      ) {
+        const removal = removeInlineNode(blocksRef.current, selectedAtomic.id);
+        if (!removal) {
+          return false;
+        }
+        const inserted =
+          inputEvent.inputType === "insertText" && typeof inputEvent.data === "string"
+            ? [createTextNode(inputEvent.data)]
+            : [createTextNode("\n")];
+        applyModelEdit(
+          replaceModelRange(removal.blocks, removal.selection, inserted),
+          "typing"
+        );
+        return true;
+      }
+
+      return false;
+    }
+
     function focusEditor() {
       const root = bodyRef.current;
       if (!root) {
         return;
       }
-      const selected = currentSelection()?.focus.blockId;
-      const content =
-        (selected
-          ? root.querySelector<HTMLElement>(
-              `[data-block-id="${CSS.escape(selected)}"] > .note-editor__block-content`
-            )
-          : null) ?? root.querySelector<HTMLElement>(".note-editor__block-content");
-      content?.focus({ preventScroll: true });
+      root.focus({ preventScroll: true });
     }
 
     function moveSelectionTo(point: NoteModelPoint, extend = false) {
       if (!bodyRef.current) {
         return;
+      }
+      if (!extend) {
+        clearPendingTextMarks();
       }
       const existing = currentSelection();
       const selection =
@@ -360,6 +595,24 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           : collapsedModelSelection(point);
       restoreModelSelection(bodyRef.current, blocksRef.current, selection);
       updateHistorySelectionFromDom();
+    }
+
+    function selectAllBlocks() {
+      if (!bodyRef.current || blocksRef.current.length === 0) {
+        return false;
+      }
+      clearPendingTextMarks();
+      clearTokenSelection();
+      updateSelectedBlock(null);
+      const firstBlock = blocksRef.current[0];
+      const lastBlock = blocksRef.current[blocksRef.current.length - 1];
+      const selection = {
+        anchor: blockOffsetToPoint(firstBlock, 0, "after"),
+        focus: blockOffsetToPoint(lastBlock, blockLogicalLength(lastBlock), "after")
+      };
+      restoreModelSelection(bodyRef.current, blocksRef.current, selection);
+      updateHistorySelectionFromDom();
+      return true;
     }
 
     function handleBoundaryDelete(direction: "backward" | "forward") {
@@ -380,9 +633,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       const offset = pointToBlockOffset(block, point);
       const atomic = atomicBoundaryAtPoint(block, point, direction);
       if (atomic) {
-        const selected =
-          selectedPageLinkIdRef.current === atomic.id ||
-          selectedTopicIdRef.current === atomic.id;
+        const selected = selectedAtomicInline()?.id === atomic.id;
         if (selected) {
           const edit = removeInlineNode(blocksRef.current, atomic.id);
           if (edit) {
@@ -391,12 +642,11 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
               atomic.type === "page-link" ? "remove-page-link" : "remove-topic"
             );
           }
-        } else if (atomic.type === "page-link") {
-          updateSelectedTopic(null);
-          updateSelectedPageLink(atomic.id);
         } else {
-          updateSelectedPageLink(null);
-          updateSelectedTopic(atomic.id);
+          setSelectedAtomicInline({
+            id: atomic.id,
+            type: atomic.type
+          });
         }
         return true;
       }
@@ -450,6 +700,70 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         return false;
       }
       applyModelEdit(insertBlocksAtSelection(blocksRef.current, selection, blocks), "paste");
+      return true;
+    }
+
+    function pendingCutEdit() {
+      if (selectedBlockIdRef.current) {
+        return removeModelBlock(blocksRef.current, selectedBlockIdRef.current);
+      }
+      const atomic = selectedAtomicInline();
+      if (atomic) {
+        return removeInlineNode(blocksRef.current, atomic.id);
+      }
+      const selection = currentSelection();
+      if (!selection || isCollapsedModelSelection(selection)) {
+        return null;
+      }
+      return replaceModelRange(blocksRef.current, selection);
+    }
+
+    function performCutToDataTransfer(clipboardData: DataTransfer | null | undefined) {
+      const payload = currentClipboardPayload();
+      const edit = pendingCutEdit();
+      if (!payload || !edit || !clipboardData) {
+        return false;
+      }
+      const wrote = writeClipboardDataTransfer(clipboardData, payload);
+      if (!wrote) {
+        return false;
+      }
+      applyModelEdit(edit, "delete");
+      return true;
+    }
+
+    async function performCut() {
+      const payload = currentClipboardPayload();
+      const edit = pendingCutEdit();
+      if (!payload || !edit) {
+        return false;
+      }
+      const wrote = await writeClipboardPayload(payload);
+      if (!wrote) {
+        return false;
+      }
+      applyModelEdit(edit, "delete");
+      return true;
+    }
+
+    function toggleSelectionMark(mark: "bold" | "italic") {
+      const selection = currentSelection();
+      if (!selection) {
+        return false;
+      }
+      if (isCollapsedModelSelection(selection)) {
+        const currentMarks = pendingTextMarksRef.current ?? textMarksAtPoint(blocksRef.current, selection.focus);
+        pendingTextMarksRef.current = normalizePendingTextMarks({
+          ...currentMarks,
+          [mark]: !currentMarks[mark]
+        });
+        return true;
+      }
+      const edit = toggleTextMarkInSelection(blocksRef.current, selection, mark);
+      if (!edit) {
+        return false;
+      }
+      applyModelEdit(edit, "format");
       return true;
     }
 
@@ -585,6 +899,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         setRenderedBlocks(cloneBlocks(empty));
         appliedNoteIdRef.current = null;
         historyRef.current = null;
+        clearPendingTextMarks();
         return;
       }
       if (appliedNoteIdRef.current === note.id) {
@@ -599,6 +914,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       updateSelectedBlock(null);
       pendingPageLinkPointRef.current = null;
       pendingTopicSelectionRef.current = null;
+      clearPendingTextMarks();
     }, [note]);
 
     useClientLayoutEffect(() => {
@@ -625,6 +941,27 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       document.addEventListener("selectionchange", handleSelectionChange);
       return () => document.removeEventListener("selectionchange", handleSelectionChange);
     }, []);
+
+    useEffect(() => {
+      const root = bodyRef.current;
+      if (!root) {
+        return;
+      }
+
+      function handleNativeBeforeInput(event: InputEvent) {
+        if (event.defaultPrevented) {
+          return;
+        }
+        if (handleBeforeInputEvent(event)) {
+          event.preventDefault();
+        }
+      }
+
+      root.addEventListener("beforeinput", handleNativeBeforeInput, true);
+      return () => {
+        root.removeEventListener("beforeinput", handleNativeBeforeInput, true);
+      };
+    });
 
     useImperativeHandle(
       ref,
@@ -653,10 +990,13 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           scrollSurface.scrollTo({ top: nextScrollTop, behavior: "smooth" });
         },
         copySelection() {
-          document.execCommand("copy");
+          const payload = currentClipboardPayload();
+          if (payload) {
+            void writeClipboardPayload(payload);
+          }
         },
-        cutSelection() {
-          document.execCommand("cut");
+        async cutSelection() {
+          return performCut();
         },
         async pasteSelection() {
           const text = await navigator.clipboard?.readText?.();
@@ -847,6 +1187,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           role="textbox"
           aria-label="Note body"
           aria-multiline="true"
+          contentEditable={!loading}
+          suppressContentEditableWarning
           onPointerDownCapture={(event) => {
             event.stopPropagation();
             logInteraction("pointerdown", {
@@ -882,39 +1224,20 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
               }
               return;
             }
-            handleCopy(bodyRef.current, event.nativeEvent);
+            const payload = currentClipboardPayload();
+            if (payload && event.nativeEvent.clipboardData) {
+              event.preventDefault();
+              writeClipboardDataTransfer(event.nativeEvent.clipboardData, payload);
+            }
           }}
           onCut={(event) => {
             if (!bodyRef.current) {
               return;
             }
-            if (selectedBlockIdRef.current) {
-              const payload = copySelectedBlock(
-                bodyRef.current,
-                selectedBlockIdRef.current
-              );
-              const edit = removeModelBlock(
-                blocksRef.current,
-                selectedBlockIdRef.current
-              );
-              if (payload && edit && event.nativeEvent.clipboardData) {
-                event.preventDefault();
-                event.nativeEvent.clipboardData.setData("text/plain", payload.text);
-                event.nativeEvent.clipboardData.setData("text/html", payload.html);
-                event.nativeEvent.clipboardData.setData(
-                  NOTE_CLIPBOARD_MIME,
-                  payload.internalHtml
-                );
-                applyModelEdit(edit, "delete");
-              }
-              return;
+            const handled = performCutToDataTransfer(event.nativeEvent.clipboardData);
+            if (handled) {
+              event.preventDefault();
             }
-            const selection = currentSelection();
-            if (!selection || isCollapsedModelSelection(selection)) {
-              return;
-            }
-            handleCopy(bodyRef.current, event.nativeEvent);
-            applyModelEdit(replaceModelRange(blocksRef.current, selection), "delete");
           }}
           onPaste={(event) => {
             const clipboard = event.nativeEvent.clipboardData;
@@ -935,13 +1258,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             pasteBlocks(pastedBlocks);
           }}
           onInput={(event) => {
-            const content = blockContentElement(event.target);
-            if (!content) {
-              return;
-            }
             const inputEvent = event.nativeEvent as InputEvent;
             logInteraction("input", {
-              blockId: content.parentElement?.dataset.blockId ?? null,
               inputType: inputEvent.inputType,
               data: inputEvent.data
             });
@@ -951,88 +1269,16 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
                 : inputEvent.inputType.includes("Paste")
                   ? "paste"
                   : "typing";
-            syncActiveBlock(content, mergeKey);
+            syncEditorDom(mergeKey);
           }}
           onBeforeInput={(event) => {
             const inputEvent = event.nativeEvent as InputEvent;
-            logInteraction("beforeinput", {
-              inputType: inputEvent.inputType,
-              data: inputEvent.data
-            });
-            if (inputEvent.inputType === "historyUndo") {
+            if (inputEvent.defaultPrevented) {
               event.preventDefault();
-              performUndo();
               return;
             }
-            if (inputEvent.inputType === "historyRedo") {
+            if (handleBeforeInputEvent(inputEvent)) {
               event.preventDefault();
-              performRedo();
-              return;
-            }
-            if (inputEvent.inputType === "insertParagraph") {
-              event.preventDefault();
-              const selection = currentSelection();
-              if (selection) {
-                applyModelEdit(
-                  splitBlockAtSelection(blocksRef.current, selection),
-                  null
-                );
-              }
-              return;
-            }
-
-            const selection = currentSelection();
-            if (
-              selection &&
-              !isCollapsedModelSelection(selection) &&
-              inputEvent.inputType === "insertText" &&
-              typeof inputEvent.data === "string"
-            ) {
-              event.preventDefault();
-              applyModelEdit(
-                replaceModelRange(blocksRef.current, selection, [
-                  createTextNode(inputEvent.data)
-                ]),
-                "typing"
-              );
-              return;
-            }
-            if (
-              inputEvent.inputType === "deleteContentBackward" ||
-              inputEvent.inputType === "deleteContentForward"
-            ) {
-              const handled = handleBoundaryDelete(
-                inputEvent.inputType === "deleteContentBackward"
-                  ? "backward"
-                  : "forward"
-              );
-              if (handled) {
-                event.preventDefault();
-              }
-              return;
-            }
-
-            const selectedAtomicId =
-              selectedPageLinkIdRef.current ?? selectedTopicIdRef.current;
-            if (
-              selectedAtomicId &&
-              (inputEvent.inputType === "insertText" ||
-                inputEvent.inputType === "insertLineBreak")
-            ) {
-              const removal = removeInlineNode(blocksRef.current, selectedAtomicId);
-              if (!removal) {
-                return;
-              }
-              event.preventDefault();
-              const inserted =
-                inputEvent.inputType === "insertText" &&
-                typeof inputEvent.data === "string"
-                  ? [createTextNode(inputEvent.data)]
-                  : [createTextNode("\n")];
-              applyModelEdit(
-                replaceModelRange(removal.blocks, removal.selection, inserted),
-                "typing"
-              );
             }
           }}
           onKeyDown={(event) => {
@@ -1045,6 +1291,17 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             });
             if (event.metaKey || event.ctrlKey) {
               const key = event.key.toLowerCase();
+              if (key === "a") {
+                if (
+                  event.target instanceof HTMLElement &&
+                  event.target.closest("input, textarea, select")
+                ) {
+                  return;
+                }
+                event.preventDefault();
+                selectAllBlocks();
+                return;
+              }
               if (key === "z" && !event.shiftKey) {
                 event.preventDefault();
                 performUndo();
@@ -1057,13 +1314,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
               }
               if (key === "b" || key === "i") {
                 event.preventDefault();
-                document.execCommand(key === "b" ? "bold" : "italic");
-                requestAnimationFrame(() => {
-                  const content = blockContentElement(document.activeElement);
-                  if (content) {
-                    syncActiveBlock(content, "format");
-                  }
-                });
+                toggleSelectionMark(key === "b" ? "bold" : "italic");
                 return;
               }
             }
@@ -1087,9 +1338,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
               event.key === "ArrowDown"
             ) {
               if (selectedPageLinkIdRef.current || selectedTopicIdRef.current) {
-                const id =
-                  selectedPageLinkIdRef.current ?? selectedTopicIdRef.current;
-                const found = id ? findInlineNode(blocksRef.current, id) : null;
+                const atomic = selectedAtomicInline();
+                const found = atomic ? findInlineNode(blocksRef.current, atomic.id) : null;
                 if (found) {
                   event.preventDefault();
                   const offset =
@@ -1205,8 +1455,6 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             >
               <div
                 className="note-editor__block-content"
-                contentEditable={!loading}
-                suppressContentEditableWarning
                 spellCheck={false}
                 dangerouslySetInnerHTML={{
                   __html: renderNoteInlineNodesHtml(block.children) || "<br>"

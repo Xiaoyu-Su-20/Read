@@ -2,7 +2,7 @@ import type {
   NoteBlock,
   NoteHistoryMergeKey,
   NoteModelSelection
-} from "./types";
+} from "../../../lib/types";
 
 export const NOTE_MODEL_HISTORY_MERGE_WINDOW_MS = 1000;
 

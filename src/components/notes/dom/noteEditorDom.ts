@@ -8,14 +8,14 @@ import {
   normalizeNoteBlocks,
   normalizeNoteInlineNodes,
   parsePageLinkText
-} from "./notes";
+} from "../../../lib/notes";
 import {
   DEFAULT_TOPIC_COLOR,
   MAX_TOPIC_LENGTH,
   normalizeParagraphTopic,
   normalizeTopicText,
   resolveTopicAppearance
-} from "./paragraphTopics";
+} from "../../../lib/paragraphTopics";
 import type {
   DocumentSourceReference,
   InteractiveColorKey,
@@ -29,9 +29,8 @@ import type {
   NotePageLinkNode,
   ParagraphTopic,
   NoteTextNode
-} from "./types";
+} from "../../../lib/types";
 
-const NOTE_CLIPBOARD_MIME = "application/x-calmreader-note-fragment";
 const TOPIC_INLINE_TYPE = "topic-card";
 const PAGE_LINK_INLINE_TYPE = "page-link";
 
@@ -75,8 +74,6 @@ export type PageLinkBoundarySelection = {
   pageLinkId: string;
   edge: AtomicInlineEdge;
 };
-
-let internalClipboardPayload: NoteClipboardPayload | null = null;
 
 function stripPageLinkCaretAnchors(value: string) {
   return value.replaceAll("\u200B", "");
@@ -2146,101 +2143,13 @@ export function selectTextMatchInBlock(
   return true;
 }
 
-function serializeCurrentSelection(root: HTMLElement): NoteClipboardPayload | null {
-  const selection = getSelectionInRoot(root);
-  if (!selection || selection.rangeCount === 0 || selection.toString().length === 0) {
-    const selectedPageLink = getPageLinkFromSelection(root);
-    if (!selectedPageLink) {
-      return null;
-    }
-    return {
-      internalHtml: selectedPageLink.outerHTML,
-      html: selectedPageLink.outerHTML,
-      text: selectedPageLink.textContent ?? ""
-    };
-  }
-
-  const range = selection.getRangeAt(0);
-  const wrapper = document.createElement("div");
-  wrapper.appendChild(range.cloneContents());
-  const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_TEXT);
-  const emptyNodes: Text[] = [];
-  while (walker.nextNode()) {
-    const node = walker.currentNode as Text;
-    const sanitized = stripPageLinkCaretAnchors(node.textContent ?? "");
-    if (sanitized.length === 0) {
-      emptyNodes.push(node);
-      continue;
-    }
-    node.textContent = sanitized;
-  }
-  for (const node of emptyNodes) {
-    node.remove();
-  }
-  return {
-    internalHtml: wrapper.innerHTML,
-    html: wrapper.innerHTML,
-    text: stripPageLinkCaretAnchors(selection.toString())
-  };
-}
-
 export function copySelectedBlock(root: HTMLElement, blockId: string) {
   const block = findBlockElement(root, blockId);
   if (!block) {
     return null;
   }
 
-  const payload = serializeBlockForClipboard(block);
-  if (payload) {
-    internalClipboardPayload = payload;
-  }
-  return payload;
-}
-
-function rememberInternalClipboard(root: HTMLElement) {
-  const payload = serializeCurrentSelection(root);
-  if (payload) {
-    internalClipboardPayload = payload;
-  }
-  return payload;
-}
-
-export function handleCopy(root: HTMLElement, event: ClipboardEvent) {
-  const payload = rememberInternalClipboard(root);
-  if (!payload || !event.clipboardData) {
-    return;
-  }
-
-  event.preventDefault();
-  event.clipboardData.setData("text/plain", payload.text);
-  event.clipboardData.setData("text/html", payload.html);
-  event.clipboardData.setData(NOTE_CLIPBOARD_MIME, payload.internalHtml);
-}
-
-export function handleCut(root: HTMLElement, event: ClipboardEvent) {
-  const payload = rememberInternalClipboard(root);
-  if (!payload || !event.clipboardData) {
-    return;
-  }
-
-  event.preventDefault();
-  event.clipboardData.setData("text/plain", payload.text);
-  event.clipboardData.setData("text/html", payload.html);
-  event.clipboardData.setData(NOTE_CLIPBOARD_MIME, payload.internalHtml);
-  document.execCommand("delete");
-}
-
-export function copySelection(root: HTMLElement) {
-  rememberInternalClipboard(root);
-  document.execCommand("copy");
-}
-
-export function cutSelection(root: HTMLElement) {
-  rememberInternalClipboard(root);
-  const succeeded = document.execCommand("cut");
-  if (!succeeded) {
-    document.execCommand("delete");
-  }
+  return serializeBlockForClipboard(block);
 }
 
 function fallbackCopyTextWithoutMutatingEditor(root: HTMLElement, text: string) {
@@ -2285,82 +2194,6 @@ function fallbackCopyTextWithoutMutatingEditor(root: HTMLElement, text: string) 
   }
 
   return copied;
-}
-
-function insertHtmlAtSelection(html: string) {
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0) {
-    return;
-  }
-
-  const range = selection.getRangeAt(0);
-  range.deleteContents();
-  const fragment = range.createContextualFragment(html);
-  const lastNode = fragment.lastChild;
-  range.insertNode(fragment);
-  if (lastNode) {
-    placeCaretAfterNode(lastNode);
-  }
-}
-
-export async function pasteSelection(root: HTMLElement) {
-  const succeeded = document.execCommand("paste");
-  if (succeeded) {
-    return;
-  }
-
-  if (internalClipboardPayload && navigator.clipboard?.readText) {
-    const currentClipboardText = await navigator.clipboard.readText();
-    if (currentClipboardText === internalClipboardPayload.text) {
-      insertHtmlAtSelection(internalClipboardPayload.internalHtml);
-      normalizeNoteEditorDom(root);
-      return;
-    }
-  }
-
-  if (!navigator.clipboard?.readText) {
-    return;
-  }
-
-  const text = await navigator.clipboard.readText();
-  insertTextAtSelection(text);
-}
-
-export function handlePaste(root: HTMLElement, event: ClipboardEvent) {
-  const customHtml = event.clipboardData?.getData(NOTE_CLIPBOARD_MIME);
-  if (customHtml) {
-    event.preventDefault();
-    insertHtmlAtSelection(customHtml);
-    normalizeNoteEditorDom(root);
-    return;
-  }
-
-  const html = event.clipboardData?.getData("text/html");
-  if (
-    html &&
-    (html.includes(`data-inline-type="${PAGE_LINK_INLINE_TYPE}"`) ||
-      html.includes(`data-inline-type="${TOPIC_INLINE_TYPE}"`))
-  ) {
-    event.preventDefault();
-    insertHtmlAtSelection(html);
-    normalizeNoteEditorDom(root);
-  }
-}
-
-export function insertTextAtSelection(text: string) {
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0) {
-    return;
-  }
-
-  const range = selection.getRangeAt(0);
-  range.deleteContents();
-  const textNode = document.createTextNode(text);
-  range.insertNode(textNode);
-  range.setStartAfter(textNode);
-  range.setEndAfter(textNode);
-  selection.removeAllRanges();
-  selection.addRange(range);
 }
 
 function deepestVisibleNode(node: Node, direction: "first" | "last"): Node {

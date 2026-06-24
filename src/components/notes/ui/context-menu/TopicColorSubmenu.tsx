@@ -4,8 +4,8 @@ import {
   TOPIC_COLOR_ROLES,
   topicColorRoleLabels,
   resolveTopicAppearance
-} from "../../../lib/paragraphTopics";
-import type { TopicColorRole } from "../../../lib/types";
+} from "../../../../lib/paragraphTopics";
+import type { TopicColorRole } from "../../../../lib/types";
 import type { SubmenuDirection } from "./menuPlacement";
 
 type TopicColorSubmenuProps = {

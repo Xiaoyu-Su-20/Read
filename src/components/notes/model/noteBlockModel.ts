@@ -3,7 +3,7 @@ import {
   createTextNode,
   normalizeNoteBlocks,
   normalizeNoteInlineNodes
-} from "./notes";
+} from "../../../lib/notes";
 import type {
   NoteBlock,
   NoteBlockType,
@@ -11,12 +11,14 @@ import type {
   NoteModelPoint,
   NoteModelSelection,
   NoteTextNode
-} from "./types";
+} from "../../../lib/types";
 
 export type NoteModelEdit = {
   blocks: NoteBlock[];
   selection: NoteModelSelection;
 };
+
+export type TextMark = "bold" | "italic";
 
 function cloneInlineNode(node: NoteInlineNode): NoteInlineNode {
   return { ...node };
@@ -121,6 +123,38 @@ function splitTextNode(node: NoteTextNode, offset: number) {
   };
 }
 
+function samePoint(left: NoteModelPoint, right: NoteModelPoint) {
+  return (
+    left.blockId === right.blockId &&
+    left.inlineIndex === right.inlineIndex &&
+    left.textOffset === right.textOffset &&
+    left.affinity === right.affinity
+  );
+}
+
+function textNodeMarks(node: NoteTextNode) {
+  return {
+    bold: Boolean(node.bold),
+    italic: Boolean(node.italic)
+  };
+}
+
+function updateTextNodeMark(node: NoteTextNode, mark: TextMark, enabled: boolean) {
+  return createTextNode(node.text, {
+    ...textNodeMarks(node),
+    [mark]: enabled
+  });
+}
+
+function compactInlineNodes(nodes: NoteInlineNode[]) {
+  const normalized = normalizeNoteInlineNodes(nodes);
+  if (normalized.length <= 1) {
+    return normalized;
+  }
+  const compacted = normalized.filter((node) => node.type !== "text" || node.text.length > 0);
+  return compacted.length > 0 ? compacted : [createTextNode("")];
+}
+
 export function splitInlineNodesAtOffset(children: NoteInlineNode[], requestedOffset: number) {
   const totalLength = children.reduce((length, node) => length + inlineLength(node), 0);
   const offset = Math.max(0, Math.min(requestedOffset, totalLength));
@@ -214,6 +248,21 @@ export function replaceModelRange(
   const endBlock = normalizedBlocks[endIndex];
   const startOffset = pointToBlockOffset(startBlock, ordered.start);
   const endOffset = pointToBlockOffset(endBlock, ordered.end);
+  const replacesWholeDocument =
+    inserted.length === 0 &&
+    startIndex === 0 &&
+    endIndex === normalizedBlocks.length - 1 &&
+    startOffset === 0 &&
+    endOffset === blockLogicalLength(endBlock);
+
+  if (replacesWholeDocument) {
+    const empty = createEmptyNoteBlock();
+    return {
+      blocks: [empty],
+      selection: collapsedModelSelection(blockOffsetToPoint(empty, 0))
+    };
+  }
+
   const startSplit = splitInlineNodesAtOffset(startBlock.children, startOffset);
   const endSplit = splitInlineNodesAtOffset(endBlock.children, endOffset);
   const insertedNodes = inserted.map(cloneInlineNode);
@@ -321,6 +370,127 @@ export function selectedPlainText(
   return {
     block,
     text: selected.map((node) => node.text).join("")
+  };
+}
+
+export function textMarksAtPoint(blocks: NoteBlock[], point: NoteModelPoint) {
+  const block = blocks.find((candidate) => candidate.id === point.blockId);
+  if (!block) {
+    return { bold: false, italic: false };
+  }
+
+  const current = block.children[point.inlineIndex];
+  if (current?.type === "text") {
+    return textNodeMarks(current);
+  }
+
+  for (let index = point.inlineIndex - 1; index >= 0; index -= 1) {
+    const node = block.children[index];
+    if (node.type === "text") {
+      return textNodeMarks(node);
+    }
+  }
+
+  for (let index = point.inlineIndex + (current ? 1 : 0); index < block.children.length; index += 1) {
+    const node = block.children[index];
+    if (node.type === "text") {
+      return textNodeMarks(node);
+    }
+  }
+
+  return { bold: false, italic: false };
+}
+
+export function toggleTextMarkInSelection(
+  blocks: NoteBlock[],
+  selection: NoteModelSelection,
+  mark: TextMark
+): NoteModelEdit | null {
+  if (isCollapsedModelSelection(selection)) {
+    return null;
+  }
+
+  const normalizedBlocks = normalizeNoteBlocks(blocks).map(cloneBlock);
+  const ordered = orderedSelection(normalizedBlocks, selection);
+  if (!ordered) {
+    return null;
+  }
+
+  const startIndex = normalizedBlocks.findIndex((block) => block.id === ordered.start.blockId);
+  const endIndex = normalizedBlocks.findIndex((block) => block.id === ordered.end.blockId);
+  if (startIndex < 0 || endIndex < 0) {
+    return null;
+  }
+
+  let sawSelectedText = false;
+  let allSelectedTextHasMark = true;
+
+  for (let blockIndex = startIndex; blockIndex <= endIndex; blockIndex += 1) {
+    const block = normalizedBlocks[blockIndex];
+    const startOffset =
+      blockIndex === startIndex ? pointToBlockOffset(block, ordered.start) : 0;
+    const endOffset =
+      blockIndex === endIndex ? pointToBlockOffset(block, ordered.end) : blockLogicalLength(block);
+    if (endOffset <= startOffset) {
+      continue;
+    }
+    const beforeSplit = splitInlineNodesAtOffset(block.children, startOffset);
+    const selectedSplit = splitInlineNodesAtOffset(beforeSplit.after, endOffset - startOffset);
+    for (const node of selectedSplit.before) {
+      if (node.type !== "text" || node.text.length === 0) {
+        continue;
+      }
+      sawSelectedText = true;
+      if (!Boolean(node[mark])) {
+        allSelectedTextHasMark = false;
+      }
+    }
+  }
+
+  if (!sawSelectedText) {
+    return null;
+  }
+
+  const nextEnabled = !allSelectedTextHasMark;
+  const nextBlocks = normalizedBlocks.map(cloneBlock);
+
+  for (let blockIndex = startIndex; blockIndex <= endIndex; blockIndex += 1) {
+    const block = nextBlocks[blockIndex];
+    const startOffset =
+      blockIndex === startIndex ? pointToBlockOffset(block, ordered.start) : 0;
+    const endOffset =
+      blockIndex === endIndex ? pointToBlockOffset(block, ordered.end) : blockLogicalLength(block);
+    if (endOffset <= startOffset) {
+      continue;
+    }
+    const beforeSplit = splitInlineNodesAtOffset(block.children, startOffset);
+    const selectedSplit = splitInlineNodesAtOffset(beforeSplit.after, endOffset - startOffset);
+    block.children = compactInlineNodes([
+      ...beforeSplit.before,
+      ...selectedSplit.before.map((node) =>
+        node.type === "text" ? updateTextNodeMark(node, mark, nextEnabled) : cloneInlineNode(node)
+      ),
+      ...selectedSplit.after
+    ]);
+  }
+
+  const anchorOffset = pointToBlockOffset(
+    normalizedBlocks.find((block) => block.id === selection.anchor.blockId)!,
+    selection.anchor
+  );
+  const focusOffset = pointToBlockOffset(
+    normalizedBlocks.find((block) => block.id === selection.focus.blockId)!,
+    selection.focus
+  );
+  const anchorBlock = nextBlocks.find((block) => block.id === selection.anchor.blockId)!;
+  const focusBlock = nextBlocks.find((block) => block.id === selection.focus.blockId)!;
+
+  return {
+    blocks: normalizeNoteBlocks(nextBlocks),
+    selection: {
+      anchor: blockOffsetToPoint(anchorBlock, anchorOffset, selection.anchor.affinity),
+      focus: blockOffsetToPoint(focusBlock, focusOffset, selection.focus.affinity)
+    }
   };
 }
 

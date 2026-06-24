@@ -2,12 +2,12 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { createPageLinkNode, createTextNode } from "../../lib/notes";
-import type { NoteDocument } from "../../lib/types";
+import { createPageLinkNode, createTextNode } from "../../../lib/notes";
+import type { NoteDocument } from "../../../lib/types";
 import ModelNoteEditor from "./ModelNoteEditor";
 
 describe("ModelNoteEditor", () => {
-  it("renders neutral block wrappers with one editable surface per block", () => {
+  it("renders structural block wrappers under a single editable root", () => {
     const note: NoteDocument = {
       id: "note",
       title: "Model editor",
@@ -52,7 +52,7 @@ describe("ModelNoteEditor", () => {
 
     expect(markup).toContain('data-block-type="heading1"');
     expect(markup).toContain('class="note-editor__block-content"');
-    expect(markup.match(/contenteditable="true"/g)).toHaveLength(2);
+    expect(markup.match(/contenteditable="true"/g)).toHaveLength(1);
     expect(markup).not.toContain("<h1");
     expect(markup).not.toContain("font-size:");
     expect(markup).toContain('data-inline-type="page-link"');
