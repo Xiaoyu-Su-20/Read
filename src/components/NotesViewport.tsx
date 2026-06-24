@@ -13,11 +13,11 @@ import type {
 type NotesViewportProps = {
   note: NoteDocument | null;
   loading: boolean;
+  ignoredSpellcheckWords: string[];
   capabilityMode: "document" | "standalone";
   fullscreen: boolean;
   onToggleFullscreen: () => void | Promise<void>;
   headerActionsContainerId: string | null;
-  titleMode?: "hidden" | "standalone";
   navigationOpen: boolean;
   onNavigationOpenChange: (open: boolean) => void;
   navigationOpenRequest: number;
@@ -27,6 +27,7 @@ type NotesViewportProps = {
   navigationItems: NoteNavigationItem[];
   onChangeTitle: (title: string) => void;
   onChangeBlocks: (blocks: NoteDocument["blocks"]) => void;
+  onToggleIgnoredSpellcheckWord: (word: string, ignored: boolean) => void;
   onFlush: () => void | Promise<void>;
   onCopyAllText: () => Promise<void>;
   onGoToPage: (page: number) => void;
@@ -42,11 +43,11 @@ type NotesViewportProps = {
 const NotesViewport = memo(function NotesViewport({
   note,
   loading,
+  ignoredSpellcheckWords,
   capabilityMode,
   fullscreen,
   onToggleFullscreen,
   headerActionsContainerId,
-  titleMode = "hidden",
   navigationOpen,
   onNavigationOpenChange,
   navigationOpenRequest,
@@ -56,6 +57,7 @@ const NotesViewport = memo(function NotesViewport({
   navigationItems,
   onChangeTitle,
   onChangeBlocks,
+  onToggleIgnoredSpellcheckWord,
   onFlush,
   onCopyAllText,
   onGoToPage,
@@ -75,11 +77,11 @@ const NotesViewport = memo(function NotesViewport({
       <NotesPane
         note={note}
         loading={loading}
+        ignoredSpellcheckWords={ignoredSpellcheckWords}
         capabilityMode={capabilityMode}
         fullscreen={fullscreen}
         onToggleFullscreen={onToggleFullscreen}
         headerActionsContainerId={headerActionsContainerId}
-        titleMode={titleMode}
         navigationOpen={navigationOpen}
         onNavigationOpenChange={onNavigationOpenChange}
         navigationOpenRequest={navigationOpenRequest}
@@ -89,6 +91,7 @@ const NotesViewport = memo(function NotesViewport({
         navigationItems={navigationItems}
         onChangeTitle={onChangeTitle}
         onChangeBlocks={onChangeBlocks}
+        onToggleIgnoredSpellcheckWord={onToggleIgnoredSpellcheckWord}
         onFlush={onFlush}
         onCopyAllText={onCopyAllText}
         onGoToPage={onGoToPage}

@@ -12,6 +12,8 @@ function renderMenu(
         blockType: "paragraph" | "heading1" | "heading2" | "heading3";
         canInsertPageLinkAtPoint: boolean;
         canCreateTopicCardFromSelection: boolean;
+        spellcheckWord: string | null;
+        isIgnoredSpellcheckWord: boolean;
         anchor: { x: number; y: number };
       }
     | {
@@ -49,7 +51,8 @@ function renderMenu(
       onChangeTopicColor: vi.fn(),
       onOpenSubmenu: vi.fn(),
       onScheduleCloseSubmenu: vi.fn(),
-      onTurnIntoTopicCard: vi.fn()
+      onTurnIntoTopicCard: vi.fn(),
+      onToggleIgnoredSpellcheckWord: vi.fn()
     })
   );
 }
@@ -62,6 +65,8 @@ describe("NotesContextMenu", () => {
       blockType: "paragraph",
       canInsertPageLinkAtPoint: true,
       canCreateTopicCardFromSelection: false,
+      spellcheckWord: null,
+      isIgnoredSpellcheckWord: false,
       anchor: { x: 12, y: 24 }
     });
 
@@ -78,6 +83,8 @@ describe("NotesContextMenu", () => {
       blockType: "paragraph",
       canInsertPageLinkAtPoint: false,
       canCreateTopicCardFromSelection: true,
+      spellcheckWord: null,
+      isIgnoredSpellcheckWord: false,
       anchor: { x: 12, y: 24 }
     });
 
@@ -97,5 +104,20 @@ describe("NotesContextMenu", () => {
     expect(markup).toContain("Edit topic");
     expect(markup).toContain("Change color");
     expect(markup).toContain("Remove topic");
+  });
+
+  it("renders the ignore-word action for body targets with a resolved word", () => {
+    const markup = renderMenu({
+      target: "body",
+      blockId: "paragraph-1",
+      blockType: "paragraph",
+      canInsertPageLinkAtPoint: false,
+      canCreateTopicCardFromSelection: false,
+      spellcheckWord: "Luhmann",
+      isIgnoredSpellcheckWord: false,
+      anchor: { x: 12, y: 24 }
+    });
+
+    expect(markup).toContain('Ignore &quot;Luhmann&quot;');
   });
 });

@@ -10,6 +10,7 @@ import { makeBookmark } from "../../lib/app/helpers";
 import { findBookmarkAtPage } from "../../lib/commands";
 import { noteBlockText, parsePageLinkTargetInput } from "../../lib/notes";
 import { MAX_TOPIC_LENGTH, normalizeTopicText } from "../../lib/paragraphTopics";
+import { canonicalSpellcheckWord } from "../../lib/spellcheck";
 import type {
   Bookmark,
   NoteBlockType,
@@ -28,22 +29,22 @@ import {
   type NotesContextMenuState
 } from "./context-menu/useContextMenuController";
 import NoteEditor, { type NoteEditorHandle } from "./NoteEditor";
-import NoteTitleField from "./NoteTitleField";
 import WorkspaceHeaderTools from "../WorkspaceHeaderTools";
 
 type NotesPaneProps = {
   note: NoteDocument | null;
   loading: boolean;
+  ignoredSpellcheckWords: string[];
   capabilityMode: "document" | "standalone";
   fullscreen: boolean;
   onToggleFullscreen: () => void | Promise<void>;
   headerActionsContainerId: string | null;
-  titleMode?: "hidden" | "standalone";
   navigationOpen: boolean;
   onNavigationOpenChange: (open: boolean) => void;
   navigationItems: NoteNavigationItem[];
   onChangeTitle: (title: string) => void;
   onChangeBlocks: (blocks: NoteDocument["blocks"]) => void;
+  onToggleIgnoredSpellcheckWord: (word: string, ignored: boolean) => void;
   onFlush: () => void | Promise<void>;
   onCopyAllText: () => Promise<void>;
   onGoToPage: (page: number) => void;
@@ -187,16 +188,17 @@ function buildNoteNavigationTree(items: NoteNavigationItem[]): NoteNavigationTre
 const NotesPane = memo(function NotesPane({
   note,
   loading,
+  ignoredSpellcheckWords,
   capabilityMode,
   fullscreen,
   onToggleFullscreen,
   headerActionsContainerId,
-  titleMode = "hidden",
   navigationOpen,
   onNavigationOpenChange,
   navigationItems,
   onChangeTitle,
   onChangeBlocks,
+  onToggleIgnoredSpellcheckWord,
   onFlush,
   onCopyAllText,
   onGoToPage,
@@ -213,6 +215,10 @@ const NotesPane = memo(function NotesPane({
   registerCommandPaletteAnchor
 }: NotesPaneProps) {
   const documentCapabilities = capabilityMode === "document";
+  const ignoredSpellcheckWordSet = useMemo(
+    () => new Set(ignoredSpellcheckWords),
+    [ignoredSpellcheckWords]
+  );
   const editorRef = useRef<NoteEditorHandle | null>(null);
   const findInputRef = useRef<HTMLInputElement | null>(null);
   const dialogInputRef = useRef<HTMLInputElement | null>(null);
@@ -932,6 +938,12 @@ const NotesPane = memo(function NotesPane({
               blockType: resolvedTarget.blockType,
               canInsertPageLinkAtPoint: resolvedTarget.canInsertPageLinkAtPoint,
               canCreateTopicCardFromSelection: resolvedTarget.canCreateTopicCardFromSelection,
+              spellcheckWord: resolvedTarget.spellcheckWord,
+              isIgnoredSpellcheckWord: resolvedTarget.spellcheckWord
+                ? ignoredSpellcheckWordSet.has(
+                    canonicalSpellcheckWord(resolvedTarget.spellcheckWord)
+                  )
+                : false,
               anchor
             };
 
@@ -1002,7 +1014,84 @@ const NotesPane = memo(function NotesPane({
     };
   }, []);
 
-  const notesHeaderTools = (
+  const notesNavigationPopover = navigationOpen ? (
+    <div className="notes-popover notes-popover--navigation">
+      <div className="notes-popover__header notes-popover__header--navigation">
+        <span className="notes-popover__header-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <path d="M7.2 4.75h6.6L18.25 9v10.05A1.2 1.2 0 0 1 17.05 20H7.2A1.2 1.2 0 0 1 6 18.8V5.95A1.2 1.2 0 0 1 7.2 4.75Z" />
+            <path d="M13.8 4.95V9h4.05" />
+            <path d="M9 12.2h6" />
+            <path d="M9 15.2h4.1" />
+          </svg>
+        </span>
+        <p className="notes-popover__header-title">Navigation</p>
+      </div>
+      {navigationItems.length === 0 ? (
+        <p className="notes-popover__empty">Add a heading to build note navigation.</p>
+      ) : (
+        <div className="notes-navigation">
+          {navigationTree.map((node) => {
+            const isExpanded = expandedNavigationIds.has(node.item.id);
+            const hasChildren = node.children.length > 0;
+
+            return (
+              <div
+                key={node.item.id}
+                className={`notes-navigation__chapter${isExpanded ? " notes-navigation__chapter--expanded" : ""}`}
+              >
+                <div className="notes-navigation__chapter-header">
+                  <button
+                    className={`notes-navigation__chapter-row${isExpanded ? " notes-navigation__chapter-row--active" : ""}`}
+                    type="button"
+                    onClick={() => {
+                      editorRef.current?.scrollToBlock(node.item.blockId);
+                      onNavigationOpenChange(false);
+                    }}
+                  >
+                    <span className="notes-navigation__chapter-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                        <path d="M7.2 4.75h6.6L18.25 9v10.05A1.2 1.2 0 0 1 17.05 20H7.2A1.2 1.2 0 0 1 6 18.8V5.95A1.2 1.2 0 0 1 7.2 4.75Z" />
+                        <path d="M13.8 4.95V9h4.05" />
+                        <path d="M9 12.2h6" />
+                        <path d="M9 15.2h4.1" />
+                      </svg>
+                    </span>
+                    <span className="notes-navigation__chapter-title">{node.item.title}</span>
+                  </button>
+                  {hasChildren ? (
+                    <button
+                      className={`notes-navigation__chapter-toggle${isExpanded ? " notes-navigation__chapter-toggle--expanded" : ""}`}
+                      type="button"
+                      aria-label={isExpanded ? "Collapse section" : "Expand section"}
+                      aria-expanded={isExpanded}
+                      onPointerDown={(event) => {
+                        event.stopPropagation();
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        toggleNavigationNode(node.item.id);
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                        <path d={isExpanded ? "m8 10 4 4 4-4" : "m10 8 4 4-4 4"} />
+                      </svg>
+                    </button>
+                  ) : (
+                    <span className="notes-navigation__chapter-spacer" aria-hidden="true" />
+                  )}
+                </div>
+                {hasChildren && isExpanded ? renderNavigationBranch(node.children, 1) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  ) : null;
+
+  const notesHeaderTools = !fullscreen ? (
     <WorkspaceHeaderTools
       commandPaletteOpen={commandPaletteOpen}
       registerCommandPaletteAnchor={registerCommandPaletteAnchor}
@@ -1026,86 +1115,11 @@ const NotesPane = memo(function NotesPane({
               onNavigationOpenChange(!navigationOpen);
             }}
           />
-          {navigationOpen ? (
-          <div className="notes-popover notes-popover--navigation">
-            <div className="notes-popover__header notes-popover__header--navigation">
-              <span className="notes-popover__header-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <path d="M7.2 4.75h6.6L18.25 9v10.05A1.2 1.2 0 0 1 17.05 20H7.2A1.2 1.2 0 0 1 6 18.8V5.95A1.2 1.2 0 0 1 7.2 4.75Z" />
-                  <path d="M13.8 4.95V9h4.05" />
-                  <path d="M9 12.2h6" />
-                  <path d="M9 15.2h4.1" />
-                </svg>
-              </span>
-              <p className="notes-popover__header-title">Navigation</p>
-            </div>
-            {navigationItems.length === 0 ? (
-              <p className="notes-popover__empty">Add a heading to build note navigation.</p>
-            ) : (
-              <div className="notes-navigation">
-                {navigationTree.map((node) => {
-                  const isExpanded = expandedNavigationIds.has(node.item.id);
-                  const hasChildren = node.children.length > 0;
-
-                  return (
-                    <div
-                      key={node.item.id}
-                      className={`notes-navigation__chapter${isExpanded ? " notes-navigation__chapter--expanded" : ""}`}
-                    >
-                      <div className="notes-navigation__chapter-header">
-                        <button
-                          className={`notes-navigation__chapter-row${isExpanded ? " notes-navigation__chapter-row--active" : ""}`}
-                          type="button"
-                          onClick={() => {
-                            editorRef.current?.scrollToBlock(node.item.blockId);
-                            onNavigationOpenChange(false);
-                          }}
-                        >
-                          <span className="notes-navigation__chapter-icon" aria-hidden="true">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                              <path d="M7.2 4.75h6.6L18.25 9v10.05A1.2 1.2 0 0 1 17.05 20H7.2A1.2 1.2 0 0 1 6 18.8V5.95A1.2 1.2 0 0 1 7.2 4.75Z" />
-                              <path d="M13.8 4.95V9h4.05" />
-                              <path d="M9 12.2h6" />
-                              <path d="M9 15.2h4.1" />
-                            </svg>
-                          </span>
-                          <span className="notes-navigation__chapter-title">{node.item.title}</span>
-                        </button>
-                        {hasChildren ? (
-                          <button
-                            className={`notes-navigation__chapter-toggle${isExpanded ? " notes-navigation__chapter-toggle--expanded" : ""}`}
-                            type="button"
-                            aria-label={isExpanded ? "Collapse section" : "Expand section"}
-                            aria-expanded={isExpanded}
-                            onPointerDown={(event) => {
-                              event.stopPropagation();
-                            }}
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              toggleNavigationNode(node.item.id);
-                            }}
-                          >
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
-                              <path d={isExpanded ? "m8 10 4 4 4-4" : "m10 8 4 4-4 4"} />
-                            </svg>
-                          </button>
-                        ) : (
-                          <span className="notes-navigation__chapter-spacer" aria-hidden="true" />
-                        )}
-                      </div>
-                      {hasChildren && isExpanded ? renderNavigationBranch(node.children, 1) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          ) : null}
+          {notesNavigationPopover}
         </>
       }
     />
-  );
+  ) : null;
 
   return (
     <aside
@@ -1224,28 +1238,11 @@ const NotesPane = memo(function NotesPane({
         <div ref={contentRef} className="notes-pane__content">
           {note ? (
             <>
-              {titleMode === "standalone" ? (
-                <NoteTitleField
-                  note={note}
-                  loading={loading}
-                  variant="standalone"
-                  onChangeTitle={onChangeTitle}
-                  onBlur={() => {
-                    void onFlush();
-                  }}
-                  onEscape={() => {
-                    editorRef.current?.focus();
-                  }}
-                  onSubmit={() => {
-                    void onFlush();
-                    editorRef.current?.focus();
-                  }}
-                />
-              ) : null}
               <NoteEditor
                 ref={editorRef}
                 note={note}
                 loading={loading}
+                ignoredSpellcheckWords={ignoredSpellcheckWords}
                 currentPage={currentPage}
                 documentCapabilities={documentCapabilities}
                 onChangeBlocks={onChangeBlocks}
@@ -1324,15 +1321,14 @@ const NotesPane = memo(function NotesPane({
           }}
         />
       </div>
-      {headerActionsContainer
+      {headerActionsContainer && notesHeaderTools
         ? createPortal(notesHeaderTools, headerActionsContainer)
-        : fullscreen
-          ? (
-            <div className="notes-pane__floating-tools" data-no-window-drag>
-              {notesHeaderTools}
-            </div>
-          )
-          : null}
+        : null}
+      {fullscreen && notesNavigationPopover ? (
+        <div className="notes-pane__floating-navigation" data-no-window-drag>
+          {notesNavigationPopover}
+        </div>
+      ) : null}
 
       {pageLinkDialog || topicDialog ? (
         <form
@@ -1508,6 +1504,16 @@ const NotesPane = memo(function NotesPane({
             showToast(result.message);
             return;
           }
+          editorRef.current?.clearSelectedBlock();
+          closeMenu();
+        }}
+        onToggleIgnoredSpellcheckWord={() => {
+          if (contextMenuState?.target !== "body" || !contextMenuState.spellcheckWord) {
+            return;
+          }
+
+          const canonical = canonicalSpellcheckWord(contextMenuState.spellcheckWord);
+          onToggleIgnoredSpellcheckWord(canonical, !contextMenuState.isIgnoredSpellcheckWord);
           editorRef.current?.clearSelectedBlock();
           closeMenu();
         }}

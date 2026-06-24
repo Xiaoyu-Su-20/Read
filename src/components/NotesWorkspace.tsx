@@ -8,8 +8,10 @@ import type { UnifiedSearchController } from "../search/controller/UnifiedSearch
 type NotesWorkspaceProps = {
   note: NoteDocument | null;
   notesLoading: boolean;
+  ignoredSpellcheckWords: string[];
   noteNavigationItems: NoteNavigationItem[];
   noteRevealRequest: NoteRevealRequest | null;
+  onToggleIgnoredSpellcheckWord: (word: string, ignored: boolean) => void;
   navigationOpen: boolean;
   onNavigationOpenChange: (open: boolean) => void;
   navigationOpenRequest: number;
@@ -34,8 +36,10 @@ type NotesWorkspaceProps = {
 export default function NotesWorkspace({
   note,
   notesLoading,
+  ignoredSpellcheckWords,
   noteNavigationItems,
   noteRevealRequest,
+  onToggleIgnoredSpellcheckWord,
   navigationOpen,
   onNavigationOpenChange,
   navigationOpenRequest,
@@ -120,16 +124,17 @@ export default function NotesWorkspace({
             <NotesViewport
               note={note}
               loading={notesLoading}
+              ignoredSpellcheckWords={ignoredSpellcheckWords}
               capabilityMode="standalone"
               fullscreen={fullscreen}
               onToggleFullscreen={onToggleFullscreen}
-              titleMode="hidden"
               navigationOpen={navigationOpen}
               onNavigationOpenChange={onNavigationOpenChange}
               navigationOpenRequest={navigationOpenRequest}
               navigationItems={noteNavigationItems}
               onChangeTitle={onChangeNoteTitle}
               onChangeBlocks={onChangeNoteBlocks}
+              onToggleIgnoredSpellcheckWord={onToggleIgnoredSpellcheckWord}
               onFlush={onFlushNote}
               onCopyAllText={onCopyAllNoteText}
               onGoToPage={() => undefined}

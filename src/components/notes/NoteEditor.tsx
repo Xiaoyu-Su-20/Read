@@ -2,6 +2,7 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef
 } from "react";
 
@@ -72,6 +73,10 @@ import {
   DEFAULT_TOPIC_COLOR,
   normalizeTopicText
 } from "../../lib/paragraphTopics";
+import {
+  canonicalSpellcheckWord,
+  extractStandaloneSpellcheckWord
+} from "../../lib/spellcheck";
 import type {
   InteractiveColorKey,
   NoteBlockType,
@@ -88,6 +93,7 @@ export type NoteEditorContextTarget =
       blockType: NoteBlockType;
       canInsertPageLinkAtPoint: boolean;
       canCreateTopicCardFromSelection: boolean;
+      spellcheckWord: string | null;
     }
   | {
       target: "page-link";
@@ -140,6 +146,7 @@ export type NoteEditorHandle = {
 type NoteEditorProps = {
   note: NoteDocument | null;
   loading: boolean;
+  ignoredSpellcheckWords: string[];
   currentPage: number | null;
   documentCapabilities: boolean;
   onChangeBlocks: (blocks: NoteDocument["blocks"]) => void;
@@ -147,16 +154,97 @@ type NoteEditorProps = {
   onOpenPageLink: (node: NotePageLinkNode) => void;
 };
 
+const IGNORED_SPELLCHECK_SELECTOR = "[data-ignored-spellcheck-word='true']";
+
 function isHeadingBlockType(
   blockType: string | undefined
 ): blockType is Exclude<NoteBlockType, "paragraph"> {
   return blockType === "heading1" || blockType === "heading2" || blockType === "heading3";
 }
 
+function unwrapIgnoredSpellcheckWords(root: ParentNode) {
+  if (!(root instanceof Element || root instanceof DocumentFragment)) {
+    return;
+  }
+
+  root.querySelectorAll<HTMLElement>(IGNORED_SPELLCHECK_SELECTOR).forEach((element) => {
+    element.replaceWith(...Array.from(element.childNodes));
+  });
+}
+
+function applyIgnoredSpellcheckWords(root: HTMLElement, ignoredWords: ReadonlySet<string>) {
+  unwrapIgnoredSpellcheckWords(root);
+  if (ignoredWords.size === 0) {
+    return;
+  }
+
+  const ownerDocument = root.ownerDocument;
+  const walker = ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!(node instanceof Text) || !(node.parentElement instanceof HTMLElement)) {
+      continue;
+    }
+
+    const text = node.textContent ?? "";
+    if (!text.trim().length) {
+      continue;
+    }
+
+    if (
+      node.parentElement.closest("[data-inline-type='page-link'], [data-inline-type='topic-card']") ||
+      node.parentElement.closest(IGNORED_SPELLCHECK_SELECTOR)
+    ) {
+      continue;
+    }
+
+    textNodes.push(node);
+  }
+
+  const wordPattern = /[\p{L}\p{N}](?:[\p{L}\p{N}'’_-]*[\p{L}\p{N}])?|[\p{L}\p{N}]/gu;
+  for (const textNode of textNodes) {
+    const text = textNode.textContent ?? "";
+    const matches = Array.from(text.matchAll(wordPattern)).filter((match) =>
+      ignoredWords.has(canonicalSpellcheckWord(match[0]))
+    );
+    if (matches.length === 0) {
+      continue;
+    }
+
+    const fragment = ownerDocument.createDocumentFragment();
+    let cursor = 0;
+
+    for (const match of matches) {
+      const word = match[0];
+      const start = match.index ?? 0;
+      const end = start + word.length;
+      if (start > cursor) {
+        fragment.append(text.slice(cursor, start));
+      }
+
+      const wrapper = ownerDocument.createElement("span");
+      wrapper.dataset.ignoredSpellcheckWord = "true";
+      wrapper.setAttribute("spellcheck", "false");
+      wrapper.textContent = word;
+      fragment.append(wrapper);
+      cursor = end;
+    }
+
+    if (cursor < text.length) {
+      fragment.append(text.slice(cursor));
+    }
+
+    textNode.replaceWith(fragment);
+  }
+}
+
 const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEditor(
   {
     note,
     loading,
+    ignoredSpellcheckWords,
     currentPage,
     documentCapabilities,
     onChangeBlocks,
@@ -175,6 +263,10 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
   const pendingPageLinkRangeRef = useRef<Range | null>(null);
   const historyRef = useRef<NoteHistoryState | null>(null);
   const applyingHistoryRef = useRef(false);
+  const ignoredSpellcheckWordSet = useMemo(
+    () => new Set(ignoredSpellcheckWords.map((word) => canonicalSpellcheckWord(word))),
+    [ignoredSpellcheckWords]
+  );
 
   function inferHistoryMergeKeyFromInputType(inputType: string): NoteHistoryMergeKey | null {
     if (inputType === "insertFromPaste" || inputType === "insertFromDrop") {
@@ -210,10 +302,27 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     }
 
     const snapshotRoot = bodyRef.current.cloneNode(true) as HTMLDivElement;
+    unwrapIgnoredSpellcheckWords(snapshotRoot);
     snapshotRoot.querySelectorAll<HTMLElement>("[data-inline-type='page-link']").forEach((element) => {
       delete element.dataset.selected;
     });
     return snapshotRoot.innerHTML;
+  }
+
+  function decorateIgnoredSpellcheckWords() {
+    if (!bodyRef.current) {
+      return;
+    }
+
+    applyIgnoredSpellcheckWords(bodyRef.current, ignoredSpellcheckWordSet);
+  }
+
+  function prepareBodyForStructuredOperations() {
+    if (!bodyRef.current) {
+      return;
+    }
+
+    unwrapIgnoredSpellcheckWords(bodyRef.current);
   }
 
   function applyHistoryState(nextHistoryState: NoteHistoryState) {
@@ -234,6 +343,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       normalizeNoteEditorDom(bodyRef.current);
       restoreEditorSelection(bodyRef.current, nextHistoryState.current.selection);
       onChangeBlocks(nextHistoryState.current.blocks);
+      decorateIgnoredSpellcheckWords();
     } finally {
       applyingHistoryRef.current = false;
     }
@@ -245,10 +355,12 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       return;
     }
 
+    prepareBodyForStructuredOperations();
     historyRef.current = replaceCurrentHistorySelection(
       historyRef.current,
       captureEditorSelection(bodyRef.current)
     );
+    decorateIgnoredSpellcheckWords();
   }
 
   function updateSelectedBlock(blockId: string | null) {
@@ -475,6 +587,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     if (!bodyRef.current) {
       return;
     }
+    prepareBodyForStructuredOperations();
     const selectionBeforeNormalization = captureEditorSelection(bodyRef.current);
     normalizeNoteEditorDom(bodyRef.current);
     if (selectionBeforeNormalization) {
@@ -492,6 +605,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         html: nextHtml
       });
       onChangeBlocks(nextBlocks);
+      decorateIgnoredSpellcheckWords();
       return;
     }
 
@@ -504,6 +618,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           html: nextHtml
         }
       };
+      decorateIgnoredSpellcheckWords();
       return;
     }
 
@@ -519,6 +634,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       }
     );
     onChangeBlocks(nextBlocks);
+    decorateIgnoredSpellcheckWords();
   }
 
   function performUndo() {
@@ -669,6 +785,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       blockType === "heading3";
     const canCreateTopicCardFromSelection =
       preserveTextSelection && canTurnSelectionIntoTopicCard(bodyRef.current);
+    const spellcheckWord = preserveTextSelection ? extractStandaloneSpellcheckWord(selectedText) : null;
     const pageLinkRangeResolution =
       canInsertPageLinkAtPoint && !preserveTextSelection
         ? resolveCollapsedRangeAtPoint(bodyRef.current, x, y)
@@ -714,7 +831,8 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         blockId,
         blockType,
         canInsertPageLinkAtPoint: canInsertPageLinkAtPoint && !preserveTextSelection,
-        canCreateTopicCardFromSelection
+        canCreateTopicCardFromSelection,
+        spellcheckWord
       } satisfies NoteEditorContextTarget;
   }
 
@@ -735,6 +853,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     }
 
     if (appliedNoteIdRef.current === note.id) {
+      decorateIgnoredSpellcheckWords();
       return;
     }
 
@@ -750,7 +869,12 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     updateSelectedPageLink(null);
     updateSelectedTopic(null);
     pendingPageLinkRangeRef.current = null;
+    decorateIgnoredSpellcheckWords();
   }, [note]);
+
+  useEffect(() => {
+    decorateIgnoredSpellcheckWords();
+  }, [ignoredSpellcheckWordSet]);
 
   useImperativeHandle(
     ref,

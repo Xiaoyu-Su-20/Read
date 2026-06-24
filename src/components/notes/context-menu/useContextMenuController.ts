@@ -25,6 +25,8 @@ export type NotesContextMenuState =
       blockType: NoteBlockType;
       canInsertPageLinkAtPoint: boolean;
       canCreateTopicCardFromSelection: boolean;
+      spellcheckWord: string | null;
+      isIgnoredSpellcheckWord: boolean;
       anchor: PanePoint;
     }
   | {

@@ -2900,11 +2900,17 @@ body.reader-pane-resizing .notes-pane img {
   flex: 0 0 auto;
 }
 
-.notes-pane__floating-tools {
+.notes-pane__floating-navigation {
   position: absolute;
   top: 0.9rem;
   right: 1rem;
   z-index: 22;
+}
+
+.notes-pane__floating-navigation .notes-popover {
+  position: static;
+  top: auto;
+  right: auto;
 }
 
 .notes-header-tools__item {

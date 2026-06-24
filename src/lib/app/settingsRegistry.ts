@@ -23,9 +23,10 @@ import {
   type ThemeSurfaceTone,
   type ViewerDisplayConfig
 } from "./themeProfile";
+import { normalizeIgnoredSpellcheckWords } from "../spellcheck";
 
 export const APP_SETTINGS_STORAGE_KEY = "calm-reader.settings";
-export const APP_SETTINGS_VERSION = 13;
+export const APP_SETTINGS_VERSION = 14;
 const LEGACY_READER_PANE_SPLIT_RATIO = 0.46;
 
 export type ReaderPreferences = {
@@ -41,6 +42,7 @@ export type AppSettingsSchema = {
   readerPreferences: ReaderPreferences;
   activeThemeId: string;
   customThemes: ThemeDefinition[];
+  ignoredSpellcheckWords: string[];
 };
 
 export type AppSettingKey = keyof AppSettingsSchema;
@@ -644,6 +646,10 @@ export const appSettingsRegistry = {
   customThemes: {
     defaultValue: createDefaultEditablePresetThemes(),
     normalize: normalizeCustomThemes
+  },
+  ignoredSpellcheckWords: {
+    defaultValue: [],
+    normalize: normalizeIgnoredSpellcheckWords
   }
 } satisfies AppSettingsRegistry;
 
@@ -652,7 +658,8 @@ export function createDefaultAppSettings(): AppSettingsSchema {
     readerPaneSplitRatio: appSettingsRegistry.readerPaneSplitRatio.defaultValue,
     readerPreferences: appSettingsRegistry.readerPreferences.defaultValue,
     activeThemeId: appSettingsRegistry.activeThemeId.defaultValue,
-    customThemes: createDefaultEditablePresetThemes()
+    customThemes: createDefaultEditablePresetThemes(),
+    ignoredSpellcheckWords: []
   };
 }
 
@@ -673,7 +680,10 @@ export function normalizeAppSettings(candidate: unknown): AppSettingsSchema {
     ),
     readerPreferences: appSettingsRegistry.readerPreferences.normalize(record.readerPreferences),
     activeThemeId: normalizeActiveThemeId(record.activeThemeId, customThemes),
-    customThemes
+    customThemes,
+    ignoredSpellcheckWords: appSettingsRegistry.ignoredSpellcheckWords.normalize(
+      record.ignoredSpellcheckWords
+    )
   };
 }
 
@@ -739,6 +749,9 @@ export function migrateAppSettingsPayload(candidate: unknown): AppSettingsPayloa
       case 12:
         nextSettingsCandidate = migrateFromVersionTwelve(nextSettingsCandidate);
         version = 13;
+        break;
+      case 13:
+        version = 14;
         break;
       default:
         version = APP_SETTINGS_VERSION;

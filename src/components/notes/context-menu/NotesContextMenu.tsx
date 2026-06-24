@@ -31,6 +31,7 @@ type NotesContextMenuProps = {
   onOpenSubmenu: (kind: "turn-into" | "topic-color") => void;
   onScheduleCloseSubmenu: () => void;
   onTurnIntoTopicCard: () => void;
+  onToggleIgnoredSpellcheckWord: () => void;
 };
 
 export default function NotesContextMenu({
@@ -56,7 +57,8 @@ export default function NotesContextMenu({
   onChangeTopicColor,
   onOpenSubmenu,
   onScheduleCloseSubmenu,
-  onTurnIntoTopicCard
+  onTurnIntoTopicCard,
+  onToggleIgnoredSpellcheckWord
 }: NotesContextMenuProps) {
   if (!state) {
     return null;
@@ -149,6 +151,15 @@ export default function NotesContextMenu({
                 onClick={onTurnIntoTopicCard}
               >
                 Create Topic Card
+              </button>
+            ) : null}
+            {state.target === "body" && state.spellcheckWord ? (
+              <button
+                className="editor-context-menu__item"
+                type="button"
+                onClick={onToggleIgnoredSpellcheckWord}
+              >
+                {state.isIgnoredSpellcheckWord ? "Stop Ignoring Word" : `Ignore "${state.spellcheckWord}"`}
               </button>
             ) : null}
             {state.target === "body" ? (

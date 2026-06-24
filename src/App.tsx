@@ -246,6 +246,7 @@ export default function App() {
     shouldRenderReaderWorkspace && shouldRenderCollectionWorkspace;
   const fullscreenTransitionActive =
     fullscreenState === "entering" || fullscreenState === "exiting";
+  const currentReadingTargetMode = workspace.workspaceMode === "book" ? "book" : "reader";
   const readerPreferenceStates = useMemo(
     () => ({
       fullscreenMode: {
@@ -686,36 +687,80 @@ export default function App() {
     workspace.viewerSnapshot.pageCount
   ]);
 
-  function openUnifiedSearch() {
+  const dismissWorkspaceOverlays = useCallback(
+    ({
+      keepCommandPalette = false,
+      keepNotesNavigation = false,
+      keepSidebarSearch = false,
+      keepOutline = false,
+      keepSettings = false,
+      keepWorkspaceSearch = false
+    }: {
+      keepCommandPalette?: boolean;
+      keepNotesNavigation?: boolean;
+      keepSidebarSearch?: boolean;
+      keepOutline?: boolean;
+      keepSettings?: boolean;
+      keepWorkspaceSearch?: boolean;
+    } = {}) => {
+      if (!keepCommandPalette) {
+        palette.closePalette();
+      }
+      if (!keepNotesNavigation) {
+        setNotesNavigationOpen(false);
+      }
+      if (!keepSidebarSearch) {
+        setSidebarSearchOpen(false);
+      }
+      if (!keepOutline) {
+        setOutlineOpen(false);
+      }
+      if (!keepSettings) {
+        setSettingsOpen(false);
+      }
+      if (!keepWorkspaceSearch) {
+        searchController.dismiss();
+      }
+    },
+    [palette, searchController]
+  );
+
+  const openWorkspaceSearch = useCallback(() => {
     if (workspace.workspaceMode === "collection") {
       return;
     }
 
-    palette.closePalette();
-    setNotesNavigationOpen(false);
-    setSidebarSearchOpen(false);
-    setOutlineOpen(false);
-    setSettingsOpen(false);
+    dismissWorkspaceOverlays({ keepWorkspaceSearch: true });
     searchController.open();
     setSearchFocusRequest((current) => current + 1);
-  }
+  }, [dismissWorkspaceOverlays, searchController, workspace.workspaceMode]);
 
   const openSidebarSearchDocument = useCallback(async (documentId: string) => {
-    const targetMode = workspace.workspaceMode === "book" ? "book" : "reader";
     await workspace.handleOpenDocument(documentId, {
       source: "sidebar-search",
-      targetMode
+      targetMode: currentReadingTargetMode
     });
-  }, [workspace]);
+  }, [currentReadingTargetMode, workspace]);
 
-  function toggleSidebarDocumentSearch() {
-    palette.closePalette();
-    setNotesNavigationOpen(false);
-    searchController.dismiss();
-    setOutlineOpen(false);
-    setSettingsOpen(false);
+  const toggleIgnoredSpellcheckWord = useCallback(
+    (word: string, ignored: boolean) => {
+      setSetting("ignoredSpellcheckWords", (currentValue) => {
+        const nextWords = new Set(currentValue);
+        if (ignored) {
+          nextWords.add(word);
+        } else {
+          nextWords.delete(word);
+        }
+        return Array.from(nextWords).sort();
+      });
+    },
+    [setSetting]
+  );
+
+  const toggleSidebarSearch = useCallback(() => {
+    dismissWorkspaceOverlays({ keepSidebarSearch: true });
     setSidebarSearchOpen((current) => !current);
-  }
+  }, [dismissWorkspaceOverlays]);
 
   const openNotesNavigation = useCallback(() => {
     setNotesNavigationOpen(true);
@@ -746,12 +791,10 @@ export default function App() {
     workspaceMode: workspace.workspaceMode,
     libraryRoot: workspace.libraryRoot,
     recentDocuments: workspace.recentDocuments,
-    activeDocument: workspace.activeDocument,
     noteTitle: notes.note?.title ?? null,
     readerState: workspace.readerState,
     viewerSnapshot: workspace.viewerSnapshot,
     outlineItems: workspace.outlineItems,
-    selectedCollection: workspace.selectedCollection,
     viewerApiRef: workspace.viewerApiRef,
     closePalette: palette.closePalette,
     openSelection: palette.openSelection,
@@ -766,10 +809,10 @@ export default function App() {
     openDocumentById: async (documentId) => {
       setOutlineOpen(false);
       await workspace.handleOpenDocument(documentId, {
-        targetMode: workspace.workspaceMode === "book" ? "book" : "reader"
+        targetMode: currentReadingTargetMode
       });
     },
-    openSearch: openUnifiedSearch,
+    openSearch: openWorkspaceSearch,
     openNotesNavigation,
     createStandaloneNote: async () => {
       await workspace.createStandaloneNoteInWorkspace();
@@ -780,6 +823,65 @@ export default function App() {
     },
     copyAllNoteText: notes.copyAllText
   });
+
+  const openCommandPalette = useCallback(() => {
+    dismissWorkspaceOverlays({ keepCommandPalette: true });
+    palette.openCommands(commandRegistry);
+  }, [commandRegistry, dismissWorkspaceOverlays, palette]);
+
+  const toggleWorkspaceCommandPalette = useCallback(() => {
+    if (palette.paletteOpen) {
+      palette.closePalette();
+      return;
+    }
+    openCommandPalette();
+  }, [openCommandPalette, palette]);
+
+  const openSearchResultDocument = useCallback(
+    async (documentId: string) => {
+      await workspace.handleOpenDocument(documentId, {
+        source: "search-result",
+        targetMode: currentReadingTargetMode
+      });
+    },
+    [currentReadingTargetMode, workspace]
+  );
+
+  const toggleNotesNavigation = useCallback(() => {
+    dismissWorkspaceOverlays({
+      keepNotesNavigation: true
+    });
+    setNotesNavigationOpen((current) => {
+      const next = !current;
+      if (next) {
+        setNotesNavigationOpenRequest((request) => request + 1);
+      }
+      return next;
+    });
+  }, [dismissWorkspaceOverlays]);
+
+  const toggleDisplaySettings = useCallback(() => {
+    setSettingsOpen((currentValue) => {
+      const nextValue = !currentValue;
+      if (!nextValue) {
+        setThemePreview(null);
+      }
+      return nextValue;
+    });
+  }, []);
+
+  const toggleMarksPanel = useCallback(() => {
+    if (workspace.workspaceMode === "collection") {
+      return;
+    }
+
+    if (workspace.workspaceMode === "notes") {
+      openNotesNavigation();
+      return;
+    }
+
+    setOutlineOpen((value) => !value);
+  }, [openNotesNavigation, workspace.workspaceMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -880,7 +982,7 @@ export default function App() {
         }
 
         event.preventDefault();
-        openUnifiedSearch();
+        openWorkspaceSearch();
         return;
       }
 
@@ -890,40 +992,21 @@ export default function App() {
         }
 
         event.preventDefault();
-        setNotesNavigationOpen(false);
-        setSidebarSearchOpen(false);
-        setOutlineOpen(false);
-        setSettingsOpen(false);
-        searchController.dismiss();
         if (palette.paletteOpen) {
           palette.closePalette();
           return;
         }
-        palette.openCommands(commandRegistry);
+        openCommandPalette();
         return;
       }
 
       if ((event.ctrlKey || event.metaKey) && normalizedKey === "o") {
-        if (
-          !readerFullscreenActive ||
-          (workspace.workspaceMode !== "reader" && workspace.workspaceMode !== "notes")
-        ) {
+        if (workspace.workspaceMode !== "reader" && workspace.workspaceMode !== "notes") {
           return;
         }
 
         event.preventDefault();
-        palette.closePalette();
-        setSidebarSearchOpen(false);
-        setOutlineOpen(false);
-        setSettingsOpen(false);
-        searchController.dismiss();
-        setNotesNavigationOpen((current) => {
-          const next = !current;
-          if (next) {
-            setNotesNavigationOpenRequest((request) => request + 1);
-          }
-          return next;
-        });
+        toggleNotesNavigation();
         return;
       }
 
@@ -933,10 +1016,7 @@ export default function App() {
           return;
         }
 
-        palette.closePalette();
-        searchController.dismiss();
-        setSidebarSearchOpen(false);
-        setOutlineOpen(false);
+        dismissWorkspaceOverlays();
         return;
       }
     }
@@ -944,14 +1024,14 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [
-    commandRegistry,
+    dismissWorkspaceOverlays,
     exitFullscreen,
     fullscreenState,
+    openCommandPalette,
+    openWorkspaceSearch,
     palette.paletteOpen,
-    palette.closePalette,
-    palette.openCommands,
-    searchController,
     settingsOpen,
+    toggleNotesNavigation,
     toggleFullscreen,
     workspace.workspaceMode
   ]);
@@ -1257,7 +1337,7 @@ export default function App() {
             type="button"
             aria-label="Search"
             aria-expanded={sidebarSearchOpen}
-            onClick={toggleSidebarDocumentSearch}
+            onClick={toggleSidebarSearch}
           >
             <ChromeIcon label="Search">
               <circle cx="11" cy="11" r="6.5" />
@@ -1278,18 +1358,7 @@ export default function App() {
             type="button"
             aria-label="Marks"
             disabled={marksRailDisabled}
-            onClick={() => {
-              if (marksRailDisabled) {
-                return;
-              }
-
-              if (workspace.workspaceMode === "notes") {
-                openNotesNavigation();
-                return;
-              }
-
-              setOutlineOpen((value) => !value);
-            }}
+            onClick={toggleMarksPanel}
           >
             <ChromeIcon label="Marks">
               <path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" />
@@ -1356,15 +1425,7 @@ export default function App() {
             aria-label="Settings"
             aria-controls="display-settings-popover"
             aria-expanded={settingsOpen}
-            onClick={() => {
-              setSettingsOpen((currentValue) => {
-                const nextValue = !currentValue;
-                if (!nextValue) {
-                  setThemePreview(null);
-                }
-                return nextValue;
-              });
-            }}
+            onClick={toggleDisplaySettings}
           >
             <ChromeIcon label="Settings">
               <path
@@ -1511,9 +1572,11 @@ export default function App() {
                 pendingReaderOpenSessionId={workspace.pendingReaderOpenSessionId}
                 note={notes.note}
                 notesLoading={notes.loading}
+                ignoredSpellcheckWords={settings.ignoredSpellcheckWords}
                 noteNavigationItems={notes.navigationItems}
                 onChangeNoteTitle={notes.updateTitle}
                 onChangeNoteBlocks={notes.updateBlocks}
+                onToggleIgnoredSpellcheckWord={toggleIgnoredSpellcheckWord}
                 onFlushNote={() => notes.flushNow("editor-blur")}
                 onCopyAllNoteText={notes.copyAllText}
                 onGoToNotePage={workspace.goToReaderPage}
@@ -1545,17 +1608,9 @@ export default function App() {
                 onNavigationOpenChange={setNotesNavigationOpen}
                 navigationOpenRequest={notesNavigationOpenRequest}
                 commandPaletteOpen={palette.paletteOpen}
-                onToggleCommandPalette={() => {
-                  if (palette.paletteOpen) {
-                    palette.closePalette();
-                    return;
-                  }
-                  palette.openCommands(commandRegistry);
-                }}
+                onToggleCommandPalette={toggleWorkspaceCommandPalette}
                 registerCommandPaletteAnchor={setPaletteAnchorElement}
-                onSearchOpenDocument={(documentId) =>
-                  workspace.handleOpenDocument(documentId, { source: "search-result" })
-                }
+                onSearchOpenDocument={openSearchResultDocument}
                 onSearchGoToPage={workspace.goToReaderPage}
                 onSearchOpenNoteResult={async (_noteId: string, blockId: string) => {
                   setNoteRevealRequest((current) => ({ blockId, sequence: (current?.sequence ?? 0) + 1 }));
@@ -1603,20 +1658,9 @@ export default function App() {
                 searchController={searchController}
                 searchFocusRequest={searchFocusRequest}
                 commandPaletteOpen={palette.paletteOpen}
-                onToggleCommandPalette={() => {
-                  if (palette.paletteOpen) {
-                    palette.closePalette();
-                    return;
-                  }
-                  palette.openCommands(commandRegistry);
-                }}
+                onToggleCommandPalette={toggleWorkspaceCommandPalette}
                 registerCommandPaletteAnchor={setPaletteAnchorElement}
-                onSearchOpenDocument={(documentId) =>
-                  workspace.handleOpenDocument(documentId, {
-                    source: "search-result",
-                    targetMode: "book"
-                  })
-                }
+                onSearchOpenDocument={openSearchResultDocument}
                 onSearchGoToPage={workspace.goToReaderPage}
                 showHeaders={!readerFullscreenActive}
                 showFullscreenHint={showFullscreenHint}
@@ -1639,8 +1683,10 @@ export default function App() {
               <LazyNotesWorkspace
                 note={notes.note}
                 notesLoading={notes.loading}
+                ignoredSpellcheckWords={settings.ignoredSpellcheckWords}
                 noteNavigationItems={notes.navigationItems}
                 noteRevealRequest={noteRevealRequest}
+                onToggleIgnoredSpellcheckWord={toggleIgnoredSpellcheckWord}
                 navigationOpen={notesNavigationOpen}
                 onNavigationOpenChange={setNotesNavigationOpen}
                 navigationOpenRequest={notesNavigationOpenRequest}
@@ -1664,13 +1710,7 @@ export default function App() {
                 searchController={searchController}
                 searchFocusRequest={searchFocusRequest}
                 commandPaletteOpen={palette.paletteOpen}
-                onToggleCommandPalette={() => {
-                  if (palette.paletteOpen) {
-                    palette.closePalette();
-                    return;
-                  }
-                  palette.openCommands(commandRegistry);
-                }}
+                onToggleCommandPalette={toggleWorkspaceCommandPalette}
                 registerCommandPaletteAnchor={setPaletteAnchorElement}
                 showHeaders={!readerFullscreenActive}
                 showFullscreenHint={showFullscreenHint}

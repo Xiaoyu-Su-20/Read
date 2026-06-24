@@ -30,9 +30,11 @@ type ReaderWorkspaceProps = {
   pendingReaderOpenSessionId: string | null;
   note: NoteDocument | null;
   notesLoading: boolean;
+  ignoredSpellcheckWords: string[];
   noteNavigationItems: NoteNavigationItem[];
   onChangeNoteTitle: (title: string) => void;
   onChangeNoteBlocks: (blocks: NoteDocument["blocks"]) => void;
+  onToggleIgnoredSpellcheckWord: (word: string, ignored: boolean) => void;
   onFlushNote: () => void | Promise<void>;
   onCopyAllNoteText: () => Promise<void>;
   onGoToNotePage: (page: number) => void;
@@ -112,9 +114,11 @@ export default function ReaderWorkspace({
   pendingReaderOpenSessionId,
   note,
   notesLoading,
+  ignoredSpellcheckWords,
   noteNavigationItems,
   onChangeNoteTitle,
   onChangeNoteBlocks,
+  onToggleIgnoredSpellcheckWord,
   onFlushNote,
   onCopyAllNoteText,
   onGoToNotePage,
@@ -225,16 +229,17 @@ export default function ReaderWorkspace({
           <DeferredNotesViewport
             note={note}
             loading={notesLoading}
+            ignoredSpellcheckWords={ignoredSpellcheckWords}
             capabilityMode="document"
             fullscreen={fullscreen}
             onToggleFullscreen={onToggleFullscreen}
-            titleMode="hidden"
             navigationOpen={navigationOpen}
             onNavigationOpenChange={onNavigationOpenChange}
             navigationOpenRequest={navigationOpenRequest}
             navigationItems={noteNavigationItems}
             onChangeTitle={onChangeNoteTitle}
             onChangeBlocks={onChangeNoteBlocks}
+            onToggleIgnoredSpellcheckWord={onToggleIgnoredSpellcheckWord}
             onFlush={onFlushNote}
             onCopyAllText={onCopyAllNoteText}
             onGoToPage={onGoToNotePage}
