@@ -23,6 +23,7 @@ import {
   renameFolder,
   renameStandaloneNote,
   rescanLibrary,
+  setLibraryRoot,
   showDocumentInExplorer
 } from "../api";
 import { sortRecentDocuments } from "../commands";
@@ -736,6 +737,31 @@ export function useWorkspaceController() {
     });
   }, [refreshLibraryState, syncActiveDocument]);
 
+  const changeLibraryRootState = useCallback(
+    async (newRoot: string, options?: { moveExisting?: boolean }) => {
+      const moveExisting = Boolean(options?.moveExisting);
+      return runDebugProcess(
+        "library.change-root-flow",
+        {
+          moveExisting,
+          newRoot
+        },
+        async () => {
+          const resolvedRoot = await setLibraryRoot(newRoot, moveExisting);
+          await refreshLibraryState({ rescan: true });
+          await syncActiveDocument({ preserveSelectedCollectionId: true });
+          setStatusMessage(
+            moveExisting
+              ? "Moved the library to the new folder."
+              : "Changed the library folder."
+          );
+          return resolvedRoot;
+        }
+      );
+    },
+    [refreshLibraryState, setStatusMessage, syncActiveDocument]
+  );
+
   const viewerOrStatus = useCallback(() => {
     if (!viewerApiRef.current) {
       setStatusMessage("Open a document to use reader commands.");
@@ -817,6 +843,7 @@ export function useWorkspaceController() {
     getLibraryDocumentDeleteState,
     removeActiveDocument,
     rescanLibraryState,
+    changeLibraryRootState,
     viewerOrStatus,
     goToReaderPage
   };

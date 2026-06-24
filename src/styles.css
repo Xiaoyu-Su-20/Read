@@ -3844,7 +3844,7 @@ body.reader-pane-resizing .notes-pane img {
   align-items: baseline;
   vertical-align: baseline;
   padding: 0 0.32em;
-  margin: 0 0.04em;
+  margin: 0 0.24em 0 0;
   border-radius: 0.42em;
   color: var(--page-link-text);
   background: var(--page-link-background);
@@ -3905,7 +3905,7 @@ body.reader-pane-resizing .notes-pane img {
   display: inline-flex;
   align-items: baseline;
   max-width: min(24rem, 70%);
-  margin: 0 0.5rem 0.12rem 0;
+  margin: 0 0.5rem 0 0;
   padding: 0.08rem 0.48rem 0.14rem;
   border: 1px solid var(--topic-border);
   border-radius: 0.34rem;

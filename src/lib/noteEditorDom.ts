@@ -31,7 +31,6 @@ import type {
 } from "./types";
 
 const NOTE_CLIPBOARD_MIME = "application/x-calmreader-note-fragment";
-const PAGE_LINK_CARET_ANCHOR = "\u200B";
 const TOPIC_INLINE_TYPE = "topic-card";
 const PAGE_LINK_INLINE_TYPE = "page-link";
 
@@ -68,28 +67,18 @@ export type CollapsedRangeCaptureResult = {
   blockId: string | null;
 };
 
+export type AtomicInlineEdge = "before" | "after";
+
+export type PageLinkBoundarySelection = {
+  blockId: string;
+  pageLinkId: string;
+  edge: AtomicInlineEdge;
+};
+
 let internalClipboardPayload: NoteClipboardPayload | null = null;
 
 function stripPageLinkCaretAnchors(value: string) {
-  return value.replaceAll(PAGE_LINK_CARET_ANCHOR, "");
-}
-
-function isPageLinkCaretAnchorValue(value: string) {
-  return value.length > 0 && stripPageLinkCaretAnchors(value).length === 0;
-}
-
-function isPageLinkCaretAnchorNode(node: Node | null): node is Text {
-  return node?.nodeType === Node.TEXT_NODE && isPageLinkCaretAnchorValue(node.textContent ?? "");
-}
-
-function createPageLinkCaretAnchor(ownerDocument: Document) {
-  return ownerDocument.createTextNode(PAGE_LINK_CARET_ANCHOR);
-}
-
-function normalizePageLinkCaretAnchorNode(node: Text) {
-  if (node.textContent !== PAGE_LINK_CARET_ANCHOR) {
-    node.textContent = PAGE_LINK_CARET_ANCHOR;
-  }
+  return value.replaceAll("\u200B", "");
 }
 
 function escapeHtml(value: string) {
@@ -500,112 +489,6 @@ function isTopicElementNode(node: Node | null): node is HTMLElement {
   return node instanceof HTMLElement && node.dataset.inlineType === TOPIC_INLINE_TYPE;
 }
 
-function removeAdjacentAnchorDuplicates(anchorNode: Text, direction: "backward" | "forward") {
-  let sibling =
-    direction === "backward" ? anchorNode.previousSibling : anchorNode.nextSibling;
-
-  while (isPageLinkCaretAnchorNode(sibling)) {
-    const nextSibling =
-      direction === "backward" ? sibling.previousSibling : sibling.nextSibling;
-    sibling.remove();
-    sibling = nextSibling;
-  }
-}
-
-function extractAdjacentCaretAnchor(
-  pageLink: HTMLElement,
-  direction: "before" | "after"
-): Text | null {
-  const sibling = direction === "before" ? pageLink.previousSibling : pageLink.nextSibling;
-  if (sibling?.nodeType !== Node.TEXT_NODE) {
-    return null;
-  }
-  const textSibling = sibling as Node & { textContent: string | null };
-
-  if (isPageLinkCaretAnchorNode(sibling)) {
-    normalizePageLinkCaretAnchorNode(sibling);
-    return sibling;
-  }
-
-  const value = textSibling.textContent ?? "";
-  if (direction === "before") {
-    if (!value.endsWith(PAGE_LINK_CARET_ANCHOR)) {
-      return null;
-    }
-    const nextValue = value.slice(0, -PAGE_LINK_CARET_ANCHOR.length);
-    if (nextValue.length === 0) {
-      textSibling.textContent = PAGE_LINK_CARET_ANCHOR;
-      return sibling as Text;
-    }
-    textSibling.textContent = nextValue;
-    const anchor = createPageLinkCaretAnchor(pageLink.ownerDocument);
-    pageLink.before(anchor);
-    return anchor;
-  }
-
-  if (!value.startsWith(PAGE_LINK_CARET_ANCHOR)) {
-    return null;
-  }
-  const nextValue = value.slice(PAGE_LINK_CARET_ANCHOR.length);
-  if (nextValue.length === 0) {
-    textSibling.textContent = PAGE_LINK_CARET_ANCHOR;
-    return sibling as Text;
-  }
-  textSibling.textContent = nextValue;
-  const anchor = createPageLinkCaretAnchor(pageLink.ownerDocument);
-  pageLink.after(anchor);
-  return anchor;
-}
-
-function ensurePageLinkCaretAnchors(pageLink: HTMLElement) {
-  const ownerDocument = pageLink.ownerDocument;
-
-  let leadingAnchor: Text;
-  const existingLeadingAnchor = extractAdjacentCaretAnchor(pageLink, "before");
-  if (existingLeadingAnchor) {
-    leadingAnchor = existingLeadingAnchor;
-  } else {
-    leadingAnchor = createPageLinkCaretAnchor(ownerDocument);
-    pageLink.before(leadingAnchor);
-  }
-
-  let trailingAnchor: Text;
-  const existingTrailingAnchor = extractAdjacentCaretAnchor(pageLink, "after");
-  if (existingTrailingAnchor) {
-    trailingAnchor = existingTrailingAnchor;
-  } else {
-    trailingAnchor = createPageLinkCaretAnchor(ownerDocument);
-    pageLink.after(trailingAnchor);
-  }
-
-  removeAdjacentAnchorDuplicates(leadingAnchor, "backward");
-  removeAdjacentAnchorDuplicates(trailingAnchor, "forward");
-}
-
-function removeOrphanPageLinkCaretAnchors(root: HTMLElement) {
-  const ownerDocument = root.ownerDocument;
-  const walker = ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const anchorsToRemove: Text[] = [];
-
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    if (!isPageLinkCaretAnchorNode(node)) {
-      continue;
-    }
-
-    const hasAdjacentPageLink =
-      isPageLinkElementNode(node.previousSibling) || isPageLinkElementNode(node.nextSibling);
-
-    if (!hasAdjacentPageLink) {
-      anchorsToRemove.push(node);
-    }
-  }
-
-  for (const anchor of anchorsToRemove) {
-    anchor.remove();
-  }
-}
-
 export function normalizeNoteEditorDom(root: HTMLElement) {
   const selectionBeforeNormalization = captureEditorSelection(root);
   const children = Array.from(root.childNodes);
@@ -689,13 +572,10 @@ export function normalizeNoteEditorDom(root: HTMLElement) {
 
     currentChild.querySelectorAll<HTMLElement>("[data-inline-type='page-link']").forEach((pageLink) => {
       configurePageLinkElement(pageLink);
-      ensurePageLinkCaretAnchors(pageLink);
     });
     currentChild.querySelectorAll<HTMLElement>(`[data-inline-type='${TOPIC_INLINE_TYPE}']`).forEach((topicElement) => {
       configureTopicElement(topicElement);
     });
-
-    removeOrphanPageLinkCaretAnchors(currentChild);
   }
 
   restoreEditorSelection(root, selectionBeforeNormalization);
@@ -1228,12 +1108,17 @@ export function getPageLinkFromSelection(root: HTMLElement) {
 }
 
 export function isSelectionInsidePageLinkAnchor(root: HTMLElement) {
-  const selection = getSelectionInRoot(root);
-  if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) {
+  void root;
+  return false;
+}
+
+export function normalizeCollapsedSelectionNearPageLink(root: HTMLElement) {
+  const boundary = resolvePageLinkBoundarySelection(root);
+  if (!boundary) {
     return false;
   }
 
-  return isPageLinkCaretAnchorNode(selection.anchorNode);
+  return projectPageLinkBoundarySelection(root, boundary);
 }
 
 export function isSelectionWithinSingleBlock(root: HTMLElement) {
@@ -1320,20 +1205,6 @@ function placeCaretAfterNode(node: Node) {
   selection.addRange(range);
 }
 
-function placeCaretInsideAnchor(anchor: Text, position: "start" | "end" = "end") {
-  const selection = window.getSelection();
-  if (!selection) {
-    return;
-  }
-
-  const range = document.createRange();
-  const offset = position === "start" ? 0 : anchor.textContent?.length ?? 0;
-  range.setStart(anchor, offset);
-  range.setEnd(anchor, offset);
-  selection.removeAllRanges();
-  selection.addRange(range);
-}
-
 function placeCaretBeforeNode(node: Node) {
   const selection = window.getSelection();
   if (!selection) {
@@ -1347,9 +1218,108 @@ function placeCaretBeforeNode(node: Node) {
   selection.addRange(range);
 }
 
-function getPageLinkCaretAnchor(pageLink: HTMLElement, direction: "before" | "after") {
-  const sibling = direction === "before" ? pageLink.previousSibling : pageLink.nextSibling;
-  return isPageLinkCaretAnchorNode(sibling) ? sibling : null;
+function createPageLinkBoundarySelection(
+  root: HTMLElement,
+  pageLink: HTMLElement,
+  edge: AtomicInlineEdge
+): PageLinkBoundarySelection | null {
+  if (!root.contains(pageLink)) {
+    return null;
+  }
+
+  const block = findClosestBlockElement(root, pageLink);
+  const pageLinkId = pageLink.dataset.pageLinkId ?? null;
+  const blockId = block?.dataset.blockId ?? null;
+  if (!pageLinkId || !blockId) {
+    return null;
+  }
+
+  return {
+    blockId,
+    pageLinkId,
+    edge
+  };
+}
+
+export function resolveAtomicPointerPosition(token: HTMLElement, clientX: number): AtomicInlineEdge {
+  const rect = token.getBoundingClientRect();
+  return clientX < rect.left + rect.width / 2 ? "before" : "after";
+}
+
+export function resolvePageLinkBoundarySelectionAtPoint(
+  root: HTMLElement,
+  clientX: number,
+  clientY: number
+) {
+  const pageLink = getPageLinkAtPoint(root, clientX, clientY);
+  if (!pageLink || !isPointWithinPageLinkContent(root, pageLink, clientX, clientY)) {
+    return null;
+  }
+
+  return createPageLinkBoundarySelection(
+    root,
+    pageLink,
+    resolveAtomicPointerPosition(pageLink, clientX)
+  );
+}
+
+export function resolvePageLinkBoundarySelection(root: HTMLElement) {
+  const selection = getSelectionInRoot(root);
+  if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+  const container = range.startContainer;
+  const offset = range.startOffset;
+
+  if (container.nodeType === Node.TEXT_NODE) {
+    const textNode = container as Text;
+    const textLength = textNode.textContent?.length ?? 0;
+
+    if (offset === 0 && isPageLinkElementNode(textNode.previousSibling)) {
+      return createPageLinkBoundarySelection(root, textNode.previousSibling, "after");
+    }
+
+    if (offset === textLength && isPageLinkElementNode(textNode.nextSibling)) {
+      return createPageLinkBoundarySelection(root, textNode.nextSibling, "before");
+    }
+
+    return null;
+  }
+
+  if (container.nodeType === Node.ELEMENT_NODE) {
+    const element = container as Element;
+    const beforeNode = offset > 0 ? element.childNodes[offset - 1] : null;
+    if (isPageLinkElementNode(beforeNode)) {
+      return createPageLinkBoundarySelection(root, beforeNode, "after");
+    }
+
+    const afterNode = offset < element.childNodes.length ? element.childNodes[offset] : null;
+    if (isPageLinkElementNode(afterNode)) {
+      return createPageLinkBoundarySelection(root, afterNode, "before");
+    }
+  }
+
+  return null;
+}
+
+export function projectPageLinkBoundarySelection(
+  root: HTMLElement,
+  boundary: PageLinkBoundarySelection
+) {
+  const pageLink = findPageLinkElement(root, boundary.pageLinkId);
+  if (!pageLink) {
+    return false;
+  }
+
+  if (boundary.edge === "before") {
+    placeCaretBeforeNode(pageLink);
+    return true;
+  }
+
+  placeCaretAfterNode(pageLink);
+  return true;
 }
 
 function focusElementWithoutScroll(element: HTMLElement) {
@@ -1414,15 +1384,6 @@ function removeTrailingLineBreakArtifacts(block: HTMLElement) {
       continue;
     }
 
-    if (isPageLinkCaretAnchorNode(trailingNode)) {
-      trailingNode = trailingNode.previousSibling
-        ? deepestTrailingNode(trailingNode.previousSibling)
-        : trailingNode.parentNode instanceof HTMLElement
-          ? trailingNode.parentNode
-          : null;
-      continue;
-    }
-
     if (trailingNode.nodeType === Node.TEXT_NODE) {
       const textNode = trailingNode as Text;
       const sanitized = stripPageLinkCaretAnchors(textNode.textContent ?? "");
@@ -1482,7 +1443,7 @@ function collectVisibleTextSegments(block: HTMLElement) {
   while (walker.nextNode()) {
     const node = walker.currentNode as Text;
     const nodeText = node.textContent ?? "";
-    if (isPageLinkCaretAnchorValue(nodeText)) {
+    if (stripPageLinkCaretAnchors(nodeText).length === 0) {
       continue;
     }
 
@@ -1771,13 +1732,7 @@ export function insertPageLinkAtRange(
   }
   fragment.appendChild(element);
   nextRange.insertNode(fragment);
-  ensurePageLinkCaretAnchors(element);
-  const trailingAnchor = getPageLinkCaretAnchor(element, "after");
-  if (trailingAnchor) {
-    placeCaretInsideAnchor(trailingAnchor, "end");
-  } else {
-    placeCaretAfterNode(element);
-  }
+  placeCaretAfterNode(element);
 
   return {
     ok: true as const,
@@ -1809,13 +1764,7 @@ export function updatePageLinkTarget(root: HTMLElement, pageLinkId: string, page
   const replacement = createPageLinkElement(nextNode);
   focusElementWithoutScroll(root);
   pageLink.replaceWith(replacement);
-  ensurePageLinkCaretAnchors(replacement);
-  const trailingAnchor = getPageLinkCaretAnchor(replacement, "after");
-  if (trailingAnchor) {
-    placeCaretInsideAnchor(trailingAnchor, "end");
-  } else {
-    placeCaretAfterNode(replacement);
-  }
+  placeCaretAfterNode(replacement);
 
   return {
     ok: true as const,
@@ -1829,14 +1778,10 @@ export function removePageLink(root: HTMLElement, pageLinkId: string) {
     return false;
   }
 
-  const leadingAnchor = getPageLinkCaretAnchor(pageLink, "before");
-  const trailingAnchor = getPageLinkCaretAnchor(pageLink, "after");
-  const nextSibling = trailingAnchor?.nextSibling ?? pageLink.nextSibling;
-  const previousSibling = leadingAnchor?.previousSibling ?? pageLink.previousSibling;
+  const nextSibling = pageLink.nextSibling;
+  const previousSibling = pageLink.previousSibling;
   const parent = pageLink.parentNode;
-  leadingAnchor?.remove();
   pageLink.remove();
-  trailingAnchor?.remove();
 
   if (nextSibling) {
     placeCaretBeforeNode(nextSibling);
@@ -2070,7 +2015,7 @@ export function selectTextMatchInBlock(
   while (walker.nextNode()) {
     const node = walker.currentNode as Text;
     const sourceText = node.textContent ?? "";
-    if (sourceText.length === 0 || isPageLinkCaretAnchorNode(node)) {
+    if (sourceText.length === 0 || stripPageLinkCaretAnchors(sourceText).length === 0) {
       continue;
     }
 
@@ -2465,17 +2410,9 @@ function resolveAdjacentPageLinkFromNode(
   if (directPageLink) {
     return directPageLink;
   }
-
-  if (!isPageLinkCaretAnchorNode(node)) {
-    return null;
-  }
-
-  const neighboringNode =
-    direction === "backward"
-      ? previousNodeInBlock(root, block, node)
-      : nextNodeInBlock(root, block, node);
-
-  return neighboringNode ? findClosestPageLinkElement(root, neighboringNode) : null;
+  void block;
+  void direction;
+  return null;
 }
 
 export function getAdjacentPageLink(root: HTMLElement, direction: "backward" | "forward") {
@@ -2496,13 +2433,6 @@ export function getAdjacentPageLink(root: HTMLElement, direction: "backward" | "
 
   if (container.nodeType === Node.TEXT_NODE) {
     const textLength = container.textContent?.length ?? 0;
-    if (isPageLinkCaretAnchorNode(container)) {
-      adjacentNode =
-        direction === "backward"
-          ? previousNodeInBlock(root, block, container)
-          : nextNodeInBlock(root, block, container);
-      return resolveAdjacentPageLinkFromNode(root, block, adjacentNode, direction);
-    }
 
     if (direction === "backward") {
       if (offset > 0) {
@@ -2535,24 +2465,14 @@ export function getAdjacentPageLink(root: HTMLElement, direction: "backward" | "
 
 export function moveCaretAroundPageLink(root: HTMLElement, pageLinkId: string, direction: "before" | "after") {
   const pageLink = findPageLinkElement(root, pageLinkId);
-  if (!pageLink) {
+  const block = pageLink ? findClosestBlockElement(root, pageLink) : null;
+  if (!pageLink || !block?.dataset.blockId) {
     return false;
   }
 
-  if (direction === "before") {
-    const leadingAnchor = getPageLinkCaretAnchor(pageLink, "before");
-    if (leadingAnchor) {
-      placeCaretInsideAnchor(leadingAnchor, "end");
-      return true;
-    }
-    placeCaretBeforeNode(pageLink);
-  } else {
-    const trailingAnchor = getPageLinkCaretAnchor(pageLink, "after");
-    if (trailingAnchor) {
-      placeCaretInsideAnchor(trailingAnchor, "end");
-      return true;
-    }
-    placeCaretAfterNode(pageLink);
-  }
-  return true;
+  return projectPageLinkBoundarySelection(root, {
+    blockId: block.dataset.blockId,
+    pageLinkId,
+    edge: direction
+  });
 }

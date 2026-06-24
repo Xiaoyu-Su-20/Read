@@ -1,6 +1,6 @@
 use std::{
     env,
-    fs::{metadata, OpenOptions},
+    fs::{self, metadata, OpenOptions},
     io::Write,
     path::PathBuf,
     sync::{
@@ -28,7 +28,8 @@ enum LogPolicy {
 }
 
 const ERROR_LOG_MAX_BYTES: u64 = 256 * 1024;
-const SUPPORT_LOG_MAX_BYTES: u64 = 1024 * 1024;
+const SUPPORT_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+const SUPPORT_LOG_ROTATION_COUNT: usize = 5;
 
 fn default_policy() -> LogPolicy {
     if cfg!(debug_assertions) {
@@ -242,6 +243,29 @@ fn sanitize_value(key_hint: Option<&str>, value: &Value, verbose: bool) -> Value
     }
 }
 
+fn rotate_log_files(path: &PathBuf, keep: usize) {
+    if keep == 0 {
+        let _ = fs::remove_file(path);
+        return;
+    }
+
+    let oldest_path = PathBuf::from(format!("{}.{}", path.display(), keep));
+    let _ = fs::remove_file(oldest_path);
+
+    for index in (1..keep).rev() {
+        let current = PathBuf::from(format!("{}.{}", path.display(), index));
+        let next = PathBuf::from(format!("{}.{}", path.display(), index + 1));
+        if current.exists() {
+            let _ = fs::rename(current, next);
+        }
+    }
+
+    if path.exists() {
+        let rotated = PathBuf::from(format!("{}.1", path.display()));
+        let _ = fs::rename(path, rotated);
+    }
+}
+
 fn write_log_record(path: PathBuf, payload: &Value, max_bytes: u64) {
     let serialized = payload.to_string();
     let needs_truncate = metadata(&path)
@@ -255,6 +279,24 @@ fn write_log_record(path: PathBuf, payload: &Value, max_bytes: u64) {
     } else {
         options.append(true);
     }
+
+    if let Ok(mut file) = options.open(path) {
+        let _ = writeln!(file, "{serialized}");
+    }
+}
+
+fn write_rotating_log_record(path: PathBuf, payload: &Value, max_bytes: u64, rotation_count: usize) {
+    let serialized = payload.to_string();
+    let estimated_next_size = metadata(&path)
+        .map(|metadata| metadata.len().saturating_add(serialized.len() as u64 + 1))
+        .unwrap_or(serialized.len() as u64 + 1);
+
+    if estimated_next_size > max_bytes {
+        rotate_log_files(&path, rotation_count);
+    }
+
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
 
     if let Ok(mut file) = options.open(path) {
         let _ = writeln!(file, "{serialized}");
@@ -286,7 +328,12 @@ fn emit_trace(event: &str, fields: Value) {
 
     let payload = base_payload("backend-trace", event, fields);
     println!("{payload}");
-    write_log_record(support_log_path(), &payload, SUPPORT_LOG_MAX_BYTES);
+    write_rotating_log_record(
+        support_log_path(),
+        &payload,
+        SUPPORT_LOG_MAX_BYTES,
+        SUPPORT_LOG_ROTATION_COUNT,
+    );
 }
 
 pub fn report_error(event: &str, fields: Value) {
@@ -299,7 +346,12 @@ pub fn report_error(event: &str, fields: Value) {
 
     if verbose {
         eprintln!("{payload}");
-        write_log_record(support_log_path(), &payload, SUPPORT_LOG_MAX_BYTES);
+        write_rotating_log_record(
+            support_log_path(),
+            &payload,
+            SUPPORT_LOG_MAX_BYTES,
+            SUPPORT_LOG_ROTATION_COUNT,
+        );
     }
 
     write_log_record(error_log_path(), &payload, ERROR_LOG_MAX_BYTES);

@@ -16,6 +16,7 @@ use crate::{
 pub struct StorePaths {
     pub app_dir: PathBuf,
     pub library_dir: PathBuf,
+    pub library_config_path: PathBuf,
     pub legacy_library_dir: PathBuf,
     pub settings_path: PathBuf,
     pub index_path: PathBuf,
@@ -33,6 +34,7 @@ impl StorePaths {
 
         Self {
             library_dir,
+            library_config_path: app_dir.join("library-root.json"),
             legacy_library_dir: app_dir.join("library"),
             settings_path: app_dir.join("app-settings.json"),
             index_path: app_dir.join("library-index.json"),

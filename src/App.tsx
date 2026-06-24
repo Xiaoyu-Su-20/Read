@@ -719,6 +719,7 @@ export default function App() {
   }, []);
   const flows = useLibraryFlows({
     libraryTree: workspace.libraryTree,
+    libraryRoot: workspace.libraryRoot,
     collectionOptions: workspace.collectionOptions,
     activeDocument: workspace.activeDocument,
     selectedCollection: workspace.selectedCollection,
@@ -733,7 +734,8 @@ export default function App() {
     renameActiveDocument: workspace.renameActiveDocument,
     renameCollection: workspace.renameCollection,
     removeActiveDocument: workspace.removeActiveDocument,
-    rescanLibraryState: workspace.rescanLibraryState
+    rescanLibraryState: workspace.rescanLibraryState,
+    changeLibraryRootState: workspace.changeLibraryRootState
   });
 
   const commandRegistry = useCommandRegistry({
@@ -755,6 +757,7 @@ export default function App() {
     viewerOrStatus: workspace.viewerOrStatus,
     promptImportFlow: flows.promptImportFlow,
     rescanLibraryFlow: flows.rescanLibraryFlow,
+    changeLibraryRootFlow: flows.changeLibraryRootFlow,
     openLibraryFolder,
     openDocumentById: async (documentId) => {
       setOutlineOpen(false);
@@ -1422,6 +1425,7 @@ export default function App() {
                 return workspace.getStandaloneLibraryNoteDeleteState(noteId);
               }}
               onCreateCollection={flows.createCollectionFlow}
+              onChangeLibraryRoot={flows.changeLibraryRootFlow}
               onRenameCollection={async (collectionId, nextName) => {
                 await workspace.renameCollection(collectionId, nextName);
               }}

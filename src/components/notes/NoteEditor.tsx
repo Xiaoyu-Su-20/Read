@@ -32,6 +32,7 @@ import {
   isPointWithinPageLinkContent,
   isPointWithinSelectionContent,
   moveCaretAroundPageLink,
+  normalizeCollapsedSelectionNearPageLink,
   normalizeNoteEditorDom,
   parseNoteBlocksFromEditor,
   pasteSelection,
@@ -41,6 +42,9 @@ import {
   renderNoteBlocksHtml,
   replaceBlockElementType,
   resolveCollapsedRangeAtPoint,
+  resolvePageLinkBoundarySelection,
+  resolvePageLinkBoundarySelectionAtPoint,
+  projectPageLinkBoundarySelection,
   canTurnSelectionIntoTopicCard,
   selectBlockElement,
   selectTextMatchInBlock,
@@ -167,6 +171,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
   const selectedBlockIdRef = useRef<string | null>(null);
   const selectedPageLinkIdRef = useRef<string | null>(null);
   const selectedTopicIdRef = useRef<string | null>(null);
+  const suppressedPageLinkClickIdRef = useRef<string | null>(null);
   const pendingPageLinkRangeRef = useRef<Range | null>(null);
   const historyRef = useRef<NoteHistoryState | null>(null);
   const applyingHistoryRef = useRef(false);
@@ -288,6 +293,70 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     } catch {
       bodyRef.current.focus();
     }
+  }
+
+  function resolveCurrentPageLinkBoundary() {
+    if (!bodyRef.current) {
+      return null;
+    }
+
+    return resolvePageLinkBoundarySelection(bodyRef.current);
+  }
+
+  function handlePageLinkBoundaryTextInsertion(inputEvent: InputEvent) {
+    if (!bodyRef.current || selectedPageLinkIdRef.current) {
+      return false;
+    }
+
+    if (
+      inputEvent.inputType !== "insertText" &&
+      inputEvent.inputType !== "insertParagraph" &&
+      inputEvent.inputType !== "insertLineBreak"
+    ) {
+      return false;
+    }
+
+    const boundary = resolveCurrentPageLinkBoundary();
+    if (!boundary) {
+      return false;
+    }
+
+    projectPageLinkBoundarySelection(bodyRef.current, boundary);
+    updateSelectedBlock(null);
+    updateSelectedTopic(null);
+    updateSelectedPageLink(null);
+
+    if (inputEvent.inputType === "insertText" && typeof inputEvent.data === "string") {
+      insertTextAtSelection(inputEvent.data);
+    } else {
+      insertTextAtSelection("\n");
+    }
+
+    syncBlocksFromDom("typing");
+    return true;
+  }
+
+  function handlePageLinkBoundaryDeleteIntent(direction: "backward" | "forward") {
+    if (!bodyRef.current || selectedPageLinkIdRef.current) {
+      return false;
+    }
+
+    const boundary = resolveCurrentPageLinkBoundary();
+    if (!boundary) {
+      return false;
+    }
+
+    const targetsPageLink =
+      (direction === "backward" && boundary.edge === "after") ||
+      (direction === "forward" && boundary.edge === "before");
+    if (!targetsPageLink) {
+      return false;
+    }
+
+    updateSelectedBlock(null);
+    updateSelectedTopic(null);
+    updateSelectedPageLink(boundary.pageLinkId);
+    return true;
   }
 
   function commitTopicMutation(
@@ -1079,6 +1148,29 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           event.preventDefault();
           updateSelectedPageLink(pageLinkId);
         }}
+        onPointerDown={(event) => {
+          if (!documentCapabilities || !bodyRef.current || event.button !== 0) {
+            return;
+          }
+
+          const boundary = resolvePageLinkBoundarySelectionAtPoint(
+            bodyRef.current,
+            event.clientX,
+            event.clientY
+          );
+          if (!boundary) {
+            suppressedPageLinkClickIdRef.current = null;
+            return;
+          }
+
+          event.preventDefault();
+          focusEditorBody();
+          updateSelectedBlock(null);
+          updateSelectedTopic(null);
+          updateSelectedPageLink(null);
+          projectPageLinkBoundarySelection(bodyRef.current, boundary);
+          suppressedPageLinkClickIdRef.current = boundary.pageLinkId;
+        }}
         onMouseDown={(event) => {
           if (!bodyRef.current) {
             return;
@@ -1122,14 +1214,28 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           }
 
           if (event.button === 0) {
+            const pageLinkId = target.dataset.pageLinkId ?? null;
+            if (
+              pageLinkId &&
+              suppressedPageLinkClickIdRef.current === pageLinkId
+            ) {
+              return;
+            }
+
             event.preventDefault();
             focusEditorBody();
             updateSelectedTopic(null);
-            const pageLinkId = target.dataset.pageLinkId ?? null;
             if (pageLinkId) {
               updateSelectedPageLink(pageLinkId);
             }
           }
+        }}
+        onMouseUp={() => {
+          if (!bodyRef.current || !documentCapabilities) {
+            return;
+          }
+
+          normalizeCollapsedSelectionNearPageLink(bodyRef.current);
         }}
         onClick={(event) => {
           if (!bodyRef.current) {
@@ -1154,6 +1260,14 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           const target = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("[data-inline-type='page-link']") : null;
           const pageLinkId = target?.dataset.pageLinkId ?? null;
           if (!pageLinkId) {
+            suppressedPageLinkClickIdRef.current = null;
+            return;
+          }
+
+          if (suppressedPageLinkClickIdRef.current === pageLinkId) {
+            suppressedPageLinkClickIdRef.current = null;
+            event.preventDefault();
+            event.stopPropagation();
             return;
           }
 
@@ -1197,6 +1311,11 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           if (inputEvent.inputType === "historyRedo") {
             event.preventDefault();
             performRedo();
+            return;
+          }
+
+          if (handlePageLinkBoundaryTextInsertion(inputEvent)) {
+            event.preventDefault();
             return;
           }
 
@@ -1308,6 +1427,15 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
             if (event.key === "Backspace" || event.key === "Delete") {
               const selection = window.getSelection();
               if (!selection || !selection.isCollapsed) {
+                return;
+              }
+
+              if (
+                handlePageLinkBoundaryDeleteIntent(
+                  event.key === "Backspace" ? "backward" : "forward"
+                )
+              ) {
+                event.preventDefault();
                 return;
               }
 

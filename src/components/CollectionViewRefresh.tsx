@@ -52,6 +52,7 @@ type CollectionViewRefreshProps = {
   onDeleteStandaloneNote: (noteId: string) => void | Promise<void>;
   onGetStandaloneNoteDeleteState: (noteId: string) => Promise<NoteDeleteState>;
   onCreateCollection: () => void | Promise<void>;
+  onChangeLibraryRoot: () => void | Promise<void>;
   onRenameCollection: (collectionId: string, nextName: string) => void | Promise<void>;
   onDeleteCollection: (collectionId: string) => void | Promise<void>;
   onOpenDocument: (documentId: string, targetMode?: "reader" | "book") => void | Promise<void>;
@@ -241,6 +242,7 @@ export default function CollectionViewRefresh({
   onDeleteStandaloneNote,
   onGetStandaloneNoteDeleteState,
   onCreateCollection,
+  onChangeLibraryRoot,
   onRenameCollection,
   onDeleteCollection,
   onOpenDocument,
@@ -1923,6 +1925,21 @@ export default function CollectionViewRefresh({
       <aside className="collection-sidebar">
         <header className="collection-sidebar__header">
           <h2>Library</h2>
+          <button
+            className="collection-sidebar__add"
+            type="button"
+            aria-label="Change library folder"
+            title="Change library folder"
+            onClick={() => {
+              void onChangeLibraryRoot();
+            }}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <path d="M3.75 7.25A2.25 2.25 0 0 1 6 5h3.1c.6 0 1.18.24 1.6.66l1.15 1.14c.42.42 1 .66 1.6.66H18A2.25 2.25 0 0 1 20.25 9.7v7.05A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25V7.25Z" />
+              <path d="M16.5 7.75v5.5" />
+              <path d="M13.75 10.5h5.5" />
+            </svg>
+          </button>
         </header>
 
         <div className="collection-sidebar__rows-shell">

@@ -4,8 +4,13 @@ import { startDebugProcess } from "../debugLog";
 import type { DocumentPayload, FolderTreeNode, PaletteItem } from "../types";
 import { nextCollectionName } from "./helpers";
 
+function normalizeLibraryPath(path: string) {
+  return path.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+}
+
 type UseLibraryFlowsArgs = {
   libraryTree: FolderTreeNode | null;
+  libraryRoot: string;
   collectionOptions: {
     id: string;
     pathLabel: string;
@@ -30,10 +35,12 @@ type UseLibraryFlowsArgs = {
   renameCollection: (collectionId: string, newName: string) => Promise<unknown>;
   removeActiveDocument: (destinationDirectory: string) => Promise<unknown>;
   rescanLibraryState: () => Promise<void>;
+  changeLibraryRootState: (newRoot: string, options?: { moveExisting?: boolean }) => Promise<unknown>;
 };
 
 export function useLibraryFlows({
   libraryTree,
+  libraryRoot,
   collectionOptions,
   activeDocument,
   selectedCollection,
@@ -48,7 +55,8 @@ export function useLibraryFlows({
   renameActiveDocument,
   renameCollection,
   removeActiveDocument,
-  rescanLibraryState
+  rescanLibraryState,
+  changeLibraryRootState
 }: UseLibraryFlowsArgs) {
   async function promptImportFlow() {
     const process = startDebugProcess("app.prompt-import-flow");
@@ -230,6 +238,66 @@ export function useLibraryFlows({
     await rescanLibraryState();
   }
 
+  async function changeLibraryRootFlow() {
+    const process = startDebugProcess("library.change-root-picker-flow", {
+      currentLibraryRoot: libraryRoot
+    });
+    const selection = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: libraryRoot || undefined
+    });
+
+    if (typeof selection !== "string") {
+      process.finish({
+        selected: false
+      });
+      return;
+    }
+
+    if (normalizeLibraryPath(selection) === normalizeLibraryPath(libraryRoot)) {
+      setStatusMessage("That folder is already the current library location.");
+      process.finish({
+        selected: true,
+        unchanged: true
+      });
+      return;
+    }
+
+    openSelection(
+      "Use selected library folder",
+      [
+        {
+          id: "move-library-root",
+          title: "Move current library here",
+          subtitle: "Move existing collections and PDFs into the new folder",
+          glyph: "folder-open" as const,
+          onSelect: async () => {
+            await changeLibraryRootState(selection, { moveExisting: true });
+            closePalette();
+          }
+        },
+        {
+          id: "switch-library-root-only",
+          title: "Use new folder only",
+          subtitle: "Switch Readr to the selected folder without moving existing files",
+          glyph: "folder" as const,
+          onSelect: async () => {
+            await changeLibraryRootState(selection, { moveExisting: false });
+            closePalette();
+          }
+        }
+      ],
+      "Choose how to use the selected folder."
+    );
+
+    process.finish({
+      selected: true,
+      deferredSelection: true,
+      nextLibraryRoot: selection
+    });
+  }
+
   return {
     promptImportFlow,
     promptImportIntoCollectionFlow,
@@ -238,6 +306,7 @@ export function useLibraryFlows({
     renameDocumentFlow,
     renameFolderFlow,
     removeFromLibraryFlow,
-    rescanLibraryFlow
+    rescanLibraryFlow,
+    changeLibraryRootFlow
   };
 }

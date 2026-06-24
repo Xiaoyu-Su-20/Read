@@ -57,6 +57,13 @@ export function getLibraryRoot() {
   return invokeLogged<string>("get_library_root");
 }
 
+export function setLibraryRoot(newRoot: string, moveExisting: boolean) {
+  return invokeLogged<string>("set_library_root", {
+    newRoot,
+    moveExisting
+  });
+}
+
 export function loadAppSettings() {
   return invokeLogged<string | null>("load_app_settings");
 }

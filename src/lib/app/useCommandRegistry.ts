@@ -40,6 +40,7 @@ type UseCommandRegistryArgs = {
   viewerOrStatus: () => ViewerApi | null;
   promptImportFlow: () => Promise<void>;
   rescanLibraryFlow: () => Promise<void>;
+  changeLibraryRootFlow: () => Promise<void>;
   openLibraryFolder: () => Promise<void>;
   openDocumentById: (documentId: string) => Promise<void>;
   openSearch: () => void;
@@ -68,6 +69,7 @@ export function useCommandRegistry({
   viewerOrStatus,
   promptImportFlow,
   rescanLibraryFlow,
+  changeLibraryRootFlow,
   openLibraryFolder,
   openDocumentById,
   openSearch,
@@ -157,6 +159,18 @@ export function useCommandRegistry({
         onSelect: async () => {
           closePalette();
           await promptImportFlow();
+        }
+      },
+      {
+        id: "change-library-folder",
+        title: "Change library folder",
+        subtitle: libraryRoot || "Pick a new library location",
+        glyph: "folder",
+        group: "library",
+        keywords: ["library folder root location move switch"],
+        onSelect: async () => {
+          closePalette();
+          await changeLibraryRootFlow();
         }
       },
       {
@@ -419,6 +433,7 @@ export function useCommandRegistry({
     openSearch,
     openSelection,
     outlineItems,
+    changeLibraryRootFlow,
     promptImportFlow,
     readerState,
     recentDocuments,

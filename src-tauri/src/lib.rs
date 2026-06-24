@@ -7,7 +7,7 @@ mod store;
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
     process::Command,
     sync::{Arc, Condvar, Mutex},
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -20,7 +20,7 @@ use models::{
     RenderedPagePayload, StandaloneNoteSearchHit,
 };
 use normalization::{new_manifest_cache, ManifestCache, NormalizationWorker};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use store::{LibraryStore, RenderCache, RenderSessionRegistry};
 use tauri::{webview::PageLoadEvent, AppHandle, Manager, State, WindowEvent};
@@ -56,11 +56,192 @@ const CURRENT_DOCUMENT_LIBRARY_DIR_NAME: &str = "Readr";
 const LEGACY_DOCUMENT_LIBRARY_DIR_NAME: &str = "Reader";
 const LEGACY_APP_IDENTIFIER_DIR_NAME: &str = "com.openai.calmreader";
 
+#[derive(Debug, Serialize, Deserialize)]
+struct LibraryRootConfig {
+    library_root: String,
+}
+
 fn epoch_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+fn default_library_root(documents_root: &Path) -> PathBuf {
+    documents_root.join(CURRENT_DOCUMENT_LIBRARY_DIR_NAME)
+}
+
+fn validate_library_root_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("Library root must be an absolute path.".to_string());
+    }
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {}
+            Component::CurDir | Component::ParentDir => {
+                return Err(
+                    "Library root cannot contain relative path segments like . or .."
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    Ok(path.to_path_buf())
+}
+
+fn load_library_root_config_from_path(config_path: &Path) -> Result<Option<PathBuf>, String> {
+    if !config_path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(config_path).map_err(|error| {
+        format!(
+            "Unable to read library root configuration at {}: {error}",
+            config_path.display()
+        )
+    })?;
+    let config: LibraryRootConfig = serde_json::from_str(&raw).map_err(|error| {
+        format!(
+            "Unable to parse library root configuration at {}: {error}",
+            config_path.display()
+        )
+    })?;
+    let configured_root = PathBuf::from(config.library_root);
+    validate_library_root_path(&configured_root)?;
+    Ok(Some(configured_root))
+}
+
+fn resolve_library_root(app_dir: &Path, documents_root: &Path) -> Result<PathBuf, String> {
+    let config_path = store::paths::StorePaths::new(app_dir, default_library_root(documents_root))
+        .library_config_path;
+    let configured_root = load_library_root_config_from_path(&config_path)?;
+    Ok(configured_root.unwrap_or_else(|| default_library_root(documents_root)))
+}
+
+fn save_library_root_config(app_dir: &Path, library_root: &Path) -> Result<(), String> {
+    let library_root = validate_library_root_path(library_root)?;
+    let paths = store::paths::StorePaths::new(app_dir, &library_root);
+    paths
+        .write_json_atomically(
+            &paths.library_config_path,
+            &LibraryRootConfig {
+                library_root: library_root.to_string_lossy().to_string(),
+            },
+        )
+        .map_err(|error| {
+            format!(
+                "Unable to save library root configuration at {}: {error}",
+                paths.library_config_path.display()
+            )
+        })
+}
+
+fn move_library_root_contents(current_root: &Path, new_root: &Path) -> Result<(), String> {
+    let current_root = validate_library_root_path(current_root)?;
+    let new_root = validate_library_root_path(new_root)?;
+
+    if current_root == new_root {
+        return Ok(());
+    }
+
+    if new_root.starts_with(&current_root) || current_root.starts_with(&new_root) {
+        return Err(
+            "Library roots cannot be moved into a parent or child of the current location."
+                .to_string(),
+        );
+    }
+
+    let helper_paths = store::paths::StorePaths::new(std::env::temp_dir(), &current_root);
+
+    if current_root.exists() {
+        if !current_root.is_dir() {
+            return Err(format!(
+                "Current library root is not a directory: {}",
+                current_root.display()
+            ));
+        }
+    } else {
+        fs::create_dir_all(&new_root).map_err(|error| {
+            format!(
+                "Unable to create the new library root at {}: {error}",
+                new_root.display()
+            )
+        })?;
+        return Ok(());
+    }
+
+    if new_root.exists() {
+        if !new_root.is_dir() {
+            return Err(format!(
+                "New library root is not a directory: {}",
+                new_root.display()
+            ));
+        }
+        let is_empty = helper_paths
+            .directory_is_empty(&new_root)
+            .map_err(|error| error.to_string())?;
+        if !is_empty {
+            return Err(format!(
+                "New library root must be empty before moving files: {}",
+                new_root.display()
+            ));
+        }
+    } else {
+        fs::create_dir_all(&new_root).map_err(|error| {
+            format!(
+                "Unable to create the new library root at {}: {error}",
+                new_root.display()
+            )
+        })?;
+    }
+
+    let entries = fs::read_dir(&current_root)
+        .map_err(|error| {
+            format!(
+                "Unable to read the current library root at {}: {error}",
+                current_root.display()
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            format!(
+                "Unable to enumerate the current library root at {}: {error}",
+                current_root.display()
+            )
+        })?;
+
+    for entry in entries {
+        let source = entry.path();
+        let destination = new_root.join(entry.file_name());
+        helper_paths
+            .move_path(&source, &destination)
+            .map_err(|error| {
+                format!(
+                    "Unable to move library content from {} to {}: {error}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+    }
+
+    if current_root.exists() {
+        let is_empty = helper_paths
+            .directory_is_empty(&current_root)
+            .map_err(|error| error.to_string())?;
+        if is_empty {
+            fs::remove_dir(&current_root).map_err(|error| {
+                format!(
+                    "Unable to remove the previous library root at {}: {error}",
+                    current_root.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 impl InFlightRender {
@@ -181,14 +362,12 @@ fn app_store(app: &AppHandle) -> Result<LibraryStore, String> {
         .path()
         .app_data_dir()
         .map_err(|error| format!("Unable to resolve app data directory: {error}"))?;
-    let document_dir = app
+    let documents_root = app
         .path()
         .document_dir()
         .map_err(|error| format!("Unable to resolve the user documents directory: {error}"))?;
-    Ok(LibraryStore::new(
-        app_dir,
-        document_dir.join(CURRENT_DOCUMENT_LIBRARY_DIR_NAME),
-    ))
+    let library_root = resolve_library_root(&app_dir, &documents_root)?;
+    Ok(LibraryStore::new(app_dir, library_root))
 }
 
 fn with_store<T>(
@@ -265,7 +444,7 @@ fn migrate_legacy_storage(app: &AppHandle) -> Result<(), String> {
         .path()
         .document_dir()
         .map_err(|error| format!("Unable to resolve the user documents directory: {error}"))?;
-    let document_dir = documents_root.join(CURRENT_DOCUMENT_LIBRARY_DIR_NAME);
+    let document_dir = default_library_root(&documents_root);
     let legacy_document_dir = documents_root.join(LEGACY_DOCUMENT_LIBRARY_DIR_NAME);
 
     if !app_dir.exists() {
@@ -286,7 +465,10 @@ fn migrate_legacy_storage(app: &AppHandle) -> Result<(), String> {
         }
     }
 
-    if !document_dir.exists() && legacy_document_dir.exists() {
+    let configured_root =
+        load_library_root_config_from_path(&store::paths::StorePaths::new(&app_dir, &document_dir).library_config_path)?;
+
+    if configured_root.is_none() && !document_dir.exists() && legacy_document_dir.exists() {
         fs::rename(&legacy_document_dir, &document_dir).map_err(|error| {
             format!(
                 "Unable to migrate legacy document library from {} to {}: {error}",
@@ -308,6 +490,63 @@ fn get_library_root(app: AppHandle, state: State<'_, AppState>) -> Result<String
                 .map_err(|error| error.to_string())
         })
     })
+}
+
+#[tauri::command]
+fn set_library_root(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    new_root: String,
+    move_existing: bool,
+) -> Result<String, String> {
+    run_logged_command(
+        "set_library_root",
+        json!({
+            "moveExisting": move_existing,
+            "newRoot": new_root,
+        }),
+        || {
+            let _guard = state
+                .lock
+                .lock()
+                .map_err(|_| "Unable to lock application state.".to_string())?;
+            let app_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| format!("Unable to resolve app data directory: {error}"))?;
+            let documents_root = app.path().document_dir().map_err(|error| {
+                format!("Unable to resolve the user documents directory: {error}")
+            })?;
+            let current_root = resolve_library_root(&app_dir, &documents_root)?;
+            let new_root = validate_library_root_path(Path::new(&new_root))?;
+
+            if new_root == app_dir || new_root.starts_with(&app_dir) || app_dir.starts_with(&new_root)
+            {
+                return Err(
+                    "Library root cannot overlap the application's app-data directory."
+                        .to_string(),
+                );
+            }
+
+            if move_existing {
+                move_library_root_contents(&current_root, &new_root)?;
+            } else {
+                fs::create_dir_all(&new_root).map_err(|error| {
+                    format!(
+                        "Unable to create the library root at {}: {error}",
+                        new_root.display()
+                    )
+                })?;
+            }
+
+            save_library_root_config(&app_dir, &new_root)?;
+            LibraryStore::new(&app_dir, &new_root)
+                .ensure_ready()
+                .map_err(|error| error.to_string())?;
+
+            Ok(new_root.to_string_lossy().to_string())
+        },
+    )
 }
 
 #[tauri::command]
@@ -1391,14 +1630,16 @@ pub fn run() {
                 }),
             );
 
-            let document_dir = app
-                .path()
-                .document_dir()?
-                .join(CURRENT_DOCUMENT_LIBRARY_DIR_NAME);
+            let document_dir = app.path().document_dir()?;
+            let library_root = resolve_library_root(&app_dir, &document_dir)?;
+            let library_config_path =
+                store::paths::StorePaths::new(&app_dir, &library_root).library_config_path;
             crate::debug::startup(
                 "app.setup:document-dir",
                 json!({
                     "documentDir": document_dir.to_string_lossy().to_string(),
+                    "libraryConfigPath": library_config_path.to_string_lossy().to_string(),
+                    "libraryRoot": library_root.to_string_lossy().to_string(),
                     "elapsedMs": startup_started_at.elapsed().as_millis(),
                 }),
             );
@@ -1406,11 +1647,13 @@ pub fn run() {
                 "app.setup:document-dir",
                 json!({
                     "documentDir": document_dir.to_string_lossy().to_string(),
+                    "libraryConfigPath": library_config_path.to_string_lossy().to_string(),
+                    "libraryRoot": library_root.to_string_lossy().to_string(),
                     "elapsedMs": startup_started_at.elapsed().as_millis(),
                 }),
             );
 
-            let paths = store::paths::StorePaths::new(app_dir, document_dir);
+            let paths = store::paths::StorePaths::new(app_dir, library_root);
             paths.ensure_storage_dirs()?;
             crate::debug::startup(
                 "app.setup:storage-ready",
@@ -1558,6 +1801,7 @@ pub fn run() {
             load_app_settings,
             save_app_settings,
             get_library_root,
+            set_library_root,
             import_pdf,
             list_library,
             rescan_library,
@@ -1615,4 +1859,54 @@ pub fn run() {
             "epochMs": epoch_ms(),
         }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        default_library_root, load_library_root_config_from_path, move_library_root_contents,
+        save_library_root_config,
+    };
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn library_root_config_round_trips() {
+        let temp = tempdir().unwrap();
+        let app_dir = temp.path().join("app");
+        let configured_root = temp.path().join("pdf-library");
+
+        save_library_root_config(&app_dir, &configured_root).unwrap();
+
+        let config_path = app_dir.join("library-root.json");
+        let loaded = load_library_root_config_from_path(&config_path).unwrap();
+
+        assert_eq!(loaded, Some(configured_root));
+    }
+
+    #[test]
+    fn move_library_root_moves_contents_and_removes_empty_source() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(source.join("Collection 1")).unwrap();
+        fs::write(source.join("Collection 1").join("Doc.pdf"), b"pdf").unwrap();
+
+        move_library_root_contents(&source, &destination).unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read(destination.join("Collection 1").join("Doc.pdf")).unwrap(),
+            b"pdf"
+        );
+    }
+
+    #[test]
+    fn default_root_uses_readr_directory() {
+        let temp = tempdir().unwrap();
+        assert_eq!(
+            default_library_root(temp.path()),
+            temp.path().join("Readr")
+        );
+    }
 }

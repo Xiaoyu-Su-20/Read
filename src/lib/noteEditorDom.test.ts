@@ -3,9 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   captureBlockEndRange,
   getAdjacentPageLink,
+  normalizeCollapsedSelectionNearPageLink,
   normalizeNoteEditorDom,
   parseNoteBlocksFromEditor,
+  resolveAtomicPointerPosition,
   resolveCollapsedRangeAtPoint,
+  resolvePageLinkBoundarySelectionAtPoint,
+  resolvePageLinkBoundarySelection,
   renderNoteBlocksHtml,
   turnSelectionIntoTopicCard
 } from "./noteEditorDom";
@@ -325,6 +329,158 @@ describe("noteEditorDom accessibility behavior", () => {
     selection?.addRange(range);
 
     expect(getAdjacentPageLink(root, "backward")).toBeNull();
+  });
+
+  it.skipIf(!hasDom)("resolves a pointer on the left or right half of a pagelink into a logical edge", () => {
+    document.body.innerHTML = `<div id="root">${renderNoteBlocksHtml([
+      {
+        id: "paragraph-1",
+        type: "paragraph",
+        children: [
+          createTextNode("Before "),
+          createPageLinkNode({
+            text: "(p. 25)",
+            bookPageLabel: "25",
+            documentId: "doc-1",
+            pdfPageIndex: 24
+          })
+        ]
+      }
+    ])}</div>`;
+
+    const root = document.getElementById("root") as HTMLDivElement;
+    normalizeNoteEditorDom(root);
+    const pageLink = root.querySelector("[data-inline-type='page-link']") as HTMLElement;
+    const originalGetBoundingClientRect = pageLink.getBoundingClientRect.bind(pageLink);
+
+    pageLink.getBoundingClientRect = () =>
+      ({
+        x: 100,
+        y: 20,
+        left: 100,
+        top: 20,
+        right: 140,
+        bottom: 36,
+        width: 40,
+        height: 16,
+        toJSON: () => ""
+      }) as DOMRect;
+
+    try {
+      expect(resolveAtomicPointerPosition(pageLink, 109)).toBe("before");
+      expect(resolveAtomicPointerPosition(pageLink, 131)).toBe("after");
+    } finally {
+      pageLink.getBoundingClientRect = originalGetBoundingClientRect;
+    }
+  });
+
+  it.skipIf(!hasDom)("resolves direct pointer hits on a pagelink into a boundary selection", () => {
+    document.body.innerHTML = `<div id="root">${renderNoteBlocksHtml([
+      {
+        id: "paragraph-1",
+        type: "paragraph",
+        children: [
+          createTextNode("Before "),
+          createPageLinkNode({
+            text: "(p. 25)",
+            bookPageLabel: "25",
+            documentId: "doc-1",
+            pdfPageIndex: 24
+          }),
+          createTextNode(" after")
+        ]
+      }
+    ])}</div>`;
+
+    const root = document.getElementById("root") as HTMLDivElement;
+    normalizeNoteEditorDom(root);
+    const pageLink = root.querySelector("[data-inline-type='page-link']") as HTMLElement;
+    const originalGetBoundingClientRect = pageLink.getBoundingClientRect.bind(pageLink);
+    const originalElementFromPoint = document.elementFromPoint.bind(document);
+
+    pageLink.getBoundingClientRect = () =>
+      ({
+        x: 100,
+        y: 20,
+        left: 100,
+        top: 20,
+        right: 140,
+        bottom: 36,
+        width: 40,
+        height: 16,
+        toJSON: () => ""
+      }) as DOMRect;
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => pageLink
+    });
+
+    try {
+      const leftBoundary = resolvePageLinkBoundarySelectionAtPoint(root, 109, 28);
+      const rightBoundary = resolvePageLinkBoundarySelectionAtPoint(root, 131, 28);
+
+      expect(leftBoundary).toMatchObject({
+        blockId: "paragraph-1",
+        pageLinkId: pageLink.dataset.pageLinkId,
+        edge: "before"
+      });
+      expect(rightBoundary).toMatchObject({
+        blockId: "paragraph-1",
+        pageLinkId: pageLink.dataset.pageLinkId,
+        edge: "after"
+      });
+    } finally {
+      pageLink.getBoundingClientRect = originalGetBoundingClientRect;
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: originalElementFromPoint
+      });
+    }
+  });
+
+  it.skipIf(!hasDom)("normalizes a text-boundary pagelink caret to a stable after boundary", () => {
+    document.body.innerHTML = `<div id="root">${renderNoteBlocksHtml([
+      {
+        id: "paragraph-1",
+        type: "paragraph",
+        children: [
+          createTextNode("Before "),
+          createPageLinkNode({
+            text: "(p. 25)",
+            bookPageLabel: "25",
+            documentId: "doc-1",
+            pdfPageIndex: 24
+          }),
+          createTextNode(" after")
+        ]
+      }
+    ])}</div>`;
+
+    const root = document.getElementById("root") as HTMLDivElement;
+    normalizeNoteEditorDom(root);
+    const pageLink = root.querySelector("[data-inline-type='page-link']") as HTMLElement;
+    const trailingText = pageLink.nextSibling as Text;
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(trailingText, 0);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const boundary = resolvePageLinkBoundarySelection(root);
+    const normalized = normalizeCollapsedSelectionNearPageLink(root);
+    const normalizedRange = selection?.getRangeAt(0);
+
+    expect(boundary).toMatchObject({
+      blockId: "paragraph-1",
+      pageLinkId: pageLink.dataset.pageLinkId,
+      edge: "after"
+    });
+    expect(normalized).toBe(true);
+    expect(normalizedRange?.startContainer).toBe(pageLink.parentNode);
+    expect(normalizedRange?.startOffset).toBe(
+      Array.prototype.indexOf.call(pageLink.parentNode?.childNodes, pageLink) + 1
+    );
   });
 
   it.skipIf(!hasDom)("normalizes empty headings into editable paragraphs", () => {

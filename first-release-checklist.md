@@ -13,26 +13,23 @@
 - User PDF library folder: `Documents\\Readr`
 - Legacy section-break blocks: removed on normalization and save
 - Production builds should not allow side-by-side install identity drift
+- Primary Windows installer format: `NSIS`
+- Support logging activation: both
+  - Environment variable support retained
+  - Hidden in-app session toggle supported
+  - Do not expose as a prominent normal user setting in first release
+- Support log retention policy:
+  - Persistent while support logging is enabled
+  - Max size: `5 MB` per file
+  - Rotation count: `5` files
+- Release channel policy: production only for first release
 
 ## Still Open
 
-- Production installer format:
-  - Choose one primary Windows installer: `NSIS` or `MSI`
-  - Recommendation: `NSIS` unless enterprise deployment specifically needs `MSI`
-- Durable frontend settings migration:
-  - Some durable settings are still stored in `localStorage`
-  - Decide whether first release keeps that temporarily or moves them to backend app-data JSON now
-- Support logging activation:
-  - Environment variable only
-  - Hidden UI/session toggle
-  - Both
-- Log retention policy:
-  - Max size
-  - Rotation count
-  - Whether support logs are session-only or persistent until disabled
-- Release channel policy:
-  - Production only
-  - Separate beta/dev identifier for coexistence
+- Frontend-only persistence cleanup:
+  - Core app settings already persist through backend app-data JSON
+  - `workspace-session` localStorage is now mainly a low-value restore hint because startup always enters collection view
+  - Recommendation: do not block first release on migrating debug/session toggles; optionally remove `workspace-session` persistence if we want less misleading frontend state
 
 ## Identity And Install
 
@@ -49,28 +46,40 @@
 
 ## Persistence And Data
 
-- Confirm app-data location used for:
-  - indexes
-  - notes
-  - reader state
-  - caches
-- Confirm PDF library location used for imported PDFs
-- Confirm old note formats normalize safely on load/save
-- Confirm removal of deprecated structures:
-  - legacy section-break blocks are dropped cleanly
-- Confirm app startup does not depend on stale workspace restoration for correctness
-- Confirm collection view is always the startup entry point
+- App-data location confirmed:
+  - library index: `app_dir/library-index.json`
+  - notes: `app_dir/notes/*.json` and `app_dir/notes/index.json`
+  - reader state: `app_dir/document-states/*.json`
+  - caches: `app_dir/rendered-pages` and `app_dir/page-normalization`
+- PDF library location confirmed:
+  - imported PDFs live under the resolved library root
+  - default root: `Documents\\Readr`
+  - configurable root persisted in `app_dir/library-root.json`
+- Old note formats normalize safely on both load and save
+- Deprecated structures removed cleanly:
+  - legacy section-break blocks are dropped during normalization/save
+  - legacy note spans migrate into inline children
+- App startup correctness does not depend on stale workspace restoration
+- Collection view is always the startup entry point
 
 ## Logging And Support
 
-- Confirm production default logging mode
-- Confirm support logging can be enabled intentionally
-- Confirm logs are sanitized:
-  - no note contents by default
-  - no selected text by default
-  - no full user document paths unless explicitly in support mode
-- Confirm support/error logs have size bounds or rotation
-- Confirm frontend logging does not spam hot render/scroll paths in production
+- Production default logging mode confirmed:
+  - production defaults to `errors-only`
+  - verbose tracing is default only in dev builds
+- Support logging can be enabled intentionally:
+  - environment variable: `READR_SUPPORT_LOG=1`
+  - hidden in-app session toggle / logging bridge
+- Logs are sanitized by default:
+  - note contents are redacted by key-based sanitization
+  - selected text / selection payloads are redacted by key-based sanitization
+  - caution: full user document paths are redacted for `*path*` fields, but error strings may still include paths unless we harden error-message sanitization further
+- Support/error logs have size bounds:
+  - support log: `5 MB` with rotation count `5`
+  - error log: `256 KB` truncate-on-bound
+- Frontend logging does not spam hot render/scroll paths in default production mode:
+  - trace/debug events are gated behind verbose policy
+  - production `errors-only` mode suppresses normal render/scroll tracing unless support logging is intentionally enabled
 
 ## Reader And Workspace Behavior
 
