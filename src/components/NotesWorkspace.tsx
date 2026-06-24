@@ -10,6 +10,8 @@ type NotesWorkspaceProps = {
   notesLoading: boolean;
   noteNavigationItems: NoteNavigationItem[];
   noteRevealRequest: NoteRevealRequest | null;
+  navigationOpen: boolean;
+  onNavigationOpenChange: (open: boolean) => void;
   navigationOpenRequest: number;
   onChangeNoteTitle: (title: string) => void;
   onChangeNoteBlocks: (blocks: NoteDocument["blocks"]) => void;
@@ -34,6 +36,8 @@ export default function NotesWorkspace({
   notesLoading,
   noteNavigationItems,
   noteRevealRequest,
+  navigationOpen,
+  onNavigationOpenChange,
   navigationOpenRequest,
   onChangeNoteTitle,
   onChangeNoteBlocks,
@@ -120,6 +124,8 @@ export default function NotesWorkspace({
               fullscreen={fullscreen}
               onToggleFullscreen={onToggleFullscreen}
               titleMode="hidden"
+              navigationOpen={navigationOpen}
+              onNavigationOpenChange={onNavigationOpenChange}
               navigationOpenRequest={navigationOpenRequest}
               navigationItems={noteNavigationItems}
               onChangeTitle={onChangeNoteTitle}

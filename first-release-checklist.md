@@ -81,6 +81,35 @@
   - trace/debug events are gated behind verbose policy
   - production `errors-only` mode suppresses normal render/scroll tracing unless support logging is intentionally enabled
 
+## In-App Auto-Update
+
+- Current status:
+  - no in-app auto-update is implemented yet
+  - current update path is manual installer upgrade via `NSIS`
+- Plugin wiring:
+  - add `tauri-plugin-updater` to Rust dependencies
+  - register the updater plugin in app startup
+  - add updater configuration to `src-tauri/tauri.conf.json`
+- Release infrastructure:
+  - choose one production update host
+  - publish signed update metadata for each release
+  - publish the matching `NSIS` installer artifact for each release
+  - manage updater signing keys outside the repo
+- App UX:
+  - add `Check for updates` command
+  - show available version and release notes when an update exists
+  - support `Download and install`
+  - prompt for restart after successful install
+- First implementation recommendation:
+  - manual update check only
+  - no background polling on launch
+  - production channel only
+- Verification:
+  - verify newer installer is detected from the running app
+  - verify install applies over the existing app identity
+  - verify notes, indexes, reader state, settings, and library-root config survive update
+  - verify downgrade remains blocked
+
 ## Reader And Workspace Behavior
 
 - Confirm fullscreen entry/exit behavior is stable

@@ -18,6 +18,8 @@ type NotesViewportProps = {
   onToggleFullscreen: () => void | Promise<void>;
   headerActionsContainerId: string | null;
   titleMode?: "hidden" | "standalone";
+  navigationOpen: boolean;
+  onNavigationOpenChange: (open: boolean) => void;
   navigationOpenRequest: number;
   commandPaletteOpen: boolean;
   onToggleCommandPalette: () => void;
@@ -45,6 +47,8 @@ const NotesViewport = memo(function NotesViewport({
   onToggleFullscreen,
   headerActionsContainerId,
   titleMode = "hidden",
+  navigationOpen,
+  onNavigationOpenChange,
   navigationOpenRequest,
   commandPaletteOpen,
   onToggleCommandPalette,
@@ -76,6 +80,8 @@ const NotesViewport = memo(function NotesViewport({
         onToggleFullscreen={onToggleFullscreen}
         headerActionsContainerId={headerActionsContainerId}
         titleMode={titleMode}
+        navigationOpen={navigationOpen}
+        onNavigationOpenChange={onNavigationOpenChange}
         navigationOpenRequest={navigationOpenRequest}
         commandPaletteOpen={commandPaletteOpen}
         onToggleCommandPalette={onToggleCommandPalette}

@@ -39,6 +39,8 @@ type NotesPaneProps = {
   onToggleFullscreen: () => void | Promise<void>;
   headerActionsContainerId: string | null;
   titleMode?: "hidden" | "standalone";
+  navigationOpen: boolean;
+  onNavigationOpenChange: (open: boolean) => void;
   navigationItems: NoteNavigationItem[];
   onChangeTitle: (title: string) => void;
   onChangeBlocks: (blocks: NoteDocument["blocks"]) => void;
@@ -190,6 +192,8 @@ const NotesPane = memo(function NotesPane({
   onToggleFullscreen,
   headerActionsContainerId,
   titleMode = "hidden",
+  navigationOpen,
+  onNavigationOpenChange,
   navigationItems,
   onChangeTitle,
   onChangeBlocks,
@@ -235,7 +239,6 @@ const NotesPane = memo(function NotesPane({
     timestamp: number;
   } | null>(null);
   const toastTimerRef = useRef<number | null>(null);
-  const [navigationOpen, setNavigationOpen] = useState(false);
   const [scrollbarVisible, setScrollbarVisible] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
@@ -307,7 +310,7 @@ const NotesPane = memo(function NotesPane({
                   type="button"
                   onClick={() => {
                     editorRef.current?.scrollToBlock(node.item.blockId);
-                    setNavigationOpen(false);
+                    onNavigationOpenChange(false);
                   }}
                 >
                   <span className="notes-navigation__tree-marker" aria-hidden="true">
@@ -350,9 +353,9 @@ const NotesPane = memo(function NotesPane({
 
   useEffect(() => {
     if (navigationOpenRequest > 0) {
-      setNavigationOpen(true);
+      onNavigationOpenChange(true);
     }
-  }, [navigationOpenRequest]);
+  }, [navigationOpenRequest, onNavigationOpenChange]);
 
   useEffect(() => {
     if (!navigationOpen) {
@@ -395,7 +398,7 @@ const NotesPane = memo(function NotesPane({
 
   function openFindPanel() {
     closeMenu();
-    setNavigationOpen(false);
+    onNavigationOpenChange(false);
     setPageLinkDialog(null);
     setFindOpen(true);
     window.requestAnimationFrame(() => {
@@ -504,7 +507,7 @@ const NotesPane = memo(function NotesPane({
   }
 
   function closeInlineOverlays() {
-    setNavigationOpen(false);
+    onNavigationOpenChange(false);
     setPageLinkDialog(null);
     setTopicDialog(null);
     setFindOpen(false);
@@ -693,7 +696,7 @@ const NotesPane = memo(function NotesPane({
   useEffect(() => {
     closeMenu();
     setPageLinkDialog(null);
-    setNavigationOpen(false);
+    onNavigationOpenChange(false);
   }, [closeMenu, note?.id]);
 
   useEffect(() => {
@@ -1005,7 +1008,7 @@ const NotesPane = memo(function NotesPane({
       registerCommandPaletteAnchor={registerCommandPaletteAnchor}
       onToggleCommandPalette={() => {
         closeMenu();
-        setNavigationOpen(false);
+        onNavigationOpenChange(false);
         setPageLinkDialog(null);
         setTopicDialog(null);
         onToggleCommandPalette();
@@ -1020,7 +1023,7 @@ const NotesPane = memo(function NotesPane({
               closeMenu();
               setPageLinkDialog(null);
               setTopicDialog(null);
-              setNavigationOpen((current) => !current);
+              onNavigationOpenChange(!navigationOpen);
             }}
           />
           {navigationOpen ? (
@@ -1055,7 +1058,7 @@ const NotesPane = memo(function NotesPane({
                           type="button"
                           onClick={() => {
                             editorRef.current?.scrollToBlock(node.item.blockId);
-                            setNavigationOpen(false);
+                            onNavigationOpenChange(false);
                           }}
                         >
                           <span className="notes-navigation__chapter-icon" aria-hidden="true">

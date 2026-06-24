@@ -165,6 +165,7 @@ export default function App() {
   const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const [noteRevealRequest, setNoteRevealRequest] = useState<import("./lib/types").NoteRevealRequest | null>(null);
   const [notesNavigationOpenRequest, setNotesNavigationOpenRequest] = useState(0);
+  const [notesNavigationOpen, setNotesNavigationOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [outlineAnchorElement, setOutlineAnchorElement] = useState<HTMLButtonElement | null>(null);
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
@@ -691,6 +692,7 @@ export default function App() {
     }
 
     palette.closePalette();
+    setNotesNavigationOpen(false);
     setSidebarSearchOpen(false);
     setOutlineOpen(false);
     setSettingsOpen(false);
@@ -708,6 +710,7 @@ export default function App() {
 
   function toggleSidebarDocumentSearch() {
     palette.closePalette();
+    setNotesNavigationOpen(false);
     searchController.dismiss();
     setOutlineOpen(false);
     setSettingsOpen(false);
@@ -715,6 +718,7 @@ export default function App() {
   }
 
   const openNotesNavigation = useCallback(() => {
+    setNotesNavigationOpen(true);
     setNotesNavigationOpenRequest((current) => current + 1);
   }, []);
   const flows = useLibraryFlows({
@@ -886,6 +890,15 @@ export default function App() {
         }
 
         event.preventDefault();
+        setNotesNavigationOpen(false);
+        setSidebarSearchOpen(false);
+        setOutlineOpen(false);
+        setSettingsOpen(false);
+        searchController.dismiss();
+        if (palette.paletteOpen) {
+          palette.closePalette();
+          return;
+        }
         palette.openCommands(commandRegistry);
         return;
       }
@@ -899,7 +912,18 @@ export default function App() {
         }
 
         event.preventDefault();
-        setNotesNavigationOpenRequest((current) => current + 1);
+        palette.closePalette();
+        setSidebarSearchOpen(false);
+        setOutlineOpen(false);
+        setSettingsOpen(false);
+        searchController.dismiss();
+        setNotesNavigationOpen((current) => {
+          const next = !current;
+          if (next) {
+            setNotesNavigationOpenRequest((request) => request + 1);
+          }
+          return next;
+        });
         return;
       }
 
@@ -923,6 +947,7 @@ export default function App() {
     commandRegistry,
     exitFullscreen,
     fullscreenState,
+    palette.paletteOpen,
     palette.closePalette,
     palette.openCommands,
     searchController,
@@ -1516,6 +1541,8 @@ export default function App() {
                 onHeaderMouseDown={handleTopbarMouseDown}
                 searchController={searchController}
                 searchFocusRequest={searchFocusRequest}
+                navigationOpen={notesNavigationOpen}
+                onNavigationOpenChange={setNotesNavigationOpen}
                 navigationOpenRequest={notesNavigationOpenRequest}
                 commandPaletteOpen={palette.paletteOpen}
                 onToggleCommandPalette={() => {
@@ -1614,6 +1641,8 @@ export default function App() {
                 notesLoading={notes.loading}
                 noteNavigationItems={notes.navigationItems}
                 noteRevealRequest={noteRevealRequest}
+                navigationOpen={notesNavigationOpen}
+                onNavigationOpenChange={setNotesNavigationOpen}
                 navigationOpenRequest={notesNavigationOpenRequest}
                 onChangeNoteTitle={notes.updateTitle}
                 onChangeNoteBlocks={notes.updateBlocks}
