@@ -2,7 +2,6 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
-  useMemo,
   useRef
 } from "react";
 
@@ -47,6 +46,7 @@ import {
   resolvePageLinkBoundarySelectionAtPoint,
   projectPageLinkBoundarySelection,
   canTurnSelectionIntoTopicCard,
+  visibleOffsetFromPoint,
   selectBlockElement,
   selectTextMatchInBlock,
   selectPageLinkToken,
@@ -59,7 +59,7 @@ import {
   readTopicCardFromElement
 } from "../../lib/noteEditorDom";
 import { logNoteDebugEvent } from "../../lib/api";
-import { debugAction } from "../../lib/debugLog";
+import { debugAction, debugLocalAction } from "../../lib/debugLog";
 import { computeCenteredChildScrollTop } from "./noteEditorScroll";
 import {
   commitNoteHistoryState,
@@ -85,6 +85,7 @@ import type {
   NotePageLinkNode,
   ParagraphTopic
 } from "../../lib/types";
+import ModelNoteEditor from "./ModelNoteEditor";
 
 export type NoteEditorContextTarget =
   | {
@@ -155,6 +156,16 @@ type NoteEditorProps = {
 };
 
 const IGNORED_SPELLCHECK_SELECTOR = "[data-ignored-spellcheck-word='true']";
+const NOTE_EDITOR_DEBUG_TEXT_LIMIT = 120;
+
+type LogicalCaretSnapshot = {
+  blockId: string | null;
+  visibleOffset: number | null;
+  containerKind: "text" | "element" | "none";
+  containerTag: string | null;
+  domOffset: number | null;
+  blockHtml: string | null;
+};
 
 function isHeadingBlockType(
   blockType: string | undefined
@@ -163,21 +174,14 @@ function isHeadingBlockType(
 }
 
 function unwrapIgnoredSpellcheckWords(root: ParentNode) {
-  if (!(root instanceof Element || root instanceof DocumentFragment)) {
-    return;
-  }
-
-  root.querySelectorAll<HTMLElement>(IGNORED_SPELLCHECK_SELECTOR).forEach((element) => {
-    element.replaceWith(...Array.from(element.childNodes));
-  });
+  void root;
 }
 
 function applyIgnoredSpellcheckWords(root: HTMLElement, ignoredWords: ReadonlySet<string>) {
-  unwrapIgnoredSpellcheckWords(root);
-  if (ignoredWords.size === 0) {
-    return;
-  }
-
+  void root;
+  void ignoredWords;
+  return;
+  /*
   const ownerDocument = root.ownerDocument;
   const walker = ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const textNodes: Text[] = [];
@@ -238,6 +242,63 @@ function applyIgnoredSpellcheckWords(root: HTMLElement, ignoredWords: ReadonlySe
 
     textNode.replaceWith(fragment);
   }
+  */
+}
+
+function sanitizeDebugText(text: string | null | undefined, limit = NOTE_EDITOR_DEBUG_TEXT_LIMIT) {
+  const normalized = String(text ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\n/g, "\\n")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit)}...`;
+}
+
+function nodeDebugLabel(node: Node | null) {
+  if (!node) {
+    return null;
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    return {
+      kind: "text",
+      text: sanitizeDebugText(node.textContent, 60),
+      length: node.textContent?.length ?? 0
+    };
+  }
+
+  if (!(node instanceof HTMLElement)) {
+    return {
+      kind: node.nodeName.toLowerCase()
+    };
+  }
+
+  return {
+    kind: node.tagName.toLowerCase(),
+    blockId: node.dataset.blockId ?? null,
+    blockType: node.dataset.blockType ?? null,
+    inlineType: node.dataset.inlineType ?? null,
+    topicId: node.dataset.topicId ?? null,
+    pageLinkId: node.dataset.pageLinkId ?? null,
+    text: sanitizeDebugText(node.textContent, 60)
+  };
+}
+
+function blockDebugSummary(block: HTMLElement | null) {
+  if (!block) {
+    return null;
+  }
+
+  return {
+    blockId: block.dataset.blockId ?? null,
+    blockType: block.dataset.blockType ?? null,
+    childNodes: block.childNodes.length,
+    text: sanitizeDebugText(block.textContent),
+    textLength: block.textContent?.length ?? 0
+  };
 }
 
 const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEditor(
@@ -261,12 +322,115 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
   const selectedTopicIdRef = useRef<string | null>(null);
   const suppressedPageLinkClickIdRef = useRef<string | null>(null);
   const pendingPageLinkRangeRef = useRef<Range | null>(null);
+  const pendingTopicSelectionRef = useRef<ReturnType<typeof captureEditorSelection>>(null);
   const historyRef = useRef<NoteHistoryState | null>(null);
   const applyingHistoryRef = useRef(false);
-  const ignoredSpellcheckWordSet = useMemo(
-    () => new Set(ignoredSpellcheckWords.map((word) => canonicalSpellcheckWord(word))),
-    [ignoredSpellcheckWords]
-  );
+  void ignoredSpellcheckWords;
+
+  function captureSelectionDebug() {
+    if (!bodyRef.current) {
+      return null;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return {
+        hasSelection: false
+      };
+    }
+
+    const range = selection.getRangeAt(0);
+    const startBlock = findClosestBlockElement(bodyRef.current, range.startContainer);
+    const endBlock = findClosestBlockElement(bodyRef.current, range.endContainer);
+    return {
+      hasSelection: true,
+      isCollapsed: selection.isCollapsed,
+      text: sanitizeDebugText(selection.toString()),
+      anchorOffset: selection.anchorOffset,
+      focusOffset: selection.focusOffset,
+      rangeStartOffset: range.startOffset,
+      rangeEndOffset: range.endOffset,
+      anchorNode: nodeDebugLabel(selection.anchorNode),
+      focusNode: nodeDebugLabel(selection.focusNode),
+      startContainer: nodeDebugLabel(range.startContainer),
+      endContainer: nodeDebugLabel(range.endContainer),
+      startBlock: blockDebugSummary(startBlock),
+      endBlock: blockDebugSummary(endBlock)
+    };
+  }
+
+  function captureLogicalCaretSnapshot(): LogicalCaretSnapshot {
+    if (!bodyRef.current) {
+      return {
+        blockId: null,
+        visibleOffset: null,
+        containerKind: "none",
+        containerTag: null,
+        domOffset: null,
+        blockHtml: null
+      };
+    }
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return {
+        blockId: null,
+        visibleOffset: null,
+        containerKind: "none",
+        containerTag: null,
+        domOffset: null,
+        blockHtml: null
+      };
+    }
+
+    const range = selection.getRangeAt(0);
+    const container = range.startContainer;
+    const block = findClosestBlockElement(bodyRef.current, container);
+
+    return {
+      blockId: block?.dataset.blockId ?? null,
+      visibleOffset:
+        block && selection.isCollapsed
+          ? visibleOffsetFromPoint(block, range.startContainer, range.startOffset)
+          : null,
+      containerKind:
+        container.nodeType === Node.TEXT_NODE
+          ? "text"
+          : container.nodeType === Node.ELEMENT_NODE
+            ? "element"
+            : "none",
+      containerTag:
+        container instanceof HTMLElement
+          ? container.tagName.toLowerCase()
+          : container.parentElement?.tagName.toLowerCase() ?? null,
+      domOffset: range.startOffset,
+      blockHtml: block ? sanitizeDebugText(block.innerHTML, 200) : null
+    };
+  }
+
+  function logDomDebug(event: string, fields: Record<string, unknown> = {}) {
+    debugLocalAction(event, {
+      noteId: note?.id ?? null,
+      noteTitle: note?.title ?? null,
+      ...fields
+    });
+  }
+
+  function logInteractionDebug(event: string, fields: Record<string, unknown> = {}) {
+    debugLocalAction(`notes.interaction.${event}`, {
+      noteId: note?.id ?? null,
+      noteTitle: note?.title ?? null,
+      ...fields
+    });
+  }
+
+  function logEditorStage(stage: string, extra: Record<string, unknown> = {}) {
+    logDomDebug(stage, {
+      logicalCaret: captureLogicalCaretSnapshot(),
+      selection: captureSelectionDebug(),
+      ...extra
+    });
+  }
 
   function inferHistoryMergeKeyFromInputType(inputType: string): NoteHistoryMergeKey | null {
     if (inputType === "insertFromPaste" || inputType === "insertFromDrop") {
@@ -296,6 +460,41 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     return JSON.stringify(left) === JSON.stringify(right);
   }
 
+  function ensureUniqueEditorBlockIds() {
+    if (!bodyRef.current) {
+      return;
+    }
+
+    const seen = new Set<string>();
+    const reassigned: Array<{ previousId: string | null; nextId: string }> = [];
+
+    for (const child of Array.from(bodyRef.current.children)) {
+      if (!(child instanceof HTMLElement)) {
+        continue;
+      }
+
+      const currentId = child.dataset.blockId ?? null;
+      if (!currentId || seen.has(currentId)) {
+        const nextId = crypto.randomUUID();
+        child.dataset.blockId = nextId;
+        reassigned.push({
+          previousId: currentId,
+          nextId
+        });
+        seen.add(nextId);
+        continue;
+      }
+
+      seen.add(currentId);
+    }
+
+    if (reassigned.length > 0) {
+      logDomDebug("notes.dom.block-id-deduped", {
+        reassigned
+      });
+    }
+  }
+
   function captureHistoryHtml() {
     if (!bodyRef.current) {
       return "";
@@ -310,11 +509,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
   }
 
   function decorateIgnoredSpellcheckWords() {
-    if (!bodyRef.current) {
-      return;
-    }
-
-    applyIgnoredSpellcheckWords(bodyRef.current, ignoredSpellcheckWordSet);
+    return;
   }
 
   function prepareBodyForStructuredOperations() {
@@ -322,6 +517,10 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       return;
     }
 
+    logDomDebug("notes.dom.prepare-structured-operations", {
+      selection: captureSelectionDebug(),
+      ignoredWordWrapperCount: 0
+    });
     unwrapIgnoredSpellcheckWords(bodyRef.current);
   }
 
@@ -355,12 +554,16 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       return;
     }
 
-    prepareBodyForStructuredOperations();
+    ensureUniqueEditorBlockIds();
+    const selectionSnapshot = captureEditorSelection(bodyRef.current);
+    logDomDebug("notes.dom.history-selection-update", {
+      liveSelection: captureSelectionDebug(),
+      snapshot: selectionSnapshot
+    });
     historyRef.current = replaceCurrentHistorySelection(
       historyRef.current,
-      captureEditorSelection(bodyRef.current)
+      selectionSnapshot
     );
-    decorateIgnoredSpellcheckWords();
   }
 
   function updateSelectedBlock(blockId: string | null) {
@@ -518,6 +721,54 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     selection.addRange(range);
   }
 
+  function handleBlockStartInsertParagraph() {
+    const editor = bodyRef.current;
+    if (!editor) {
+      return false;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || !selection.isCollapsed || selection.rangeCount === 0) {
+      return false;
+    }
+
+    const range = selection.getRangeAt(0);
+    const block = findClosestBlockElement(editor, range.startContainer);
+    if (!block) {
+      return false;
+    }
+
+    const blockId = block.dataset.blockId;
+    if (!blockId) {
+      return false;
+    }
+
+    const visibleOffset = visibleOffsetFromPoint(block, range.startContainer, range.startOffset);
+    if (visibleOffset !== 0) {
+      return false;
+    }
+
+    const paragraph = editor.ownerDocument.createElement("div");
+    paragraph.dataset.blockId = crypto.randomUUID();
+    paragraph.dataset.blockType = "paragraph";
+    paragraph.appendChild(editor.ownerDocument.createElement("br"));
+    block.before(paragraph);
+
+    const nextRange = editor.ownerDocument.createRange();
+    nextRange.selectNodeContents(paragraph);
+    nextRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(nextRange);
+
+    logDomDebug("notes.dom.insert-paragraph-at-block-start", {
+      sourceBlockId: blockId,
+      insertedBlockId: paragraph.dataset.blockId
+    });
+
+    syncBlocksFromDom("typing");
+    return true;
+  }
+
   function getHeadingAtCaretStart(currentEditor: HTMLElement) {
     const selection = window.getSelection();
     if (!selection || !selection.isCollapsed || selection.rangeCount === 0) {
@@ -583,19 +834,76 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     return false;
   }
 
-  function syncBlocksFromDom(mergeKey?: NoteHistoryMergeKey | null) {
+  function syncBlocksFromDom(
+    mergeKey?: NoteHistoryMergeKey | null,
+    options?: { debugStagePrefix?: string | null }
+  ) {
     if (!bodyRef.current) {
       return;
     }
     prepareBodyForStructuredOperations();
+    ensureUniqueEditorBlockIds();
     const selectionBeforeNormalization = captureEditorSelection(bodyRef.current);
+    const liveSelectionBeforeNormalization = captureSelectionDebug();
+    const htmlBeforeNormalization = captureHistoryHtml();
+    logDomDebug("notes.dom.sync-before-normalize", {
+      mergeKey: mergeKey ?? null,
+      childCount: bodyRef.current.childNodes.length,
+      htmlPreview: sanitizeDebugText(htmlBeforeNormalization, 200),
+      liveSelection: liveSelectionBeforeNormalization,
+      snapshotBeforeNormalization: selectionBeforeNormalization,
+      activeElement: nodeDebugLabel(document.activeElement)
+    });
     normalizeNoteEditorDom(bodyRef.current);
+    if (options?.debugStagePrefix) {
+      logEditorStage(`${options.debugStagePrefix}.after-normalize`, {
+        selectionSnapshotBeforeNormalization: selectionBeforeNormalization
+      });
+    }
+    const liveSelectionAfterNormalize = captureSelectionDebug();
     if (selectionBeforeNormalization) {
-      restoreEditorSelection(bodyRef.current, selectionBeforeNormalization);
+      const restored = restoreEditorSelection(bodyRef.current, selectionBeforeNormalization);
+      logDomDebug("notes.dom.sync-selection-restore", {
+        mergeKey: mergeKey ?? null,
+        restored,
+        snapshotBeforeNormalization: selectionBeforeNormalization,
+        liveSelectionAfterNormalize,
+        liveSelectionAfterRestore: captureSelectionDebug()
+      });
+      if (options?.debugStagePrefix) {
+        logEditorStage(`${options.debugStagePrefix}.restore-attempt`, {
+          restoreCalled: true,
+          restoreReturned: restored,
+          attemptedSnapshot: selectionBeforeNormalization
+        });
+      }
+    } else if (options?.debugStagePrefix) {
+      logEditorStage(`${options.debugStagePrefix}.restore-attempt`, {
+        restoreCalled: false,
+        restoreReturned: null,
+        attemptedSnapshot: null
+      });
     }
     const nextBlocks = parseNoteBlocksFromEditor(bodyRef.current);
     const nextSelection = captureEditorSelection(bodyRef.current);
     const nextHtml = captureHistoryHtml();
+    logDomDebug("notes.dom.sync-after-parse", {
+      mergeKey: mergeKey ?? null,
+      blockCount: nextBlocks.length,
+      firstBlocks: nextBlocks.slice(0, 4).map((block) => ({
+        id: block.id,
+        type: block.type,
+        childCount: block.children.length,
+        text: sanitizeDebugText(block.children.map((child) => child.text).join(""), 120)
+      })),
+      nextSelection,
+      htmlPreview: sanitizeDebugText(nextHtml, 200)
+    });
+    if (options?.debugStagePrefix) {
+      logEditorStage(`${options.debugStagePrefix}.after-sync`, {
+        nextSelection
+      });
+    }
     const currentHistoryState = historyRef.current;
 
     if (!currentHistoryState) {
@@ -703,6 +1011,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     const pointTopicCard = getTopicCardAtPoint(bodyRef.current, x, y);
     if (pointTopicCard && isPointWithinTopicCardContent(bodyRef.current, pointTopicCard, x, y)) {
       pendingPageLinkRangeRef.current = null;
+      pendingTopicSelectionRef.current = null;
       const block = findClosestBlockElement(bodyRef.current, pointTopicCard);
       const topicId = pointTopicCard.dataset.topicId ?? null;
       const blockId = block?.dataset.blockId ?? null;
@@ -723,6 +1032,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     const pointPageLink = getPageLinkAtPoint(bodyRef.current, x, y);
     if (pointPageLink && isPointWithinPageLinkContent(bodyRef.current, pointPageLink, x, y)) {
       pendingPageLinkRangeRef.current = null;
+      pendingTopicSelectionRef.current = null;
       const block = findClosestBlockElement(bodyRef.current, pointPageLink);
       const pageLinkId = pointPageLink.dataset.pageLinkId ?? null;
       const blockId = block?.dataset.blockId ?? null;
@@ -765,6 +1075,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     const contentBlock = pointResolvedContentBlock ?? selectionResolvedBlock;
     if (!resolvedBlock || !contentBlock) {
       pendingPageLinkRangeRef.current = null;
+      pendingTopicSelectionRef.current = null;
       updateSelectedBlock(null);
       return null;
     }
@@ -772,6 +1083,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     const blockId = resolvedBlock.dataset.blockId ?? null;
     if (!blockId) {
       pendingPageLinkRangeRef.current = null;
+      pendingTopicSelectionRef.current = null;
       updateSelectedBlock(null);
       return null;
     }
@@ -785,6 +1097,9 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       blockType === "heading3";
     const canCreateTopicCardFromSelection =
       preserveTextSelection && canTurnSelectionIntoTopicCard(bodyRef.current);
+    pendingTopicSelectionRef.current = canCreateTopicCardFromSelection
+      ? captureEditorSelection(bodyRef.current)
+      : null;
     const spellcheckWord = preserveTextSelection ? extractStandaloneSpellcheckWord(selectedText) : null;
     const pageLinkRangeResolution =
       canInsertPageLinkAtPoint && !preserveTextSelection
@@ -848,6 +1163,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
       selectedPageLinkIdRef.current = null;
       selectedTopicIdRef.current = null;
       pendingPageLinkRangeRef.current = null;
+      pendingTopicSelectionRef.current = null;
       historyRef.current = null;
       return;
     }
@@ -869,12 +1185,9 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
     updateSelectedPageLink(null);
     updateSelectedTopic(null);
     pendingPageLinkRangeRef.current = null;
+    pendingTopicSelectionRef.current = null;
     decorateIgnoredSpellcheckWords();
   }, [note]);
-
-  useEffect(() => {
-    decorateIgnoredSpellcheckWords();
-  }, [ignoredSpellcheckWordSet]);
 
   useImperativeHandle(
     ref,
@@ -1103,7 +1416,9 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           };
         }
 
+        restoreEditorSelection(bodyRef.current, pendingTopicSelectionRef.current);
         const result = turnSelectionIntoTopicCard(bodyRef.current, color);
+        pendingTopicSelectionRef.current = null;
         if (!result.ok) {
           return result;
         }
@@ -1146,6 +1461,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           clearSelectedPageLink(bodyRef.current);
         }
         pendingPageLinkRangeRef.current = null;
+        pendingTopicSelectionRef.current = null;
       },
       selectTextMatch(blockId, query, occurrenceIndex) {
         if (!bodyRef.current) {
@@ -1185,7 +1501,7 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         className="note-editor__body"
         contentEditable={!loading}
         suppressContentEditableWarning
-        spellCheck
+        spellCheck={false}
         role="textbox"
         aria-label="Note body"
         onCopy={(event) => {
@@ -1234,6 +1550,9 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           if (!bodyRef.current) {
             return;
           }
+          logInteractionDebug("paste", {
+            liveSelection: captureSelectionDebug()
+          });
           if (selectedPageLinkIdRef.current) {
             removePageLink(bodyRef.current, selectedPageLinkIdRef.current);
             updateSelectedPageLink(null);
@@ -1245,6 +1564,14 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           });
         }}
         onPointerDownCapture={(event) => {
+          logInteractionDebug("pointerdown-capture", {
+            button: event.button,
+            pointerType: event.pointerType,
+            x: event.clientX,
+            y: event.clientY,
+            target: nodeDebugLabel(event.target instanceof Node ? event.target : null),
+            liveSelection: captureSelectionDebug()
+          });
           event.stopPropagation();
         }}
         onWheelCapture={(event) => {
@@ -1256,12 +1583,50 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         }}
         onInput={(event) => {
           const inputEvent = event.nativeEvent as InputEvent;
-          syncBlocksFromDom(inferHistoryMergeKeyFromInputType(inputEvent.inputType));
+          logInteractionDebug("input", {
+            inputType: inputEvent.inputType,
+            data: sanitizeDebugText(inputEvent.data, 40),
+            isComposing: inputEvent.isComposing,
+            liveSelection: captureSelectionDebug(),
+            bodyTextPreview: sanitizeDebugText(bodyRef.current?.textContent, 160)
+          });
+          logDomDebug("notes.dom.input", {
+            inputType: inputEvent.inputType,
+            data: sanitizeDebugText(inputEvent.data, 40),
+            isComposing: inputEvent.isComposing,
+            liveSelection: captureSelectionDebug(),
+            bodyTextPreview: sanitizeDebugText(bodyRef.current?.textContent, 160)
+          });
+          logEditorStage("input.native", {
+            inputType: inputEvent.inputType,
+            data: sanitizeDebugText(inputEvent.data, 40),
+            isComposing: inputEvent.isComposing
+          });
+          syncBlocksFromDom(inferHistoryMergeKeyFromInputType(inputEvent.inputType), {
+            debugStagePrefix: "input"
+          });
+          queueMicrotask(() => {
+            logEditorStage("input.after-microtask", {
+              inputType: inputEvent.inputType
+            });
+          });
+          requestAnimationFrame(() => {
+            logEditorStage("input.next-frame", {
+              inputType: inputEvent.inputType
+            });
+          });
         }}
         onDoubleClick={(event) => {
           if (!documentCapabilities || !bodyRef.current) {
             return;
           }
+          logInteractionDebug("doubleclick", {
+            button: event.button,
+            x: event.clientX,
+            y: event.clientY,
+            target: nodeDebugLabel(event.target instanceof Node ? event.target : null),
+            liveSelection: captureSelectionDebug()
+          });
 
           const target = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("[data-inline-type='page-link']") : null;
           const pageLinkId = target?.dataset.pageLinkId ?? null;
@@ -1273,6 +1638,14 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           updateSelectedPageLink(pageLinkId);
         }}
         onPointerDown={(event) => {
+          logInteractionDebug("pointerdown", {
+            button: event.button,
+            pointerType: event.pointerType,
+            x: event.clientX,
+            y: event.clientY,
+            target: nodeDebugLabel(event.target instanceof Node ? event.target : null),
+            liveSelection: captureSelectionDebug()
+          });
           if (!documentCapabilities || !bodyRef.current || event.button !== 0) {
             return;
           }
@@ -1299,6 +1672,13 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           if (!bodyRef.current) {
             return;
           }
+          logInteractionDebug("mousedown", {
+            button: event.button,
+            x: event.clientX,
+            y: event.clientY,
+            target: nodeDebugLabel(event.target instanceof Node ? event.target : null),
+            liveSelection: captureSelectionDebug()
+          });
 
           const topicTarget =
             event.target instanceof HTMLElement
@@ -1354,7 +1734,14 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
             }
           }
         }}
-        onMouseUp={() => {
+        onMouseUp={(event) => {
+          logInteractionDebug("mouseup", {
+            button: event.button,
+            x: event.clientX,
+            y: event.clientY,
+            target: nodeDebugLabel(event.target instanceof Node ? event.target : null),
+            liveSelection: captureSelectionDebug()
+          });
           if (!bodyRef.current || !documentCapabilities) {
             return;
           }
@@ -1365,6 +1752,13 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           if (!bodyRef.current) {
             return;
           }
+          logInteractionDebug("click", {
+            button: event.button,
+            x: event.clientX,
+            y: event.clientY,
+            target: nodeDebugLabel(event.target instanceof Node ? event.target : null),
+            liveSelection: captureSelectionDebug()
+          });
 
           const topicTarget =
             event.target instanceof HTMLElement
@@ -1420,6 +1814,18 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
         }}
         onBeforeInput={(event) => {
           const inputEvent = event.nativeEvent as InputEvent;
+          logInteractionDebug("beforeinput", {
+            inputType: inputEvent.inputType,
+            data: sanitizeDebugText(inputEvent.data, 40),
+            isComposing: inputEvent.isComposing,
+            liveSelection: captureSelectionDebug()
+          });
+          logDomDebug("notes.dom.beforeinput", {
+            inputType: inputEvent.inputType,
+            data: sanitizeDebugText(inputEvent.data, 40),
+            isComposing: inputEvent.isComposing,
+            liveSelection: captureSelectionDebug()
+          });
 
           if (inputEvent.inputType === "deleteContentBackward" && handleHeadingStartBackspace()) {
             event.preventDefault();
@@ -1439,6 +1845,11 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           }
 
           if (handlePageLinkBoundaryTextInsertion(inputEvent)) {
+            event.preventDefault();
+            return;
+          }
+
+          if (inputEvent.inputType === "insertParagraph" && handleBlockStartInsertParagraph()) {
             event.preventDefault();
             return;
           }
@@ -1479,6 +1890,17 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
           if (!bodyRef.current) {
             return;
           }
+          logInteractionDebug("keydown", {
+            key: event.key,
+            code: event.code,
+            metaKey: event.metaKey,
+            ctrlKey: event.ctrlKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            repeat: event.repeat,
+            target: nodeDebugLabel(event.target instanceof Node ? event.target : null),
+            liveSelection: captureSelectionDebug()
+          });
 
           event.stopPropagation();
 
@@ -1601,9 +2023,25 @@ const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEd
             });
           }
         }}
+        onKeyUp={(event) => {
+          if (!bodyRef.current) {
+            return;
+          }
+          logInteractionDebug("keyup", {
+            key: event.key,
+            code: event.code,
+            metaKey: event.metaKey,
+            ctrlKey: event.ctrlKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            target: nodeDebugLabel(event.target instanceof Node ? event.target : null),
+            liveSelection: captureSelectionDebug(),
+            logicalCaret: captureLogicalCaretSnapshot()
+          });
+        }}
       />
     </div>
   );
 });
 
-export default NoteEditor;
+export default ModelNoteEditor;

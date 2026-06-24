@@ -312,10 +312,28 @@ export type NoteEditorSelectionPoint = {
   offset: number;
 };
 
+export type NoteEditorLogicalCaret = {
+  blockId: string;
+  visibleOffset: number;
+};
+
+export type NoteModelPoint = {
+  blockId: string;
+  inlineIndex: number;
+  textOffset: number;
+  affinity: "before" | "after";
+};
+
+export type NoteModelSelection = {
+  anchor: NoteModelPoint;
+  focus: NoteModelPoint;
+};
+
 export type NoteEditorSelectionSnapshot = {
   anchor: NoteEditorSelectionPoint;
   focus: NoteEditorSelectionPoint;
   isCollapsed: boolean;
+  logicalCaret?: NoteEditorLogicalCaret | null;
 };
 
 export type NoteHistoryMergeKey =

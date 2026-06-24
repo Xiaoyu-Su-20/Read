@@ -75,6 +75,7 @@ export default function NotesContextMenu({
           left: menuPosition.x,
           top: menuPosition.y
         }}
+        onMouseDown={(event) => event.preventDefault()}
         onClick={(event) => event.stopPropagation()}
       >
         {state.target === "page-link" && documentCapabilities ? (

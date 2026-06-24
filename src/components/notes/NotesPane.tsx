@@ -28,7 +28,8 @@ import {
   useContextMenuController,
   type NotesContextMenuState
 } from "./context-menu/useContextMenuController";
-import NoteEditor, { type NoteEditorHandle } from "./NoteEditor";
+import NoteEditor from "./ModelNoteEditor";
+import type { NoteEditorHandle } from "./noteEditorTypes";
 import WorkspaceHeaderTools from "../WorkspaceHeaderTools";
 
 type NotesPaneProps = {

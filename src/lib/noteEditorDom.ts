@@ -22,6 +22,7 @@ import type {
   NoteBlock,
   NoteBlockType,
   NoteDocument,
+  NoteEditorLogicalCaret,
   NoteEditorSelectionPoint,
   NoteEditorSelectionSnapshot,
   NoteInlineNode,
@@ -410,6 +411,19 @@ export function parseNoteBlocksFromEditor(root: HTMLElement): NoteBlock[] {
   });
 
   return normalizeNoteBlocks(blocks);
+}
+
+export function parseNoteInlineNodesFromElement(element: HTMLElement) {
+  const children = normalizeNoteInlineNodes(
+    Array.from(element.childNodes).flatMap((childNode) =>
+      inlineNodesFromNode(childNode, { bold: false, italic: false })
+    )
+  );
+  const onlyLineBreak =
+    children.length === 1 &&
+    children[0].type === "text" &&
+    children[0].text === "\n";
+  return onlyLineBreak ? [createTextNode("")] : children;
 }
 
 function configurePageLinkElement(element: HTMLElement) {
@@ -982,6 +996,24 @@ function pointSnapshotFromNode(
   };
 }
 
+function collapsedLogicalCaretFromSelection(root: HTMLElement): NoteEditorLogicalCaret | null {
+  const selection = getSelectionInRoot(root);
+  if (!selection || !selection.isCollapsed || selection.rangeCount === 0) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+  const block = findClosestBlockElement(root, range.startContainer);
+  if (!block?.dataset.blockId) {
+    return null;
+  }
+
+  return {
+    blockId: block.dataset.blockId,
+    visibleOffset: visibleOffsetFromPoint(block, range.startContainer, range.startOffset)
+  };
+}
+
 export function captureEditorSelection(root: HTMLElement): NoteEditorSelectionSnapshot | null {
   const selection = getSelectionInRoot(root);
   if (!selection) {
@@ -997,13 +1029,40 @@ export function captureEditorSelection(root: HTMLElement): NoteEditorSelectionSn
   return {
     anchor,
     focus,
-    isCollapsed: selection.isCollapsed
+    isCollapsed: selection.isCollapsed,
+    ...(selection.isCollapsed
+      ? { logicalCaret: collapsedLogicalCaretFromSelection(root) }
+      : {})
   };
 }
 
 export function restoreEditorSelection(root: HTMLElement, snapshot: NoteEditorSelectionSnapshot | null) {
   if (!snapshot) {
     return false;
+  }
+
+  if (snapshot.isCollapsed && snapshot.logicalCaret) {
+    const block = findBlockElement(root, snapshot.logicalCaret.blockId);
+    const selection = window.getSelection();
+    if (block && selection) {
+      const segments = collectVisibleTextSegments(block);
+      const domPoint = domPointForVisibleOffset(segments, snapshot.logicalCaret.visibleOffset);
+
+      selection.removeAllRanges();
+      if (domPoint) {
+        const range = document.createRange();
+        range.setStart(domPoint.node, domPoint.offset);
+        range.collapse(true);
+        selection.addRange(range);
+        return true;
+      }
+
+      const range = document.createRange();
+      range.selectNodeContents(block);
+      range.collapse(true);
+      selection.addRange(range);
+      return true;
+    }
   }
 
   const anchorNode = resolveSelectionNodePath(root, snapshot.anchor.path);
@@ -1492,7 +1551,7 @@ function domPointForVisibleOffset(segments: VisibleTextSegment[], offset: number
     : null;
 }
 
-function visibleOffsetFromPoint(block: HTMLElement, container: Node, offset: number) {
+export function visibleOffsetFromPoint(block: HTMLElement, container: Node, offset: number) {
   const range = block.ownerDocument.createRange();
   range.selectNodeContents(block);
   range.setEnd(container, offset);
