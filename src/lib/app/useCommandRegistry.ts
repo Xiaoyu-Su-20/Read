@@ -4,10 +4,8 @@ import { useMemo } from "react";
 import { dedupeBookmarks, findBookmarkAtPage } from "../commands";
 import { flattenOutlineItems } from "../documentReferences";
 import type {
-  DocumentPayload,
   DocumentRecord,
   DocumentState,
-  FolderTreeNode,
   OutlineItem,
   PaletteItem,
   ViewerApi,
@@ -19,12 +17,10 @@ type UseCommandRegistryArgs = {
   workspaceMode: "reader" | "collection" | "notes" | "book";
   libraryRoot: string;
   recentDocuments: DocumentRecord[];
-  activeDocument: DocumentPayload | null;
   noteTitle: string | null;
   readerState: DocumentState | null;
   viewerSnapshot: ViewerSnapshot;
   outlineItems: OutlineItem[];
-  selectedCollection: FolderTreeNode | null;
   viewerApiRef: MutableRefObject<ViewerApi | null>;
   closePalette: () => void;
   openSelection: (title: string, items: PaletteItem[], emptyMessage: string) => void;
@@ -54,12 +50,10 @@ export function useCommandRegistry({
   workspaceMode,
   libraryRoot,
   recentDocuments,
-  activeDocument,
   noteTitle,
   readerState,
   viewerSnapshot,
   outlineItems,
-  selectedCollection,
   viewerApiRef,
   closePalette,
   openSelection,
