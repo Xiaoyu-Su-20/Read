@@ -34,6 +34,14 @@ import type {
 const TOPIC_INLINE_TYPE = "topic-card";
 const PAGE_LINK_INLINE_TYPE = "page-link";
 
+function escapeCssIdentifier(value: string) {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+
+  return value.replace(/["\\]/g, "\\$&");
+}
+
 type CaretRangeDocument = Document & {
   caretRangeFromPoint?: (x: number, y: number) => Range | null;
   caretPositionFromPoint?: (
@@ -593,15 +601,17 @@ export function normalizeNoteEditorDom(root: HTMLElement) {
 }
 
 export function findBlockElement(root: HTMLElement, blockId: string) {
-  return root.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`);
+  return root.querySelector<HTMLElement>(`[data-block-id="${escapeCssIdentifier(blockId)}"]`);
 }
 
 export function findPageLinkElement(root: HTMLElement, pageLinkId: string) {
-  return root.querySelector<HTMLElement>(`[data-page-link-id="${CSS.escape(pageLinkId)}"]`);
+  return root.querySelector<HTMLElement>(
+    `[data-page-link-id="${escapeCssIdentifier(pageLinkId)}"]`
+  );
 }
 
 export function findTopicCardElement(root: HTMLElement, topicId: string) {
-  return root.querySelector<HTMLElement>(`[data-topic-id="${CSS.escape(topicId)}"]`);
+  return root.querySelector<HTMLElement>(`[data-topic-id="${escapeCssIdentifier(topicId)}"]`);
 }
 
 export function findClosestBlockElement(root: HTMLElement, node: Node | null) {

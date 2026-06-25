@@ -266,7 +266,7 @@ export function replaceModelRange(
   const startSplit = splitInlineNodesAtOffset(startBlock.children, startOffset);
   const endSplit = splitInlineNodesAtOffset(endBlock.children, endOffset);
   const insertedNodes = inserted.map(cloneInlineNode);
-  const nextChildren = normalizeNoteInlineNodes([
+  const nextChildren = compactInlineNodes([
     ...startSplit.before,
     ...insertedNodes,
     ...endSplit.after
@@ -289,6 +289,62 @@ export function replaceModelRange(
     blocks: normalizeNoteBlocks(nextBlocks),
     selection: collapsedModelSelection(caret)
   };
+}
+
+export function insertTextAtSelection(
+  blocks: NoteBlock[],
+  selection: NoteModelSelection,
+  text: string,
+  marks?: { bold?: boolean; italic?: boolean }
+): NoteModelEdit {
+  if (text.length === 0) {
+    return isCollapsedModelSelection(selection)
+      ? {
+          blocks: normalizeNoteBlocks(blocks).map(cloneBlock),
+          selection
+        }
+      : replaceModelRange(blocks, selection);
+  }
+  return replaceModelRange(blocks, selection, [createTextNode(text, marks)]);
+}
+
+function deleteAtSelection(blocks: NoteBlock[], selection: NoteModelSelection, direction: "backward" | "forward") {
+  if (!isCollapsedModelSelection(selection)) {
+    return replaceModelRange(blocks, selection);
+  }
+
+  const normalizedBlocks = normalizeNoteBlocks(blocks).map(cloneBlock);
+  const block = normalizedBlocks.find((candidate) => candidate.id === selection.focus.blockId);
+  if (!block) {
+    return null;
+  }
+
+  const offset = pointToBlockOffset(block, selection.focus);
+  if (direction === "backward") {
+    if (offset === 0) {
+      return mergeBlockBackward(normalizedBlocks, block.id);
+    }
+    return replaceModelRange(normalizedBlocks, {
+      anchor: blockOffsetToPoint(block, offset - 1),
+      focus: blockOffsetToPoint(block, offset)
+    });
+  }
+
+  if (offset === blockLogicalLength(block)) {
+    return mergeBlockForward(normalizedBlocks, block.id);
+  }
+  return replaceModelRange(normalizedBlocks, {
+    anchor: blockOffsetToPoint(block, offset),
+    focus: blockOffsetToPoint(block, offset + 1)
+  });
+}
+
+export function deleteBackward(blocks: NoteBlock[], selection: NoteModelSelection) {
+  return deleteAtSelection(blocks, selection, "backward");
+}
+
+export function deleteForward(blocks: NoteBlock[], selection: NoteModelSelection) {
+  return deleteAtSelection(blocks, selection, "forward");
 }
 
 export function insertBlocksAtSelection(

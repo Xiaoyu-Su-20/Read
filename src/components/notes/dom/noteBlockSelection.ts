@@ -10,6 +10,14 @@ import type {
 
 const ATOMIC_SELECTOR = "[data-inline-type='page-link'], [data-inline-type='topic-card']";
 
+function escapeCssIdentifier(value: string) {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+
+  return value.replace(/["\\]/g, "\\$&");
+}
+
 function closestBlock(root: HTMLElement, node: Node | null) {
   const element = node instanceof HTMLElement ? node : node?.parentElement ?? null;
   const block = element?.closest<HTMLElement>("[data-block-id]") ?? null;
@@ -235,7 +243,7 @@ function domPointAtOffset(content: HTMLElement, requestedOffset: number): DomPoi
 function resolvePoint(root: HTMLElement, blocks: NoteBlock[], point: NoteModelPoint) {
   const block = blocks.find((candidate) => candidate.id === point.blockId);
   const blockElement = root.querySelector<HTMLElement>(
-    `[data-block-id="${CSS.escape(point.blockId)}"]`
+    `[data-block-id="${escapeCssIdentifier(point.blockId)}"]`
   );
   if (!block || !blockElement) {
     return null;

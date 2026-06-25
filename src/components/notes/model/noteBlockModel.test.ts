@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   blockOffsetToPoint,
   convertBlockType,
+  deleteBackward,
+  deleteForward,
   insertBlocksAtSelection,
+  insertTextAtSelection,
   mergeBlockBackward,
   mergeBlockForward,
   removeInlineNode,
@@ -82,6 +85,28 @@ describe("note block model", () => {
     });
   });
 
+  it("inserts text at a collapsed caret with explicit marks", () => {
+    const blocks = [block("a", "paragraph", "Hello")];
+    const result = insertTextAtSelection(
+      blocks,
+      selection(blocks, "a", 5),
+      "!",
+      { bold: true }
+    );
+
+    expect(result.blocks[0].children).toEqual([
+      createTextNode("Hello"),
+      createTextNode("!", { bold: true })
+    ]);
+  });
+
+  it("replaces a selected range with inserted text", () => {
+    const blocks = [block("a", "paragraph", "Hello world")];
+    const result = insertTextAtSelection(blocks, selection(blocks, "a", 6, "a", 11), "reader");
+
+    expect(result.blocks[0].children).toEqual([createTextNode("Hello reader")]);
+  });
+
   it("normalizes reversed cross-block selections before replacement", () => {
     const blocks = [
       block("a", "paragraph", "Alpha"),
@@ -113,6 +138,15 @@ describe("note block model", () => {
     expect(forward?.blocks).toMatchObject([
       { id: "a", type: "heading1", children: [{ type: "text", text: "HeadBody" }] }
     ]);
+  });
+
+  it("deletes backward and forward within one block without reparsing structure", () => {
+    const blocks = [block("a", "paragraph", "Hello")];
+    const backward = deleteBackward(blocks, selection(blocks, "a", 5));
+    const forward = deleteForward(blocks, selection(blocks, "a", 0));
+
+    expect(backward?.blocks[0].children).toEqual([createTextNode("Hell")]);
+    expect(forward?.blocks[0].children).toEqual([createTextNode("ello")]);
   });
 
   it("keeps atomic nodes on the correct side of a split", () => {

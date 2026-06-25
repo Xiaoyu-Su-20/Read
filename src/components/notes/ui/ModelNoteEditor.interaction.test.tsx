@@ -70,10 +70,17 @@ function firstTextNode(content: HTMLElement) {
 }
 
 function setCaret(content: HTMLElement, offset: number) {
-  const text = firstTextNode(content);
   const selection = window.getSelection();
   const range = document.createRange();
-  range.setStart(text, offset);
+  const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+  const text = walker.nextNode();
+
+  if (text instanceof Text) {
+    range.setStart(text, Math.min(offset, text.data.length));
+  } else {
+    range.setStart(content, 0);
+  }
+
   range.collapse(true);
   selection?.removeAllRanges();
   selection?.addRange(range);
@@ -103,6 +110,27 @@ function dispatchBeforeInput(
   Object.defineProperties(event, {
     inputType: { value: inputType },
     data: { value: data }
+  });
+  target.dispatchEvent(event);
+}
+
+function dispatchInput(target: HTMLElement, inputType: string, data: string | null = null) {
+  const event = new Event("input", {
+    bubbles: true,
+    cancelable: true
+  }) as InputEvent;
+  Object.defineProperties(event, {
+    inputType: { value: inputType },
+    data: { value: data }
+  });
+  target.dispatchEvent(event);
+}
+
+function dispatchComposition(target: HTMLElement, type: "compositionstart" | "compositionend", data = "") {
+  const event = new CompositionEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    data
   });
   target.dispatchEvent(event);
 }
@@ -188,6 +216,27 @@ describe("ModelNoteEditor interactions", () => {
     ]);
   });
 
+  it("replaces the selected text through insertReplacementText", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello world")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    const content = blockContent(container, 0);
+
+    setSelection(content, 6, 11);
+    act(() => {
+      dispatchBeforeInput(content, "insertReplacementText", "reader");
+    });
+
+    expect(latestBlocks(onChangeBlocks)[0].children).toEqual([
+      createTextNode("Hello reader")
+    ]);
+  });
+
   it("splits the current block on insertParagraph", () => {
     const note = createNote([
       {
@@ -202,6 +251,53 @@ describe("ModelNoteEditor interactions", () => {
     setCaret(content, 5);
     act(() => {
       dispatchBeforeInput(content, "insertParagraph");
+    });
+
+    const blocks = latestBlocks(onChangeBlocks);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].children).toEqual([createTextNode("Hello")]);
+    expect(blocks[1].children).toEqual([createTextNode(" world")]);
+  });
+
+  it("treats insertLineBreak the same as insertParagraph", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello world")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    const content = blockContent(container, 0);
+
+    setCaret(content, 5);
+    act(() => {
+      dispatchBeforeInput(content, "insertLineBreak");
+    });
+
+    const blocks = latestBlocks(onChangeBlocks);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].children).toEqual([createTextNode("Hello")]);
+    expect(blocks[1].children).toEqual([createTextNode(" world")]);
+  });
+
+  it("does not collapse a structural split when a follow-up input event fires", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello world")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    const content = blockContent(container, 0);
+
+    setCaret(content, 5);
+    act(() => {
+      dispatchBeforeInput(content, "insertParagraph");
+    });
+    act(() => {
+      dispatchInput(content, "insertParagraph");
     });
 
     const blocks = latestBlocks(onChangeBlocks);
@@ -234,5 +330,120 @@ describe("ModelNoteEditor interactions", () => {
     const blocks = latestBlocks(onChangeBlocks);
     expect(blocks).toHaveLength(1);
     expect(blocks[0].children).toEqual([createTextNode("Hello world")]);
+  });
+
+  it("deletes forward within one block through beforeinput", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    const content = blockContent(container, 0);
+
+    setCaret(content, 0);
+    act(() => {
+      dispatchBeforeInput(content, "deleteContentForward");
+    });
+
+    expect(latestBlocks(onChangeBlocks)[0].children).toEqual([createTextNode("ello")]);
+  });
+
+  it("does not collapse sibling paragraphs when an empty block is removed", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Before")]
+      },
+      {
+        id: "b",
+        type: "paragraph",
+        children: [createTextNode("")]
+      },
+      {
+        id: "c",
+        type: "paragraph",
+        children: [createTextNode("After")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    const emptyContent = blockContent(container, 1);
+
+    setCaret(emptyContent, 0);
+    act(() => {
+      dispatchBeforeInput(emptyContent, "deleteContentBackward");
+    });
+    act(() => {
+      dispatchInput(emptyContent, "deleteContentBackward");
+    });
+
+    const blocks = latestBlocks(onChangeBlocks);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].children).toEqual([createTextNode("Before")]);
+    expect(blocks[1].children).toEqual([createTextNode("After")]);
+  });
+
+  it("removes an emptied trailing paragraph instead of merging its stale text", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("dad")]
+      },
+      {
+        id: "b",
+        type: "paragraph",
+        children: [createTextNode("add")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    const secondContent = blockContent(container, 1);
+
+    setCaret(secondContent, 3);
+    act(() => {
+      dispatchBeforeInput(secondContent, "deleteContentBackward");
+    });
+    act(() => {
+      dispatchBeforeInput(secondContent, "deleteContentBackward");
+    });
+    act(() => {
+      dispatchBeforeInput(secondContent, "deleteContentBackward");
+    });
+    act(() => {
+      dispatchBeforeInput(secondContent, "deleteContentBackward");
+    });
+
+    const blocks = latestBlocks(onChangeBlocks);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].children).toEqual([createTextNode("dad")]);
+  });
+
+  it("commits composition text through one canonical model replacement", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    const content = blockContent(container, 0);
+
+    setCaret(content, 5);
+    act(() => {
+      dispatchComposition(content, "compositionstart", "");
+    });
+    act(() => {
+      content.textContent = "Hello世";
+      dispatchInput(content, "insertText", "世");
+    });
+    act(() => {
+      dispatchComposition(content, "compositionend", "世");
+    });
+
+    expect(latestBlocks(onChangeBlocks)[0].children).toEqual([createTextNode("Hello世")]);
   });
 });

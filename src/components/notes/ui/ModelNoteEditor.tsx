@@ -14,11 +14,12 @@ import {
   blockOffsetToPoint,
   collapsedModelSelection,
   convertBlockType,
+  deleteBackward,
+  deleteForward,
   findInlineNode,
   insertBlocksAtSelection,
+  insertTextAtSelection,
   isCollapsedModelSelection,
-  mergeBlockBackward,
-  mergeBlockForward,
   pointToBlockOffset,
   removeInlineNode,
   removeModelBlock,
@@ -51,7 +52,6 @@ import {
   isPointWithinTopicCardContent,
   normalizeNoteEditorDom,
   parseNoteBlocksFromEditor,
-  parseNoteInlineNodesFromElement,
   renderNoteInlineNodesHtml,
   resolveCollapsedRangeAtPoint,
   selectBlockElement,
@@ -60,13 +60,14 @@ import {
   selectTopicCardToken
 } from "../dom/noteEditorDom";
 import {
-  commitNoteModelHistory,
-  createNoteModelHistory,
-  redoNoteModelHistory,
-  replaceNoteModelHistorySelection,
-  undoNoteModelHistory,
+  applyNoteEditorEdit,
+  commitNoteEditorBlocks,
+  createNoteEditorRuntimeState,
+  redoNoteEditorRuntime,
+  replaceNoteEditorSelection,
+  undoNoteEditorRuntime,
   type NoteModelHistoryState
-} from "../state/noteModelHistory";
+} from "../state/noteEditorState";
 import {
   createEmptyNoteBlock,
   createPageLinkNode,
@@ -98,6 +99,14 @@ import { computeCenteredChildScrollTop } from "./noteEditorScroll";
 const NOTE_CLIPBOARD_MIME = "application/x-calmreader-note-fragment";
 const useClientLayoutEffect =
   typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+function escapeCssIdentifier(value: string) {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+
+  return value.replace(/["\\]/g, "\\$&");
+}
 
 type NoteEditorProps = {
   note: NoteDocument | null;
@@ -134,12 +143,21 @@ type AtomicInlineSelection = {
   type: "page-link" | "topic-card";
 };
 
-function blocksEqual(left: NoteBlock[], right: NoteBlock[]) {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
+type CompositionSession = {
+  blockId: string;
+  host: HTMLElement | null;
+  marks: PendingTextMarks | null;
+  selection: NoteModelSelection;
+};
 
 function cloneBlocks(blocks: NoteBlock[]) {
   return JSON.parse(JSON.stringify(blocks)) as NoteBlock[];
+}
+
+function blockContentElement(node: EventTarget | null) {
+  return node instanceof HTMLElement
+    ? node.closest<HTMLElement>(".note-editor__block-content")
+    : null;
 }
 
 function inlineNodeLength(node: NoteInlineNode) {
@@ -210,9 +228,12 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
   ) {
     const bodyRef = useRef<HTMLDivElement | null>(null);
     const appliedNoteIdRef = useRef<string | null>(null);
-    const blocksRef = useRef<NoteBlock[]>(
-      normalizeNoteBlocks(note?.blocks ?? [createEmptyNoteBlock()])
+    const initialRuntime = createNoteEditorRuntimeState(
+      note?.blocks ?? [createEmptyNoteBlock()],
+      note?.bookId,
+      null
     );
+    const blocksRef = useRef<NoteBlock[]>(initialRuntime.blocks);
     const [renderedBlocks, setRenderedBlocks] = useState(() => cloneBlocks(blocksRef.current));
     const selectedBlockIdRef = useRef<string | null>(null);
     const selectedPageLinkIdRef = useRef<string | null>(null);
@@ -221,7 +242,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     const pendingTopicSelectionRef = useRef<NoteModelSelection | null>(null);
     const pendingSelectionRestoreRef = useRef<NoteModelSelection | null>(null);
     const pendingTextMarksRef = useRef<PendingTextMarks | null>(null);
-    const historyRef = useRef<NoteModelHistoryState | null>(null);
+    const compositionSessionRef = useRef<CompositionSession | null>(null);
+    const historyRef = useRef<NoteModelHistoryState | null>(initialRuntime.history);
     const applyingHistoryRef = useRef(false);
     void ignoredSpellcheckWords;
 
@@ -299,6 +321,14 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       pendingTextMarksRef.current = null;
     }
 
+    function effectiveTextMarks(selection: NoteModelSelection) {
+      return (
+        normalizePendingTextMarks(
+        pendingTextMarksRef.current ?? textMarksAtPoint(blocksRef.current, selection.focus)
+        ) ?? undefined
+      );
+    }
+
     function serializeSelectionFragmentPayload(
       fragment: DocumentFragment,
       text: string
@@ -363,8 +393,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       if (atomic) {
         const selector =
           atomic.type === "page-link"
-            ? `[data-inline-type='page-link'][data-page-link-id="${CSS.escape(atomic.id)}"]`
-            : `[data-inline-type='topic-card'][data-topic-id="${CSS.escape(atomic.id)}"]`;
+            ? `[data-inline-type='page-link'][data-page-link-id="${escapeCssIdentifier(atomic.id)}"]`
+            : `[data-inline-type='topic-card'][data-topic-id="${escapeCssIdentifier(atomic.id)}"]`;
         const element = bodyRef.current.querySelector<HTMLElement>(selector);
         return element ? serializeElementPayload(element) : null;
       }
@@ -416,60 +446,61 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       mergeKey: NoteHistoryMergeKey | null,
       render: boolean
     ) {
-      const normalized = normalizeNoteBlocks(nextBlocks, note?.bookId ?? null);
-      const previous = blocksRef.current;
-      blocksRef.current = normalized;
-      const history = historyRef.current;
-
-      if (!history) {
-        historyRef.current = createNoteModelHistory({ blocks: normalized, selection });
-      } else if (blocksEqual(history.current.blocks, normalized)) {
-        historyRef.current = replaceNoteModelHistorySelection(history, selection);
-      } else {
-        historyRef.current = commitNoteModelHistory(
-          history,
-          { blocks: normalized, selection },
-          mergeKey
-        );
-      }
-
+      const nextState = commitNoteEditorBlocks({
+        currentBlocks: blocksRef.current,
+        history: historyRef.current,
+        nextBlocks,
+        selection,
+        mergeKey,
+        bookId: note?.bookId,
+        render
+      });
+      blocksRef.current = nextState.blocks;
+      historyRef.current = nextState.history;
       if (render) {
-        pendingSelectionRestoreRef.current = selection;
-        setRenderedBlocks(cloneBlocks(normalized));
+        pendingSelectionRestoreRef.current = nextState.pendingSelectionRestore;
+        setRenderedBlocks(cloneBlocks(nextState.blocks));
       }
-      if (!blocksEqual(previous, normalized)) {
-        onChangeBlocks(normalized);
+      if (nextState.changed) {
+        onChangeBlocks(nextState.blocks);
       }
     }
 
     function applyModelEdit(edit: NoteModelEdit, mergeKey: NoteHistoryMergeKey | null) {
       clearTokenSelection();
       updateSelectedBlock(null);
-       clearPendingTextMarks();
-      commitBlocks(edit.blocks, edit.selection, mergeKey, true);
-    }
-
-    function syncEditorDom(mergeKey: NoteHistoryMergeKey | null) {
-      if (!bodyRef.current) {
-        return;
+      clearPendingTextMarks();
+      const nextState = applyNoteEditorEdit({
+        currentBlocks: blocksRef.current,
+        history: historyRef.current,
+        edit,
+        mergeKey,
+        bookId: note?.bookId
+      });
+      blocksRef.current = nextState.blocks;
+      historyRef.current = nextState.history;
+      pendingSelectionRestoreRef.current = nextState.pendingSelectionRestore;
+      setRenderedBlocks(cloneBlocks(nextState.blocks));
+      if (nextState.changed) {
+        onChangeBlocks(nextState.blocks);
       }
-      commitBlocks(parseNoteBlocksFromEditor(bodyRef.current), currentSelection(), mergeKey, false);
     }
 
     function updateHistorySelectionFromDom() {
       if (!historyRef.current || applyingHistoryRef.current) {
         return;
       }
-      historyRef.current = replaceNoteModelHistorySelection(
-        historyRef.current,
-        currentSelection()
-      );
+      historyRef.current = replaceNoteEditorSelection({
+        history: historyRef.current,
+        selection: currentSelection()
+      });
     }
 
     function applyHistoryState(nextHistory: NoteModelHistoryState) {
       applyingHistoryRef.current = true;
+      const blocks = normalizeNoteBlocks(nextHistory.current.blocks, note?.bookId ?? null);
       historyRef.current = nextHistory;
-      blocksRef.current = normalizeNoteBlocks(nextHistory.current.blocks, note?.bookId ?? null);
+      blocksRef.current = blocks;
       pendingSelectionRestoreRef.current = nextHistory.current.selection;
       setRenderedBlocks(cloneBlocks(blocksRef.current));
       onChangeBlocks(blocksRef.current);
@@ -482,14 +513,53 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
 
     function performUndo() {
       updateHistorySelectionFromDom();
-      const next = historyRef.current ? undoNoteModelHistory(historyRef.current) : null;
-      return next ? applyHistoryState(next) : false;
+      const next = undoNoteEditorRuntime({
+        history: historyRef.current,
+        bookId: note?.bookId
+      });
+      if (!next?.history) {
+        return false;
+      }
+      return applyHistoryState(next.history);
     }
 
     function performRedo() {
       updateHistorySelectionFromDom();
-      const next = historyRef.current ? redoNoteModelHistory(historyRef.current) : null;
-      return next ? applyHistoryState(next) : false;
+      const next = redoNoteEditorRuntime({
+        history: historyRef.current,
+        bookId: note?.bookId
+      });
+      if (!next?.history) {
+        return false;
+      }
+      return applyHistoryState(next.history);
+    }
+
+    function rerenderFromModel(selection: NoteModelSelection | null) {
+      pendingSelectionRestoreRef.current = selection;
+      setRenderedBlocks(cloneBlocks(blocksRef.current));
+    }
+
+    function applyTextInsertion(
+      selection: NoteModelSelection,
+      text: string,
+      mergeKey: NoteHistoryMergeKey = "typing"
+    ) {
+      let nextBlocks = blocksRef.current;
+      let nextSelection = selection;
+      const atomic = selectedAtomicInline();
+      if (atomic) {
+        const removal = removeInlineNode(nextBlocks, atomic.id);
+        if (removal) {
+          nextBlocks = removal.blocks;
+          nextSelection = removal.selection;
+        }
+      }
+      applyModelEdit(
+        insertTextAtSelection(nextBlocks, nextSelection, text, effectiveTextMarks(nextSelection)),
+        mergeKey
+      );
+      return true;
     }
 
     function handleBeforeInputEvent(inputEvent: InputEvent) {
@@ -497,6 +567,9 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         inputType: inputEvent.inputType,
         data: inputEvent.data
       });
+      if (compositionSessionRef.current) {
+        return false;
+      }
       if (inputEvent.inputType === "historyUndo") {
         performUndo();
         return true;
@@ -505,7 +578,10 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         performRedo();
         return true;
       }
-      if (inputEvent.inputType === "insertParagraph") {
+      if (
+        inputEvent.inputType === "insertParagraph" ||
+        inputEvent.inputType === "insertLineBreak"
+      ) {
         const selection = currentSelection();
         if (selection) {
           applyModelEdit(splitBlockAtSelection(blocksRef.current, selection), null);
@@ -516,29 +592,11 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       const selection = currentSelection();
       if (
         selection &&
-        isCollapsedModelSelection(selection) &&
-        inputEvent.inputType === "insertText" &&
-        typeof inputEvent.data === "string" &&
-        pendingTextMarksRef.current
-      ) {
-        applyModelEdit(
-          replaceModelRange(blocksRef.current, selection, [
-            createTextNode(inputEvent.data, pendingTextMarksRef.current)
-          ]),
-          "typing"
-        );
-        return true;
-      }
-      if (
-        selection &&
-        !isCollapsedModelSelection(selection) &&
-        inputEvent.inputType === "insertText" &&
+        (inputEvent.inputType === "insertText" ||
+          inputEvent.inputType === "insertReplacementText") &&
         typeof inputEvent.data === "string"
       ) {
-        applyModelEdit(
-          replaceModelRange(blocksRef.current, selection, [createTextNode(inputEvent.data)]),
-          "typing"
-        );
+        applyTextInsertion(selection, inputEvent.data);
         return true;
       }
       if (
@@ -553,21 +611,49 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       const selectedAtomic = selectedAtomicInline();
       if (
         selectedAtomic &&
-        (inputEvent.inputType === "insertText" || inputEvent.inputType === "insertLineBreak")
+        (inputEvent.inputType === "insertText" ||
+          inputEvent.inputType === "insertReplacementText")
       ) {
         const removal = removeInlineNode(blocksRef.current, selectedAtomic.id);
         if (!removal) {
           return false;
         }
-        const inserted =
-          inputEvent.inputType === "insertText" && typeof inputEvent.data === "string"
-            ? [createTextNode(inputEvent.data)]
-            : [createTextNode("\n")];
-        applyModelEdit(
-          replaceModelRange(removal.blocks, removal.selection, inserted),
-          "typing"
-        );
+        return typeof inputEvent.data === "string"
+          ? applyTextInsertion(removal.selection, inputEvent.data)
+          : false;
+      }
+
+      if (
+        selection &&
+        (inputEvent.inputType === "insertFromPaste" ||
+          inputEvent.inputType === "insertFromDrop")
+      ) {
+        const transfer = inputEvent.dataTransfer;
+        const internalHtml = transfer?.getData(NOTE_CLIPBOARD_MIME) ?? "";
+        const richHtml = transfer?.getData("text/html") ?? "";
+        if (
+          internalHtml ||
+          richHtml.includes("data-inline-type=\"page-link\"") ||
+          richHtml.includes("data-inline-type=\"topic-card\"")
+        ) {
+          return false;
+        }
+        const text = transfer?.getData("text/plain") ?? inputEvent.data ?? "";
+        pasteBlocks(clipboardBlocksFromText(text));
         return true;
+      }
+
+      if (selection && inputEvent.inputType === "deleteByDrag") {
+        applyModelEdit(replaceModelRange(blocksRef.current, selection), "delete");
+        return true;
+      }
+
+      if (selection && inputEvent.inputType === "deleteByCut") {
+        const edit = pendingCutEdit();
+        if (edit) {
+          applyModelEdit(edit, "delete");
+          return true;
+        }
       }
 
       return false;
@@ -621,7 +707,12 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         return false;
       }
       if (!isCollapsedModelSelection(selection)) {
-        applyModelEdit(replaceModelRange(blocksRef.current, selection), "delete");
+        applyModelEdit(
+          direction === "backward"
+            ? deleteBackward(blocksRef.current, selection) ?? replaceModelRange(blocksRef.current, selection)
+            : deleteForward(blocksRef.current, selection) ?? replaceModelRange(blocksRef.current, selection),
+          "delete"
+        );
         return true;
       }
 
@@ -652,11 +743,9 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       }
 
       const edit =
-        direction === "backward" && offset === 0
-          ? mergeBlockBackward(blocksRef.current, block.id)
-          : direction === "forward" && offset === blockLogicalLength(block)
-            ? mergeBlockForward(blocksRef.current, block.id)
-            : null;
+        direction === "backward"
+          ? deleteBackward(blocksRef.current, selection)
+          : deleteForward(blocksRef.current, selection);
       if (!edit) {
         return false;
       }
@@ -894,27 +983,29 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
 
     useEffect(() => {
       if (!note) {
-        const empty = [createEmptyNoteBlock()];
-        blocksRef.current = empty;
-        setRenderedBlocks(cloneBlocks(empty));
+        const runtime = createNoteEditorRuntimeState([createEmptyNoteBlock()], null, null);
+        blocksRef.current = runtime.blocks;
+        setRenderedBlocks(cloneBlocks(runtime.blocks));
         appliedNoteIdRef.current = null;
-        historyRef.current = null;
+        historyRef.current = runtime.history;
         clearPendingTextMarks();
+        compositionSessionRef.current = null;
         return;
       }
       if (appliedNoteIdRef.current === note.id) {
         return;
       }
-      const normalized = normalizeNoteBlocks(note.blocks, note.bookId);
-      blocksRef.current = normalized;
-      setRenderedBlocks(cloneBlocks(normalized));
-      historyRef.current = createNoteModelHistory({ blocks: normalized, selection: null });
+      const runtime = createNoteEditorRuntimeState(note.blocks, note.bookId, null);
+      blocksRef.current = runtime.blocks;
+      setRenderedBlocks(cloneBlocks(runtime.blocks));
+      historyRef.current = runtime.history;
       appliedNoteIdRef.current = note.id;
       clearTokenSelection();
       updateSelectedBlock(null);
       pendingPageLinkPointRef.current = null;
       pendingTopicSelectionRef.current = null;
       clearPendingTextMarks();
+      compositionSessionRef.current = null;
     }, [note]);
 
     useClientLayoutEffect(() => {
@@ -1244,18 +1335,34 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             if (!clipboard) {
               return;
             }
-            event.preventDefault();
             const internalHtml = clipboard.getData(NOTE_CLIPBOARD_MIME);
             const richHtml = clipboard.getData("text/html");
-            const text = clipboard.getData("text/plain");
-            const pastedBlocks = internalHtml
-              ? clipboardBlocksFromHtml(internalHtml)
-              : richHtml &&
-                  (richHtml.includes("data-inline-type=\"page-link\"") ||
-                    richHtml.includes("data-inline-type=\"topic-card\""))
-                ? clipboardBlocksFromHtml(richHtml)
-                : clipboardBlocksFromText(text);
-            pasteBlocks(pastedBlocks);
+            if (
+              internalHtml ||
+              (richHtml &&
+                (richHtml.includes("data-inline-type=\"page-link\"") ||
+                  richHtml.includes("data-inline-type=\"topic-card\"")))
+            ) {
+              event.preventDefault();
+              pasteBlocks(internalHtml ? clipboardBlocksFromHtml(internalHtml) : clipboardBlocksFromHtml(richHtml));
+            }
+          }}
+          onDrop={(event) => {
+            const transfer = event.dataTransfer;
+            if (!transfer) {
+              return;
+            }
+            const internalHtml = transfer.getData(NOTE_CLIPBOARD_MIME);
+            const richHtml = transfer.getData("text/html");
+            if (
+              internalHtml ||
+              (richHtml &&
+                (richHtml.includes("data-inline-type=\"page-link\"") ||
+                  richHtml.includes("data-inline-type=\"topic-card\"")))
+            ) {
+              event.preventDefault();
+              pasteBlocks(internalHtml ? clipboardBlocksFromHtml(internalHtml) : clipboardBlocksFromHtml(richHtml));
+            }
           }}
           onInput={(event) => {
             const inputEvent = event.nativeEvent as InputEvent;
@@ -1263,13 +1370,12 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
               inputType: inputEvent.inputType,
               data: inputEvent.data
             });
-            const mergeKey: NoteHistoryMergeKey | null =
-              inputEvent.inputType.startsWith("delete")
-                ? "delete"
-                : inputEvent.inputType.includes("Paste")
-                  ? "paste"
-                  : "typing";
-            syncEditorDom(mergeKey);
+            if (!compositionSessionRef.current) {
+              logInteraction("input-ignored", {
+                reason: "model-owned-text",
+                inputType: inputEvent.inputType
+              });
+            }
           }}
           onBeforeInput={(event) => {
             const inputEvent = event.nativeEvent as InputEvent;
@@ -1280,6 +1386,53 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             if (handleBeforeInputEvent(inputEvent)) {
               event.preventDefault();
             }
+          }}
+          onCompositionStart={(event) => {
+            const selection = currentSelection();
+            if (!selection) {
+              return;
+            }
+            const blockId = selection.focus.blockId;
+            const host =
+              blockContentElement(event.target) ??
+              findBlockElement(bodyRef.current!, blockId)?.querySelector<HTMLElement>(
+                ".note-editor__block-content"
+              ) ??
+              null;
+            compositionSessionRef.current = {
+              blockId,
+              host,
+              marks: effectiveTextMarks(selection) ?? null,
+              selection
+            };
+          }}
+          onCompositionEnd={(event) => {
+            const session = compositionSessionRef.current;
+            compositionSessionRef.current = null;
+            if (!session) {
+              return;
+            }
+            if (
+              !blocksRef.current.some((block) => block.id === session.blockId) ||
+              (session.host && !bodyRef.current?.contains(session.host))
+            ) {
+              rerenderFromModel(session.selection);
+              return;
+            }
+            const text = event.data ?? "";
+            if (text.length > 0 || !isCollapsedModelSelection(session.selection)) {
+              applyModelEdit(
+                insertTextAtSelection(
+                  blocksRef.current,
+                  session.selection,
+                  text,
+                  session.marks ?? undefined
+                ),
+                "typing"
+              );
+              return;
+            }
+            rerenderFromModel(session.selection);
           }}
           onKeyDown={(event) => {
             event.stopPropagation();
