@@ -11,6 +11,13 @@ export const TOPIC_COLOR_ROLES = [
   "emphasis"
 ] as const satisfies readonly TopicColorRole[];
 
+export const SELECTABLE_TOPIC_COLOR_ROLES = [
+  "accent",
+  "interactive",
+  "accentSoft",
+  "interactiveSoft"
+] as const satisfies readonly TopicColorRole[];
+
 export const DEFAULT_TOPIC_COLOR: TopicColorRole = "accent";
 export const MAX_TOPIC_LENGTH = 80;
 

@@ -284,6 +284,25 @@ describe("note block model", () => {
     expect(forward?.blocks[1]).toMatchObject({ id: "c", type: "heading1" });
   });
 
+  it("removes newline-only blocks instead of merging line breaks into adjacent paragraphs", () => {
+    const blocks = [
+      block("a", "paragraph", "Before"),
+      block("b", "paragraph", "\n\n"),
+      block("c", "paragraph", "After")
+    ];
+    const backward = mergeBlockBackward(blocks, "b");
+    const forward = mergeBlockForward(blocks, "b");
+
+    expect(backward?.blocks).toMatchObject([
+      { id: "a", children: [{ type: "text", text: "Before" }] },
+      { id: "c", children: [{ type: "text", text: "After" }] }
+    ]);
+    expect(forward?.blocks).toMatchObject([
+      { id: "a", children: [{ type: "text", text: "Before" }] },
+      { id: "c", children: [{ type: "text", text: "After" }] }
+    ]);
+  });
+
   it("converts a first heading to a paragraph on backward merge", () => {
     const result = mergeBlockBackward([block("a", "heading1", "Chapter")], "a");
 

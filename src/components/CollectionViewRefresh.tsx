@@ -168,6 +168,10 @@ function isInteractiveTarget(target: EventTarget | null) {
   );
 }
 
+function isSelfKeyboardActivation(event: React.KeyboardEvent<HTMLElement>) {
+  return event.target === event.currentTarget;
+}
+
 function ordersMatch(left: string[], right: string[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
@@ -2035,6 +2039,9 @@ export default function CollectionViewRefresh({
                     }
 
                     if (event.key === "Enter" || event.key === " ") {
+                      if (!isSelfKeyboardActivation(event)) {
+                        return;
+                      }
                       event.preventDefault();
                       onSelectCollection(collection.folder.id);
                     }
@@ -2618,6 +2625,9 @@ export default function CollectionViewRefresh({
                       }
 
                       if (event.key === "Enter" || event.key === " ") {
+                        if (!isSelfKeyboardActivation(event)) {
+                          return;
+                        }
                         event.preventDefault();
                         void onOpenDocument(document.id, "reader");
                       }

@@ -2507,11 +2507,11 @@ button {
 
 .pane-resize-handle__zone {
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: 50%;
   left: 50%;
   width: calc(var(--reader-splitter-hit-width) + 0.7rem);
-  transform: translateX(-50%);
+  height: 7rem;
+  transform: translate(-50%, -50%);
   pointer-events: auto;
 }
 
@@ -2683,10 +2683,11 @@ button {
   position: absolute;
   top: 0.45rem;
   bottom: 0.45rem;
-  right: 0.18rem;
-  width: 5px;
+  right: 0.25rem;
+  z-index: 12;
+  width: 24px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.025);
+  background: transparent;
   opacity: 0;
   pointer-events: none;
   cursor: pointer;
@@ -2700,8 +2701,8 @@ button {
 
 .reader-scrollbar-thumb {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 9px;
+  right: 9px;
   top: 0;
   border-radius: 999px;
   background: rgba(190, 205, 215, 0.22);
@@ -4006,7 +4007,10 @@ body.reader-pane-resizing .notes-pane img {
   font-size: 0.98rem;
   font-weight: 410;
   color: var(--note-text-muted);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--overlay-border) 100%, transparent);
+}
+
+.app-env--dev .note-editor__body > [data-block-type="paragraph"] {
+  box-shadow: inset 0 0 0 1px var(--overlay-border);
 }
 
 .note-editor__body > [data-block-type="heading1"] {

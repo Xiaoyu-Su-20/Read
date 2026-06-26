@@ -39,6 +39,10 @@ export function blockLogicalLength(block: NoteBlock) {
   return block.children.reduce((length, node) => length + inlineLength(node), 0);
 }
 
+function isEffectivelyEmptyBlock(block: NoteBlock) {
+  return block.children.every((node) => node.type === "text" && node.text.trim().length === 0);
+}
+
 export function pointToBlockOffset(block: NoteBlock, point: NoteModelPoint) {
   const targetIndex = Math.max(0, Math.min(point.inlineIndex, block.children.length));
   let offset = 0;
@@ -786,8 +790,10 @@ export function mergeBlockBackward(blocks: NoteBlock[], blockId: string): NoteMo
   const current = nextBlocks[blockIndex];
   const previousLength = blockLogicalLength(previous);
   const currentLength = blockLogicalLength(current);
+  const previousIsEmpty = isEffectivelyEmptyBlock(previous);
+  const currentIsEmpty = isEffectivelyEmptyBlock(current);
 
-  if (currentLength === 0) {
+  if (currentIsEmpty) {
     nextBlocks.splice(blockIndex, 1);
     return {
       blocks: normalizeNoteBlocks(nextBlocks),
@@ -795,7 +801,7 @@ export function mergeBlockBackward(blocks: NoteBlock[], blockId: string): NoteMo
     };
   }
 
-  if (previousLength === 0) {
+  if (previousIsEmpty) {
     nextBlocks.splice(blockIndex - 1, 1);
     return {
       blocks: normalizeNoteBlocks(nextBlocks),
@@ -822,8 +828,10 @@ export function mergeBlockForward(blocks: NoteBlock[], blockId: string): NoteMod
   const next = nextBlocks[blockIndex + 1];
   const currentLength = blockLogicalLength(current);
   const nextLength = blockLogicalLength(next);
+  const currentIsEmpty = isEffectivelyEmptyBlock(current);
+  const nextIsEmpty = isEffectivelyEmptyBlock(next);
 
-  if (currentLength === 0) {
+  if (currentIsEmpty) {
     nextBlocks.splice(blockIndex, 1);
     return {
       blocks: normalizeNoteBlocks(nextBlocks),
@@ -831,7 +839,7 @@ export function mergeBlockForward(blocks: NoteBlock[], blockId: string): NoteMod
     };
   }
 
-  if (nextLength === 0) {
+  if (nextIsEmpty) {
     nextBlocks.splice(blockIndex + 1, 1);
     return {
       blocks: normalizeNoteBlocks(nextBlocks),

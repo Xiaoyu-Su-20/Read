@@ -96,7 +96,7 @@ import type {
   NotePageLinkNode,
   ParagraphTopic
 } from "../../../lib/types";
-import { computeCenteredChildScrollTop } from "./noteEditorScroll";
+import { computeTopAlignedChildScrollTop } from "./noteEditorScroll";
 
 const NOTE_CLIPBOARD_MIME = "application/x-calmreader-note-fragment";
 const SHOULD_VERIFY_SELECTION_RESTORE = import.meta.env.DEV;
@@ -154,7 +154,13 @@ type CompositionSession = {
   selection: NoteModelSelection;
 };
 
-const NoteBlockView = memo(function NoteBlockView({ block }: { block: NoteBlock }) {
+const NoteBlockView = memo(function NoteBlockView({
+  block,
+  editable
+}: {
+  block: NoteBlock;
+  editable: boolean;
+}) {
   const html = useMemo(
     () => renderNoteInlineNodesHtml(block.children) || "<br>",
     [block.children]
@@ -168,6 +174,8 @@ const NoteBlockView = memo(function NoteBlockView({ block }: { block: NoteBlock 
     >
       <div
         className="note-editor__block-content"
+        contentEditable={editable}
+        suppressContentEditableWarning
         spellCheck={false}
         dangerouslySetInnerHTML={{
           __html: html
@@ -274,6 +282,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
   ) {
     const bodyRef = useRef<HTMLDivElement | null>(null);
     const appliedNoteIdRef = useRef<string | null>(null);
+    const lastDispatchedBlocksRef = useRef<NoteBlock[] | null>(null);
     const initialRuntimeRef = useRef<ReturnType<typeof createNoteEditorRuntimeState> | null>(null);
     if (!initialRuntimeRef.current) {
       initialRuntimeRef.current = createNoteEditorRuntimeState(
@@ -352,7 +361,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       const root = bodyRef.current;
       if (
         selectedPageLinkIdRef.current === pageLinkId &&
-        (!selectedPageLinkElementRef.current || root?.contains(selectedPageLinkElementRef.current))
+        selectedPageLinkElementRef.current &&
+        root?.contains(selectedPageLinkElementRef.current)
       ) {
         return;
       }
@@ -367,7 +377,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       const root = bodyRef.current;
       if (
         selectedTopicIdRef.current === topicId &&
-        (!selectedTopicElementRef.current || root?.contains(selectedTopicElementRef.current))
+        selectedTopicElementRef.current &&
+        root?.contains(selectedTopicElementRef.current)
       ) {
         return;
       }
@@ -570,6 +581,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           blockCount: nextState.blocks.length
         });
         const callbackStartedAt = performance.now();
+        lastDispatchedBlocksRef.current = nextState.blocks;
         onChangeBlocks(nextState.blocks);
         debugLocalAction("notes.performance.blocks-propagation-dispatched", {
           noteId: note?.id ?? null,
@@ -603,6 +615,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           blockCount: nextState.blocks.length
         });
         const callbackStartedAt = performance.now();
+        lastDispatchedBlocksRef.current = nextState.blocks;
         onChangeBlocks(nextState.blocks);
         debugLocalAction("notes.performance.blocks-propagation-dispatched", {
           noteId: note?.id ?? null,
@@ -807,7 +820,16 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       if (!root) {
         return;
       }
-      root.focus({ preventScroll: true });
+      const selection = currentSelection();
+      const targetBlock =
+        (selection
+          ? findBlockElement(root, selection.focus.blockId)
+          : findBlockElement(root, blocksRef.current[0]?.id ?? "")) ?? null;
+      const target =
+        targetBlock?.querySelector<HTMLElement>(".note-editor__block-content") ??
+        root.querySelector<HTMLElement>(".note-editor__block-content") ??
+        root;
+      target.focus({ preventScroll: true });
     }
 
     function moveSelectionTo(point: NoteModelPoint, extend = false) {
@@ -1141,6 +1163,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         setCurrentBlocks(runtime.blocks);
         setRenderedBlocks(runtime.blocks);
         appliedNoteIdRef.current = null;
+        lastDispatchedBlocksRef.current = null;
         historyRef.current = runtime.history;
         clearTokenSelection();
         updateSelectedBlock(null);
@@ -1150,7 +1173,12 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         compositionSessionRef.current = null;
         return;
       }
-      if (appliedNoteIdRef.current === note.id) {
+      const sameNote = appliedNoteIdRef.current === note.id;
+      const isLocalEcho =
+        sameNote &&
+        (note.blocks === blocksRef.current ||
+          note.blocks === lastDispatchedBlocksRef.current);
+      if (isLocalEcho) {
         return;
       }
       const runtime = createNoteEditorRuntimeState(note.blocks, note.bookId, null);
@@ -1158,6 +1186,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       setRenderedBlocks(runtime.blocks);
       historyRef.current = runtime.history;
       appliedNoteIdRef.current = note.id;
+      lastDispatchedBlocksRef.current = null;
       clearTokenSelection();
       updateSelectedBlock(null);
       pendingPageLinkPointRef.current = null;
@@ -1287,18 +1316,22 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             return;
           }
           if (!(scrollSurface instanceof HTMLDivElement)) {
-            blockElement.scrollIntoView({ behavior: "smooth", block: "center" });
+            blockElement.scrollIntoView({ block: "center" });
             return;
           }
           const scrollRect = scrollSurface.getBoundingClientRect();
           const blockRect = blockElement.getBoundingClientRect();
-          const nextScrollTop = computeCenteredChildScrollTop({
-            childHeight: blockRect.height,
+          const rootFontSize = Number.parseFloat(
+            window.getComputedStyle(document.documentElement).fontSize
+          );
+          const topOffset = (Number.isFinite(rootFontSize) ? rootFontSize : 16) * 1.75;
+          const nextScrollTop = computeTopAlignedChildScrollTop({
             childTop: scrollSurface.scrollTop + (blockRect.top - scrollRect.top),
             containerHeight: scrollSurface.clientHeight,
+            topOffset,
             scrollHeight: scrollSurface.scrollHeight
           });
-          scrollSurface.scrollTo({ top: nextScrollTop, behavior: "smooth" });
+          scrollSurface.scrollTop = nextScrollTop;
         },
         copySelection() {
           const payload = currentClipboardPayload();
@@ -1497,8 +1530,6 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           role="textbox"
           aria-label="Note body"
           aria-multiline="true"
-          contentEditable={!loading}
-          suppressContentEditableWarning
           onPointerDownCapture={(event) => {
             event.stopPropagation();
             logInteraction("pointerdown", {
@@ -1861,7 +1892,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           }}
         >
           {renderedBlocks.map((block) => (
-            <NoteBlockView key={block.id} block={block} />
+            <NoteBlockView key={block.id} block={block} editable={!loading} />
           ))}
         </div>
       </div>

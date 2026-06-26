@@ -60,6 +60,24 @@ function renderEditor(note: NoteDocument): RenderedEditor {
   return { container, root, onChangeBlocks, onOpenPageLink, editorRef };
 }
 
+function rerenderEditor(rendered: RenderedEditor, note: NoteDocument) {
+  act(() => {
+    rendered.root.render(
+      createElement(ModelNoteEditor, {
+        ref: rendered.editorRef,
+        note,
+        loading: false,
+        ignoredSpellcheckWords: [],
+        currentPage: 12,
+        documentCapabilities: true,
+        onChangeBlocks: rendered.onChangeBlocks,
+        onBlur: vi.fn(),
+        onOpenPageLink: rendered.onOpenPageLink
+      })
+    );
+  });
+}
+
 function blockContent(container: HTMLDivElement, index: number) {
   const content = container.querySelectorAll<HTMLElement>(".note-editor__block-content")[index];
   if (!content) {
@@ -163,6 +181,31 @@ afterEach(() => {
 });
 
 describe("ModelNoteEditor interactions", () => {
+  it("reloads external block updates for the same note id", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Original")]
+      }
+    ]);
+    const rendered = renderEditor(note);
+    const updatedNote: NoteDocument = {
+      ...note,
+      blocks: [
+        {
+          id: "a",
+          type: "paragraph",
+          children: [createTextNode("External update")]
+        }
+      ]
+    };
+
+    rerenderEditor(rendered, updatedNote);
+
+    expect(blockContent(rendered.container, 0).textContent).toBe("External update");
+  });
+
   it("toggles bold on selected text without execCommand", () => {
     const note = createNote([
       {

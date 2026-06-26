@@ -57,6 +57,7 @@ const PdfViewer = memo(function PdfViewer({
   const scrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const scrollbarRef = useRef<HTMLDivElement | null>(null);
+  const scrollbarThumbRef = useRef<HTMLDivElement | null>(null);
   const scrollbarMetricsRef = useRef({
     trackHeight: 0,
     thumbHeight: 0,
@@ -867,9 +868,27 @@ const PdfViewer = memo(function PdfViewer({
       });
     }
 
-    function handlePointerMove(event: PointerEvent) {
+    function endScrollbarDrag(pointerId?: number) {
       const activeDrag = scrollbarDragRef.current;
       if (!activeDrag) {
+        return;
+      }
+
+      if (typeof pointerId === "number" && activeDrag.pointerId !== pointerId) {
+        return;
+      }
+
+      const thumbElement = scrollbarThumbRef.current;
+      if (thumbElement?.hasPointerCapture(activeDrag.pointerId)) {
+        thumbElement.releasePointerCapture(activeDrag.pointerId);
+      }
+      scrollbarDragRef.current = null;
+      finishManualScroll();
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const activeDrag = scrollbarDragRef.current;
+      if (!activeDrag || event.pointerId !== activeDrag.pointerId) {
         return;
       }
 
@@ -878,17 +897,14 @@ const PdfViewer = memo(function PdfViewer({
         return;
       }
 
+      event.preventDefault();
       const deltaY = event.clientY - activeDrag.startClientY;
       const scrollDelta = (deltaY / maxThumbTop) * maxScroll;
       scrollSurface.scrollTop = activeDrag.startScrollTop + scrollDelta;
     }
 
     function handlePointerUp(event: PointerEvent) {
-      if (scrollbarDragRef.current?.pointerId !== event.pointerId) {
-        return;
-      }
-      scrollbarDragRef.current = null;
-      finishManualScroll();
+      endScrollbarDrag(event.pointerId);
     }
 
     updateReaderScrollbar();
@@ -904,7 +920,7 @@ const PdfViewer = memo(function PdfViewer({
     if (pageElement) {
       resizeObserver?.observe(pageElement);
     }
-    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointermove", handlePointerMove, { passive: false });
     window.addEventListener("pointerup", handlePointerUp);
     window.addEventListener("pointercancel", handlePointerUp);
 
@@ -918,8 +934,7 @@ const PdfViewer = memo(function PdfViewer({
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
-      scrollbarDragRef.current = null;
-      finishManualScroll();
+      endScrollbarDrag();
     };
   }, [displayedPage, incomingPage, scaledHeight, scaledWidth]);
 
@@ -1188,6 +1203,7 @@ const PdfViewer = memo(function PdfViewer({
         }}
       >
         <div
+          ref={scrollbarThumbRef}
           className="reader-scrollbar-thumb"
           style={{
             height: `${scrollbarState.thumbHeight}px`,
@@ -1207,6 +1223,7 @@ const PdfViewer = memo(function PdfViewer({
               startClientY: event.clientY,
               startScrollTop: scrollSurface.scrollTop
             };
+            event.currentTarget.setPointerCapture(event.pointerId);
           }}
         />
       </div>

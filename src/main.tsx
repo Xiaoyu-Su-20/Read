@@ -22,6 +22,8 @@ function startupTrace(step: string, fields: Record<string, unknown> = {}) {
 
 initializeLoggingBridge();
 
+document.body.classList.toggle("app-env--dev", import.meta.env.DEV);
+
 window.addEventListener("error", (event) => {
   reportFrontendError("frontend.startup.main.window-error", event.error, {
     message: event.message

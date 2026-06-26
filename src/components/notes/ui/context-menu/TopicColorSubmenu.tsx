@@ -1,7 +1,7 @@
 import type { Ref } from "react";
 
 import {
-  TOPIC_COLOR_ROLES,
+  SELECTABLE_TOPIC_COLOR_ROLES,
   topicColorRoleLabels,
   resolveTopicAppearance
 } from "../../../../lib/paragraphTopics";
@@ -35,7 +35,7 @@ export default function TopicColorSubmenu({
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      {TOPIC_COLOR_ROLES.map((color) => (
+      {SELECTABLE_TOPIC_COLOR_ROLES.map((color) => (
         <button
           key={color}
           className="topic-color-submenu__item"

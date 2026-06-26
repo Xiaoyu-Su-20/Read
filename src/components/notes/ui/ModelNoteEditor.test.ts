@@ -7,7 +7,7 @@ import type { NoteDocument } from "../../../lib/types";
 import ModelNoteEditor from "./ModelNoteEditor";
 
 describe("ModelNoteEditor", () => {
-  it("renders structural block wrappers under a single editable root", () => {
+  it("renders non-editable structural wrappers with one editable surface per block", () => {
     const note: NoteDocument = {
       id: "note",
       title: "Model editor",
@@ -52,7 +52,8 @@ describe("ModelNoteEditor", () => {
 
     expect(markup).toContain('data-block-type="heading1"');
     expect(markup).toContain('class="note-editor__block-content"');
-    expect(markup.match(/contenteditable="true"/g)).toHaveLength(1);
+    expect(markup).not.toMatch(/note-editor__body[^>]*contenteditable/);
+    expect(markup.match(/contenteditable="true"/g)).toHaveLength(2);
     expect(markup).not.toContain("<h1");
     expect(markup).not.toContain("font-size:");
     expect(markup).toContain('data-inline-type="page-link"');

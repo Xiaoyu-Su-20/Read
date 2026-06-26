@@ -305,7 +305,11 @@ export function restoreModelSelection(
     return false;
   }
 
-  root.focus({ preventScroll: true });
+  const focusElement =
+    focus.node instanceof HTMLElement ? focus.node : focus.node.parentElement;
+  const focusHost =
+    focusElement?.closest<HTMLElement>(".note-editor__block-content") ?? root;
+  focusHost.focus({ preventScroll: true });
   selection.removeAllRanges();
   if (typeof selection.setBaseAndExtent === "function") {
     selection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
