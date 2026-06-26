@@ -2,8 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import BookWorkspace from "./BookWorkspace";
-import { normalizeReaderFitMode } from "../lib/reader/zoom";
-import type { DocumentPayload, ReaderSession, ViewerApi } from "../lib/types";
+import type { DocumentPayload, ReaderFitMode, ReaderSession, ViewerApi } from "../lib/types";
 import { createUnifiedSearchController } from "../search";
 import type { ViewTransition } from "../lib/workspaceView";
 
@@ -67,7 +66,7 @@ function makeViewerApi(overrides?: Partial<ViewerApi>): ViewerApi {
     zoomOut: vi.fn(),
     getAutoMaximizeZoom: vi.fn(() => 1),
     getAutoMaximizeMinDocumentWidth: vi.fn(() => 640),
-    getFitMode: vi.fn(() => normalizeReaderFitMode(documentPayload.state.preferences.fitMode)),
+    getFitMode: vi.fn((): ReaderFitMode => "auto-maximize"),
     setFitMode: vi.fn(),
     goToPage: vi.fn(),
     navigateToTarget: vi.fn(),
@@ -108,6 +107,8 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof BookWorkspace>[0]
       documentHeaderCurrentPage={12}
       documentHeaderPageCount={120}
       documentHeaderZoom={1}
+      readerViewMode="page"
+      onReaderViewModeChange={vi.fn()}
       viewerApi={makeViewerApi()}
       onHeaderMouseDown={vi.fn()}
       searchController={createUnifiedSearchController()}
@@ -134,7 +135,7 @@ describe("BookWorkspace", () => {
     expect(markup).toContain("Book Mode Title");
     expect(markup).toContain("reader-workspace__body reader-workspace__body--book-only");
     expect(markup).toContain("reader-workspace__document reader-workspace__document--only");
-    expect(markup).not.toContain("reader-workspace__notes");
+    expect(markup).not.toContain('class="reader-workspace__notes"');
     expect(markup).not.toContain("reader-workspace__splitter");
   });
 

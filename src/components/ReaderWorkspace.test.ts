@@ -3,8 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import ReaderWorkspace from "./ReaderWorkspace";
-import { normalizeReaderFitMode } from "../lib/reader/zoom";
-import type { DocumentPayload, ReaderSession, ViewerApi } from "../lib/types";
+import type { DocumentPayload, ReaderFitMode, ReaderSession, ViewerApi } from "../lib/types";
 import { createUnifiedSearchController } from "../search";
 
 vi.mock("./NotesViewport", () => ({
@@ -89,7 +88,7 @@ function makeViewerApi(overrides?: Partial<ViewerApi>): ViewerApi {
     zoomOut: vi.fn(),
     getAutoMaximizeZoom: vi.fn(() => 1),
     getAutoMaximizeMinDocumentWidth: vi.fn(() => 640),
-    getFitMode: vi.fn(() => normalizeReaderFitMode(documentPayload.state.preferences.fitMode)),
+    getFitMode: vi.fn((): ReaderFitMode => "auto-maximize"),
     setFitMode: vi.fn(),
     goToPage: vi.fn(),
     navigateToTarget: vi.fn(),
@@ -144,6 +143,8 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
     documentHeaderCurrentPage: 52,
     documentHeaderPageCount: 191,
     documentHeaderZoom: 1,
+    readerViewMode: "page",
+    onReaderViewModeChange: vi.fn(),
     viewerApi: makeViewerApi(),
     onHeaderMouseDown: vi.fn(),
     searchController: createUnifiedSearchController(),
@@ -230,7 +231,11 @@ describe("ReaderWorkspace document header", () => {
     expect(markup).toContain('aria-label="Next page"');
     expect(markup).toContain('aria-label="Zoom out"');
     expect(markup).toContain('aria-label="Zoom in"');
-    expect(markup).toContain('aria-label="Switch to free zoom"');
+    expect(markup).not.toContain("Switch to free zoom");
+    expect(markup).not.toContain("Switch to auto maximize");
+    expect(markup).toContain('aria-label="Reader view mode"');
+    expect(markup).toContain("Page");
+    expect(markup).toContain("Scroll");
   });
 
   it("disables page and zoom controls when no document is open", () => {
@@ -246,36 +251,38 @@ describe("ReaderWorkspace document header", () => {
     expect(markup.match(/aria-label="Next page"/g)).toHaveLength(1);
     expect(markup.match(/aria-label="Zoom out"/g)).toHaveLength(1);
     expect(markup.match(/aria-label="Zoom in"/g)).toHaveLength(1);
-    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(5);
+    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(6);
   });
 
-  it("routes page, zoom, and fit mode button clicks through the viewer api", () => {
+  it("routes page, zoom, and reader view mode button clicks through the viewer api", () => {
     const viewerApi = makeViewerApi();
-    const tree = renderWorkspace({ viewerApi });
+    const onReaderViewModeChange = vi.fn();
+    const tree = renderWorkspace({ viewerApi, onReaderViewModeChange });
     const elements = collectElements(tree);
 
     const previousPageButton = elements.find((element) => element.props["aria-label"] === "Previous page");
     const nextPageButton = elements.find((element) => element.props["aria-label"] === "Next page");
     const zoomOutButton = elements.find((element) => element.props["aria-label"] === "Zoom out");
     const zoomInButton = elements.find((element) => element.props["aria-label"] === "Zoom in");
-    const fitModeButton = elements.find((element) => element.props["aria-label"] === "Switch to free zoom");
+    const scrollModeButton = elements.find((element) => element.props.children === "Scroll");
 
     const previousPageClick = previousPageButton?.props.onClick as (() => void) | undefined;
     const nextPageClick = nextPageButton?.props.onClick as (() => void) | undefined;
     const zoomOutClick = zoomOutButton?.props.onClick as (() => void) | undefined;
     const zoomInClick = zoomInButton?.props.onClick as (() => void) | undefined;
-    const fitModeClick = fitModeButton?.props.onClick as (() => void) | undefined;
+    const scrollModeClick = scrollModeButton?.props.onClick as (() => void) | undefined;
 
     previousPageClick?.();
     nextPageClick?.();
     zoomOutClick?.();
     zoomInClick?.();
-    fitModeClick?.();
+    scrollModeClick?.();
 
     expect(viewerApi.previousPage).toHaveBeenCalledTimes(1);
     expect(viewerApi.nextPage).toHaveBeenCalledTimes(1);
     expect(viewerApi.zoomOut).toHaveBeenCalledTimes(1);
     expect(viewerApi.zoomIn).toHaveBeenCalledTimes(1);
-    expect(viewerApi.setFitMode).toHaveBeenCalledWith("free");
+    expect(viewerApi.setFitMode).not.toHaveBeenCalled();
+    expect(onReaderViewModeChange).toHaveBeenCalledWith("scroll");
   });
 });

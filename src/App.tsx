@@ -40,6 +40,7 @@ import { usePaletteController } from "./lib/app/usePaletteController";
 import { useWorkspaceController } from "./lib/app/useWorkspaceController";
 import { debugAction, debugLocalAction, reportFrontendError, traceEvent } from "./lib/debugLog";
 import { collectDocuments } from "./lib/tree";
+import type { ReaderViewMode } from "./lib/types";
 import { toViewEventName, type ViewTransition, type WorkspaceView } from "./lib/workspaceView";
 
 function startupTrace(step: string, fields: Record<string, unknown> = {}) {
@@ -172,6 +173,7 @@ export default function App() {
   const [sidebarSearchAnchorElement, setSidebarSearchAnchorElement] = useState<HTMLButtonElement | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteAnchorElement, setPaletteAnchorElement] = useState<HTMLButtonElement | null>(null);
+  const [readerViewMode, setReaderViewMode] = useState<ReaderViewMode>("page");
   const [fullscreenState, setFullscreenState] = useState<FullscreenState>("windowed");
   const [showFullscreenHint, setShowFullscreenHint] = useState(false);
   const fullscreenTransitionRef = useRef(false);
@@ -1600,6 +1602,8 @@ export default function App() {
                 documentHeaderCurrentPage={workspace.viewerSnapshot.currentPage}
                 documentHeaderPageCount={workspace.viewerSnapshot.pageCount}
                 documentHeaderZoom={workspace.viewerSnapshot.zoom}
+                readerViewMode={readerViewMode}
+                onReaderViewModeChange={setReaderViewMode}
                 viewerApi={workspace.viewerApi}
                 onHeaderMouseDown={handleTopbarMouseDown}
                 searchController={searchController}
@@ -1653,6 +1657,8 @@ export default function App() {
                 documentHeaderCurrentPage={workspace.viewerSnapshot.currentPage}
                 documentHeaderPageCount={workspace.viewerSnapshot.pageCount}
                 documentHeaderZoom={workspace.viewerSnapshot.zoom}
+                readerViewMode={readerViewMode}
+                onReaderViewModeChange={setReaderViewMode}
                 viewerApi={workspace.viewerApi}
                 onHeaderMouseDown={handleTopbarMouseDown}
                 searchController={searchController}

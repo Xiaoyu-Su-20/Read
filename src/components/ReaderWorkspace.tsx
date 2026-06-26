@@ -8,7 +8,6 @@ import ReaderViewport from "./ReaderViewport";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import type { ViewTransition } from "../lib/workspaceView";
 import { useReaderPaneLayoutController } from "../lib/reader/useReaderPaneLayoutController";
-import { normalizeReaderFitMode } from "../lib/reader/zoom";
 import type {
   DocumentPayload,
   DocumentState,
@@ -17,6 +16,7 @@ import type {
   NoteRevealRequest,
   OutlineItem,
   PdfNavigationTarget,
+  ReaderViewMode,
   ReaderSession,
   ViewerApi,
   ViewerSnapshot
@@ -54,6 +54,8 @@ type ReaderWorkspaceProps = {
   documentHeaderCurrentPage: number;
   documentHeaderPageCount: number;
   documentHeaderZoom: number;
+  readerViewMode: ReaderViewMode;
+  onReaderViewModeChange: (mode: ReaderViewMode) => void;
   viewerApi: ViewerApi | null;
   onHeaderMouseDown: (event: ReactMouseEvent<HTMLElement>) => void;
   searchController: UnifiedSearchController;
@@ -138,6 +140,8 @@ export default function ReaderWorkspace({
   documentHeaderCurrentPage,
   documentHeaderPageCount,
   documentHeaderZoom,
+  readerViewMode,
+  onReaderViewModeChange,
   viewerApi,
   onHeaderMouseDown,
   searchController,
@@ -161,10 +165,9 @@ export default function ReaderWorkspace({
   onChangeReaderPaneSplitRatio
 }: ReaderWorkspaceProps) {
   const document = readerSession?.document ?? null;
-  const documentFitMode = normalizeReaderFitMode(readerState?.preferences.fitMode);
   const bookmarks = readerState?.bookmarks ?? [];
   const autoMaximizeMinDocumentWidth =
-    documentFitMode === "auto-maximize"
+    readerViewMode === "page"
       ? viewerApi?.getAutoMaximizeMinDocumentWidth() ?? null
       : null;
   const { containerRef, workspaceStyle, isDragging, isStackedLayout, separatorProps } =
@@ -184,8 +187,9 @@ export default function ReaderWorkspace({
           currentPage={documentHeaderCurrentPage}
           pageCount={documentHeaderPageCount}
           zoom={documentHeaderZoom}
-          documentFitMode={documentFitMode}
+          readerViewMode={readerViewMode}
           viewerApi={viewerApi}
+          onReaderViewModeChange={onReaderViewModeChange}
           onHeaderMouseDown={onHeaderMouseDown}
           searchController={searchController}
           searchFocusRequest={searchFocusRequest}
@@ -222,7 +226,8 @@ export default function ReaderWorkspace({
             onStatusChange={onStatusChange}
             registerApi={registerApi}
             viewerDisplayConfig={viewerDisplayConfig}
-            suspendAutoFitDuringPaneResize={isDragging && documentFitMode === "auto-maximize"}
+            readerViewMode={readerViewMode}
+            suspendAutoFitDuringPaneResize={isDragging && readerViewMode === "page"}
           />
         </div>
         <div className="reader-workspace__notes">

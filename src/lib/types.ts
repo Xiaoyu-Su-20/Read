@@ -50,6 +50,8 @@ export type Bookmark = {
 
 export type ReaderFitMode = "free" | "auto-maximize" | "width";
 
+export type ReaderViewMode = "page" | "scroll";
+
 export type ReaderPreferences = {
   fitMode: ReaderFitMode;
 };

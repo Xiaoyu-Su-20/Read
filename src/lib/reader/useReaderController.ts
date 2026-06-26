@@ -55,7 +55,6 @@ import {
   normalizeReaderFitMode,
   normalizeZoom,
   scaleZoomByKeyboardDirection,
-  shouldAutoFitReaderPage,
   scaleZoomByWheelDelta
 } from "./zoom";
 
@@ -75,6 +74,7 @@ const SMOOTH_WHEEL_MIN_BLEND = 0.18;
 const SMOOTH_WHEEL_MAX_BLEND = 0.42;
 const SMOOTH_WHEEL_BASE_DURATION_MS = 110;
 const MANUAL_SCROLL_BOUNDARY_SUPPRESSION_MS = 220;
+const PAGE_READER_FIT_MODE: ReaderFitMode = "auto-maximize";
 
 type UseReaderControllerArgs = {
   readerSession: ReaderSession | null;
@@ -199,10 +199,6 @@ type ResolvedOpenState = {
   zoom: number;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 type NormalizationReadyEvent = {
   documentId: string;
   fingerprint: string;
@@ -256,15 +252,11 @@ function clampDiscreteWheelDelta(delta: number) {
 }
 
 function normalizeDocumentState(state: DocumentState): DocumentState {
-  const rawPreferences: Record<string, unknown> = isRecord(state.preferences)
-    ? state.preferences
-    : {};
-
   return {
     ...state,
     bookmarks: dedupeBookmarks(state.bookmarks ?? []),
     preferences: {
-      fitMode: normalizeReaderFitMode(rawPreferences.fitMode)
+      fitMode: PAGE_READER_FIT_MODE
     }
   };
 }
@@ -956,8 +948,8 @@ export function useReaderController({
     }
   }
 
-  function setReaderFitMode(nextFitMode: ReaderFitMode, reason: string) {
-    const normalizedFitMode = normalizeReaderFitMode(nextFitMode);
+  function setReaderFitMode(_nextFitMode: ReaderFitMode, reason: string) {
+    const normalizedFitMode = PAGE_READER_FIT_MODE;
     setReaderState((current) => {
       if (!current || current.preferences.fitMode === normalizedFitMode) {
         return current;
@@ -1002,10 +994,10 @@ export function useReaderController({
   ) {
     cancelSmoothWheelScrollOwnership(smoothWheelStateRef.current.surface);
 
-    const resolvedFitMode = options?.fitMode ?? readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
+    const resolvedFitMode = options?.fitMode ?? PAGE_READER_FIT_MODE;
     const normalizedZoom = resolveZoomForFitMode(nextZoom, resolvedFitMode);
-    if (options?.fitMode && options.fitMode !== readerStateRef.current?.preferences.fitMode) {
-      setReaderFitMode(options.fitMode, `${reason}:fit-mode`);
+    if (readerStateRef.current?.preferences.fitMode !== PAGE_READER_FIT_MODE) {
+      setReaderFitMode(PAGE_READER_FIT_MODE, `${reason}:fit-mode`);
     }
     setDisplayZoom(normalizedZoom);
 
@@ -1086,7 +1078,7 @@ export function useReaderController({
     if (typeof target.zoom === "number" && Number.isFinite(target.zoom) && target.zoom > 0) {
       updateZoom(target.zoom, reason, {
         commitImmediately: true,
-        fitMode: "free"
+        fitMode: PAGE_READER_FIT_MODE
       });
     }
     requestPageTurnWithIntent(nextPage, reason);
@@ -2542,27 +2534,24 @@ export function useReaderController({
             requestPageTurnWithIntent(nextPage, "previous-page");
           },
           zoomIn: () => {
-            const nextFitMode = readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
             updateZoom(scaleZoomByKeyboardDirection(displayZoomRef.current, "in"), "header", {
-              fitMode: nextFitMode
+              fitMode: PAGE_READER_FIT_MODE
             });
           },
           zoomOut: () => {
-            const nextFitMode = readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
             updateZoom(scaleZoomByKeyboardDirection(displayZoomRef.current, "out"), "header", {
-              fitMode: nextFitMode
+              fitMode: PAGE_READER_FIT_MODE
             });
           },
           getAutoMaximizeZoom: () => autoMaximizeZoomRef.current,
           getAutoMaximizeMinDocumentWidth: () => getAutoMaximizeMinDocumentWidth?.() ?? null,
-          getFitMode: () => readerStateRef.current?.preferences.fitMode ?? "auto-maximize",
+          getFitMode: () => PAGE_READER_FIT_MODE,
           setFitMode: (fitMode) => {
-            const normalizedFitMode = normalizeReaderFitMode(fitMode);
-            setReaderFitMode(normalizedFitMode, "header-fit-mode");
-            if (normalizedFitMode === "auto-maximize" && autoMaximizeZoomRef.current !== null) {
+            setReaderFitMode(fitMode, "header-fit-mode");
+            if (autoMaximizeZoomRef.current !== null) {
               updateZoom(autoMaximizeZoomRef.current, "header-fit-mode-sync", {
                 commitImmediately: true,
-                fitMode: normalizedFitMode
+                fitMode: PAGE_READER_FIT_MODE
               });
             }
           },
@@ -2622,7 +2611,7 @@ export function useReaderController({
     targetPage,
     navigationGeneration: navigationGenerationRef.current,
     pageCount,
-    fitMode: readerState ? normalizeReaderFitMode(readerState.preferences.fitMode) : "auto-maximize",
+    fitMode: PAGE_READER_FIT_MODE,
     displayZoom,
     committedZoom,
     displayedPage,
@@ -2663,8 +2652,7 @@ export function useReaderController({
             key: event.key,
             nextZoom
           });
-          const nextFitMode = readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
-          updateZoom(nextZoom, "keyboard", { fitMode: nextFitMode });
+          updateZoom(nextZoom, "keyboard", { fitMode: PAGE_READER_FIT_MODE });
         }
         return;
       }
@@ -2740,8 +2728,7 @@ export function useReaderController({
           displayZoom,
           nextZoom
         });
-        const nextFitMode = readerStateRef.current?.preferences.fitMode ?? "auto-maximize";
-        updateZoom(nextZoom, "wheel", { fitMode: nextFitMode });
+        updateZoom(nextZoom, "wheel", { fitMode: PAGE_READER_FIT_MODE });
         return;
       }
 
@@ -3017,26 +3004,18 @@ export function useReaderController({
     },
     previewAutoMaximizeZoom(nextZoom: number) {
       autoMaximizeZoomRef.current = normalizeZoom(nextZoom);
-      if (!shouldAutoFitReaderPage(readerStateRef.current?.preferences.fitMode)) {
-        return;
-      }
-
       setDisplayZoom(resolveZoomForFitMode(nextZoom, "auto-maximize"));
     },
     commitAutoMaximizeZoom(nextZoom: number) {
       autoMaximizeZoomRef.current = normalizeZoom(nextZoom);
-      if (!shouldAutoFitReaderPage(readerStateRef.current?.preferences.fitMode)) {
-        return;
-      }
-
       readerDiagnostic("auto-fit", "auto-fit.commit-applied", {
         fitCycleId: getCurrentAutoFitCycle()?.fitCycleId ?? null,
-        fitMode: readerStateRef.current?.preferences.fitMode ?? "auto-maximize",
+        fitMode: PAGE_READER_FIT_MODE,
         nextZoom,
         previousCommittedZoom: committedZoom
       });
       updateZoom(nextZoom, "auto-maximize", {
-        fitMode: "auto-maximize",
+        fitMode: PAGE_READER_FIT_MODE,
         commitImmediately: true
       });
     },

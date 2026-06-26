@@ -2197,11 +2197,6 @@ button {
   min-width: 2.8rem;
 }
 
-.reader-workspace__header-button--lock {
-  width: 2.25rem;
-  min-width: 2.25rem;
-}
-
 .reader-workspace__notes-header-search {
   position: relative;
   display: flex;
@@ -2286,9 +2281,154 @@ button {
   stroke-linejoin: round;
 }
 
-.reader-workspace__header-button.reader-workspace__header-button--lock svg {
-  width: 1.275rem;
-  height: 1.275rem;
+.reader-workspace__header-group--view-mode {
+  gap: 0;
+  padding: 0.18rem;
+  border: 1px solid color-mix(in srgb, var(--overlay-border) 82%, transparent);
+  border-radius: 0.68rem;
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, white 3%, transparent);
+}
+
+.reader-workspace__view-mode-button {
+  min-width: 2.65rem;
+  height: 1.72rem;
+  padding: 0 0.62rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: color-mix(in srgb, var(--muted) 84%, transparent);
+  font-family: var(--font-ui);
+  font-size: 0.76rem;
+  font-weight: 520;
+  letter-spacing: -0.01em;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease;
+}
+
+.reader-workspace__view-mode-button:hover {
+  color: var(--text);
+}
+
+.reader-workspace__view-mode-button--active {
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  color: var(--text);
+}
+
+.reader-workspace__view-mode-button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.continuous-reader {
+  position: relative;
+  display: block;
+  height: 100%;
+  overflow: hidden;
+}
+
+.continuous-reader__scroll-surface {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  outline: none;
+  scrollbar-gutter: stable;
+}
+
+.continuous-reader__document {
+  width: max-content;
+  min-width: 100%;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.continuous-reader__page-window {
+  display: grid;
+  justify-items: center;
+  gap: 28px;
+  padding-inline: 2.4rem;
+  padding-block: 1.2rem;
+}
+
+.continuous-reader__page {
+  display: block;
+  width: max-content;
+}
+
+.continuous-reader__page-shell {
+  background: var(--viewer-paper-color, var(--paper-surface));
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.24);
+}
+
+.continuous-reader__page-placeholder {
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--viewer-paper-color, var(--paper-surface)) 42%, transparent),
+      color-mix(in srgb, var(--viewer-paper-color, var(--paper-surface)) 24%, transparent)
+    );
+}
+
+.continuous-reader .reader-page__surface {
+  box-shadow: none;
+}
+
+.continuous-reader__status {
+  position: sticky;
+  top: 0.8rem;
+  z-index: 5;
+  width: max-content;
+  max-width: calc(100% - 2rem);
+  margin: 0.8rem auto -2.2rem;
+  padding: 0.32rem 0.62rem;
+  border: 1px solid var(--reader-status-border);
+  border-radius: 999px;
+  background: var(--reader-status-surface);
+  color: var(--reader-status-text);
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  pointer-events: none;
+}
+
+.continuous-reader__fallback {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.continuous-reader__fallback-banner {
+  position: absolute;
+  top: 0.85rem;
+  left: 50%;
+  z-index: 20;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - 2rem);
+  padding: 0.42rem 0.72rem;
+  border: 1px solid var(--reader-status-error-border);
+  border-radius: 999px;
+  background: var(--reader-status-error-surface);
+  color: var(--reader-status-error-text);
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  box-shadow: var(--overlay-shadow);
+  pointer-events: none;
+}
+
+.continuous-reader__fallback-error {
+  display: block;
+  max-width: min(42rem, calc(100vw - 4rem));
+  margin-top: 0.16rem;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--reader-status-error-text) 78%, transparent);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 1320px) {
@@ -2350,10 +2490,6 @@ button {
       minmax(7rem, 1fr)
       minmax(9.5rem, 15rem)
       auto;
-  }
-
-  .reader-workspace__toolbar--document .reader-workspace__header-group--lock {
-    display: none;
   }
 
   .reader-workspace__notes-header-tools

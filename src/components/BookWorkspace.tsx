@@ -5,9 +5,9 @@ import ReaderViewport from "./ReaderViewport";
 import WorkspaceHeaderTools from "./WorkspaceHeaderTools";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import type { ViewTransition } from "../lib/workspaceView";
-import { normalizeReaderFitMode } from "../lib/reader/zoom";
 import type {
   DocumentState,
+  ReaderViewMode,
   ReaderSession,
   ViewerApi,
   ViewerSnapshot
@@ -30,6 +30,8 @@ type BookWorkspaceProps = {
   documentHeaderCurrentPage: number;
   documentHeaderPageCount: number;
   documentHeaderZoom: number;
+  readerViewMode: ReaderViewMode;
+  onReaderViewModeChange: (mode: ReaderViewMode) => void;
   viewerApi: ViewerApi | null;
   onHeaderMouseDown: (event: ReactMouseEvent<HTMLElement>) => void;
   searchController: UnifiedSearchController;
@@ -50,7 +52,6 @@ export default function BookWorkspace({
   readerSession,
   readerActive,
   pendingReaderOpenSessionId,
-  readerState,
   onSnapshotChange,
   onOutlineChange,
   onStatusChange,
@@ -61,6 +62,8 @@ export default function BookWorkspace({
   documentHeaderCurrentPage,
   documentHeaderPageCount,
   documentHeaderZoom,
+  readerViewMode,
+  onReaderViewModeChange,
   viewerApi,
   onHeaderMouseDown,
   searchController,
@@ -75,8 +78,6 @@ export default function BookWorkspace({
   fullscreen,
   onToggleFullscreen
 }: BookWorkspaceProps) {
-  const documentFitMode = normalizeReaderFitMode(readerState?.preferences.fitMode);
-
   return (
     <div className={`reader-workspace${showHeaders ? "" : " reader-workspace--immersive"}`}>
       {showHeaders ? (
@@ -85,8 +86,9 @@ export default function BookWorkspace({
           currentPage={documentHeaderCurrentPage}
           pageCount={documentHeaderPageCount}
           zoom={documentHeaderZoom}
-          documentFitMode={documentFitMode}
+          readerViewMode={readerViewMode}
           viewerApi={viewerApi}
+          onReaderViewModeChange={onReaderViewModeChange}
           onHeaderMouseDown={onHeaderMouseDown}
           searchController={searchController}
           searchFocusRequest={searchFocusRequest}
@@ -119,6 +121,7 @@ export default function BookWorkspace({
             onStatusChange={onStatusChange}
             registerApi={registerApi}
             viewerDisplayConfig={viewerDisplayConfig}
+            readerViewMode={readerViewMode}
             suspendAutoFitDuringPaneResize={false}
           />
         </div>

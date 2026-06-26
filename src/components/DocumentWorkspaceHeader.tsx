@@ -4,8 +4,7 @@ import type { ReactNode } from "react";
 
 import WorkspaceSearchField from "../search/components/WorkspaceSearchField";
 import { debugAction } from "../lib/debugLog";
-import type { ResolvedReaderFitMode } from "../lib/reader/zoom";
-import type { ViewerApi } from "../lib/types";
+import type { ReaderViewMode, ViewerApi } from "../lib/types";
 import type { UnifiedSearchController } from "../search/controller/UnifiedSearchController";
 
 type DocumentWorkspaceHeaderProps = {
@@ -13,8 +12,9 @@ type DocumentWorkspaceHeaderProps = {
   currentPage: number;
   pageCount: number;
   zoom: number;
-  documentFitMode: ResolvedReaderFitMode;
+  readerViewMode: ReaderViewMode;
   viewerApi: ViewerApi | null;
+  onReaderViewModeChange: (mode: ReaderViewMode) => void;
   onHeaderMouseDown: (event: ReactMouseEvent<HTMLElement>) => void;
   searchController: UnifiedSearchController;
   searchFocusRequest: number;
@@ -30,8 +30,9 @@ type DocumentControlsProps = {
   currentPage: number;
   pageCount: number;
   zoom: number;
-  documentFitMode: ResolvedReaderFitMode;
+  readerViewMode: ReaderViewMode;
   viewerApi: ViewerApi | null;
+  onReaderViewModeChange: (mode: ReaderViewMode) => void;
 };
 
 const DocumentControls = memo(function DocumentControls({
@@ -39,8 +40,9 @@ const DocumentControls = memo(function DocumentControls({
   currentPage,
   pageCount,
   zoom,
-  documentFitMode,
-  viewerApi
+  readerViewMode,
+  viewerApi,
+  onReaderViewModeChange
 }: DocumentControlsProps) {
   const hasOpenDocument = pageCount > 0;
   const documentPageLabel = hasOpenDocument ? `${currentPage} / ${pageCount}` : "No document";
@@ -48,7 +50,7 @@ const DocumentControls = memo(function DocumentControls({
   const autoMaximizeZoom = viewerApi?.getAutoMaximizeZoom() ?? null;
   const zoomInDisabled =
     !hasOpenDocument ||
-    (documentFitMode === "auto-maximize" &&
+    (readerViewMode === "page" &&
       autoMaximizeZoom !== null &&
       zoom >= autoMaximizeZoom - 0.005);
 
@@ -150,47 +152,33 @@ const DocumentControls = memo(function DocumentControls({
           </button>
         </div>
 
-        <div className="reader-workspace__header-group reader-workspace__header-group--lock">
+        <div
+          className="reader-workspace__header-group reader-workspace__header-group--view-mode"
+          role="group"
+          aria-label="Reader view mode"
+          data-no-window-drag
+        >
           <button
-            className="reader-workspace__header-button reader-workspace__header-button--lock"
+            className={`reader-workspace__view-mode-button${
+              readerViewMode === "page" ? " reader-workspace__view-mode-button--active" : ""
+            }`}
             type="button"
-            aria-label={
-              documentFitMode === "free"
-                ? "Switch to auto maximize"
-                : "Switch to free zoom"
-            }
-            aria-pressed={documentFitMode === "auto-maximize"}
+            aria-pressed={readerViewMode === "page"}
             disabled={!hasOpenDocument}
-            data-no-window-drag
-            onClick={() =>
-              viewerApi?.setFitMode(documentFitMode === "free" ? "auto-maximize" : "free")
-            }
+            onClick={() => onReaderViewModeChange("page")}
           >
-            {documentFitMode === "free" ? (
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.95"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M7.35 11V7.55C7.35 5.15 8.9 3.65 12.05 3.65C14.15 3.65 15.42 4.48 16.15 5.72" />
-                <path d="M4.85 11H19.15V20.35H4.85Z" />
-              </svg>
-            ) : (
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.95"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M7.35 11V7.55C7.35 5.15 8.95 3.65 12 3.65C15.05 3.65 16.65 5.15 16.65 7.55V11" />
-                <path d="M4.85 11H19.15V20.35H4.85Z" />
-              </svg>
-            )}
+            Page
+          </button>
+          <button
+            className={`reader-workspace__view-mode-button${
+              readerViewMode === "scroll" ? " reader-workspace__view-mode-button--active" : ""
+            }`}
+            type="button"
+            aria-pressed={readerViewMode === "scroll"}
+            disabled={!hasOpenDocument}
+            onClick={() => onReaderViewModeChange("scroll")}
+          >
+            Scroll
           </button>
         </div>
       </div>
@@ -256,8 +244,9 @@ export default function DocumentWorkspaceHeader({
   currentPage,
   pageCount,
   zoom,
-  documentFitMode,
+  readerViewMode,
   viewerApi,
+  onReaderViewModeChange,
   onHeaderMouseDown,
   searchController,
   searchFocusRequest,
@@ -277,8 +266,9 @@ export default function DocumentWorkspaceHeader({
             currentPage={currentPage}
             pageCount={pageCount}
             zoom={zoom}
-            documentFitMode={documentFitMode}
+            readerViewMode={readerViewMode}
             viewerApi={viewerApi}
+            onReaderViewModeChange={onReaderViewModeChange}
           />
           <HeaderSearch
             searchController={searchController}
