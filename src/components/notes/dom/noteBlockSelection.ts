@@ -10,6 +10,8 @@ import type {
 
 const ATOMIC_SELECTOR = "[data-inline-type='page-link'], [data-inline-type='topic-card']";
 
+export type NoteBlockLookup = ReadonlyMap<string, NoteBlock>;
+
 function escapeCssIdentifier(value: string) {
   if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
     return CSS.escape(value);
@@ -28,7 +30,31 @@ function blockContent(block: HTMLElement) {
   return block.querySelector<HTMLElement>(":scope > .note-editor__block-content") ?? block;
 }
 
-function rootBoundaryPoint(root: HTMLElement, blocks: NoteBlock[], offset: number) {
+export function createNoteBlockLookup(blocks: NoteBlock[]): NoteBlockLookup {
+  const lookup = new Map<string, NoteBlock>();
+  for (const block of blocks) {
+    lookup.set(block.id, block);
+  }
+  return lookup;
+}
+
+function lookupBlock(
+  blocks: NoteBlock[],
+  blockId: string | undefined,
+  lookup?: NoteBlockLookup | null
+) {
+  if (!blockId) {
+    return null;
+  }
+  return lookup?.get(blockId) ?? blocks.find((candidate) => candidate.id === blockId) ?? null;
+}
+
+function rootBoundaryPoint(
+  root: HTMLElement,
+  blocks: NoteBlock[],
+  offset: number,
+  lookup?: NoteBlockLookup | null
+) {
   if (blocks.length === 0) {
     return null;
   }
@@ -51,9 +77,7 @@ function rootBoundaryPoint(root: HTMLElement, blocks: NoteBlock[], offset: numbe
   const nextChild = root.childNodes[clampedOffset];
   const nextBlockElement =
     nextChild instanceof HTMLElement ? nextChild.closest<HTMLElement>("[data-block-id]") : null;
-  const nextBlock = nextBlockElement
-    ? blocks.find((candidate) => candidate.id === nextBlockElement.dataset.blockId)
-    : null;
+  const nextBlock = lookupBlock(blocks, nextBlockElement?.dataset.blockId, lookup);
   return nextBlock ? blockOffsetToPoint(nextBlock, 0, "after") : null;
 }
 
@@ -136,15 +160,14 @@ export function modelPointFromDomPoint(
   blocks: NoteBlock[],
   container: Node | null,
   offset: number,
-  affinity: NoteModelPoint["affinity"]
+  affinity: NoteModelPoint["affinity"],
+  lookup?: NoteBlockLookup | null
 ) {
   if (container === root) {
-    return rootBoundaryPoint(root, blocks, offset);
+    return rootBoundaryPoint(root, blocks, offset, lookup);
   }
   const blockElement = closestBlock(root, container);
-  const block = blockElement
-    ? blocks.find((candidate) => candidate.id === blockElement.dataset.blockId)
-    : null;
+  const block = lookupBlock(blocks, blockElement?.dataset.blockId, lookup);
   if (!blockElement || !block) {
     return null;
   }
@@ -158,7 +181,8 @@ export function modelPointFromDomPoint(
 
 export function captureModelSelection(
   root: HTMLElement,
-  blocks: NoteBlock[]
+  blocks: NoteBlock[],
+  lookup?: NoteBlockLookup | null
 ): NoteModelSelection | null {
   const selection = root.ownerDocument.defaultView?.getSelection();
   if (
@@ -175,14 +199,16 @@ export function captureModelSelection(
     blocks,
     selection.anchorNode,
     selection.anchorOffset,
-    "after"
+    "after",
+    lookup
   );
   const focus = modelPointFromDomPoint(
     root,
     blocks,
     selection.focusNode,
     selection.focusOffset,
-    "after"
+    "after",
+    lookup
   );
   return anchor && focus ? { anchor, focus } : null;
 }
@@ -247,8 +273,13 @@ function domPointAtOffset(content: HTMLElement, requestedOffset: number): DomPoi
   };
 }
 
-function resolvePoint(root: HTMLElement, blocks: NoteBlock[], point: NoteModelPoint) {
-  const block = blocks.find((candidate) => candidate.id === point.blockId);
+function resolvePoint(
+  root: HTMLElement,
+  blocks: NoteBlock[],
+  point: NoteModelPoint,
+  lookup?: NoteBlockLookup | null
+) {
+  const block = lookupBlock(blocks, point.blockId, lookup);
   const blockElement = root.querySelector<HTMLElement>(
     `[data-block-id="${escapeCssIdentifier(point.blockId)}"]`
   );
@@ -261,13 +292,14 @@ function resolvePoint(root: HTMLElement, blocks: NoteBlock[], point: NoteModelPo
 export function restoreModelSelection(
   root: HTMLElement,
   blocks: NoteBlock[],
-  selectionSnapshot: NoteModelSelection | null
+  selectionSnapshot: NoteModelSelection | null,
+  lookup?: NoteBlockLookup | null
 ) {
   if (!selectionSnapshot) {
     return false;
   }
-  const anchor = resolvePoint(root, blocks, selectionSnapshot.anchor);
-  const focus = resolvePoint(root, blocks, selectionSnapshot.focus);
+  const anchor = resolvePoint(root, blocks, selectionSnapshot.anchor, lookup);
+  const focus = resolvePoint(root, blocks, selectionSnapshot.focus, lookup);
   const selection = root.ownerDocument.defaultView?.getSelection();
   if (!anchor || !focus || !selection) {
     return false;

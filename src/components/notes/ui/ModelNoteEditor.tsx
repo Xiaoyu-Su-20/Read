@@ -36,6 +36,7 @@ import {
 } from "../model/noteBlockModel";
 import {
   captureModelSelection,
+  createNoteBlockLookup,
   modelPointFromDomPoint,
   restoreModelSelection
 } from "../dom/noteBlockSelection";
@@ -45,6 +46,8 @@ import {
   copySelectedBlock,
   findBlockElement,
   findClosestBlockElement,
+  findPageLinkElement,
+  findTopicCardElement,
   getBlockAtPoint,
   getBlockFromSelection,
   getPageLinkAtPoint,
@@ -57,10 +60,7 @@ import {
   parseNoteBlocksFromEditor,
   renderNoteInlineNodesHtml,
   resolveCollapsedRangeAtPoint,
-  selectBlockElement,
-  selectPageLinkToken,
-  selectTextMatchInBlock,
-  selectTopicCardToken
+  selectTextMatchInBlock
 } from "../dom/noteEditorDom";
 import {
   applyNoteEditorEdit,
@@ -284,11 +284,15 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     }
     const initialRuntime = initialRuntimeRef.current;
     const blocksRef = useRef<NoteBlock[]>(initialRuntime.blocks);
+    const blocksByIdRef = useRef(createNoteBlockLookup(initialRuntime.blocks));
     const [renderedBlocks, setRenderedBlocks] = useState(() => blocksRef.current);
     const [renderTick, setRenderTick] = useState(0);
     const selectedBlockIdRef = useRef<string | null>(null);
+    const selectedBlockElementRef = useRef<HTMLElement | null>(null);
     const selectedPageLinkIdRef = useRef<string | null>(null);
+    const selectedPageLinkElementRef = useRef<HTMLElement | null>(null);
     const selectedTopicIdRef = useRef<string | null>(null);
+    const selectedTopicElementRef = useRef<HTMLElement | null>(null);
     const pendingPageLinkPointRef = useRef<NoteModelPoint | null>(null);
     const pendingTopicSelectionRef = useRef<NoteModelSelection | null>(null);
     const pendingSelectionRestoreRef = useRef<NoteModelSelection | null>(null);
@@ -296,6 +300,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     const compositionSessionRef = useRef<CompositionSession | null>(null);
     const historyRef = useRef<NoteModelHistoryState | null>(initialRuntime.history);
     const applyingHistoryRef = useRef(false);
+    const beforeInputHandlerRef = useRef<(event: InputEvent) => boolean>(() => false);
+    const selectionChangeFrameRef = useRef<number | null>(null);
     void ignoredSpellcheckWords;
 
     function logInteraction(event: string, fields: Record<string, unknown> = {}) {
@@ -307,38 +313,69 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
 
     function currentSelection() {
       return bodyRef.current
-        ? captureModelSelection(bodyRef.current, blocksRef.current)
+        ? captureModelSelection(bodyRef.current, blocksRef.current, blocksByIdRef.current)
         : null;
     }
 
-    function updateSelectedBlock(blockId: string | null) {
-      if (selectedBlockIdRef.current === blockId) {
+    function setCurrentBlocks(blocks: NoteBlock[]) {
+      blocksRef.current = blocks;
+      blocksByIdRef.current = createNoteBlockLookup(blocks);
+    }
+
+    function setSelectedElement(element: HTMLElement | null, selected: boolean) {
+      if (!element) {
         return;
       }
-      selectedBlockIdRef.current = blockId;
-      if (bodyRef.current) {
-        selectBlockElement(bodyRef.current, blockId);
+      if (selected) {
+        element.dataset.selected = "true";
+        return;
       }
+      delete element.dataset.selected;
+    }
+
+    function updateSelectedBlock(blockId: string | null) {
+      const root = bodyRef.current;
+      if (
+        selectedBlockIdRef.current === blockId &&
+        (!selectedBlockElementRef.current || root?.contains(selectedBlockElementRef.current))
+      ) {
+        return;
+      }
+      setSelectedElement(selectedBlockElementRef.current, false);
+      selectedBlockIdRef.current = blockId;
+      const nextElement = root && blockId ? findBlockElement(root, blockId) : null;
+      setSelectedElement(nextElement, true);
+      selectedBlockElementRef.current = nextElement;
     }
 
     function updateSelectedPageLink(pageLinkId: string | null) {
-      if (selectedPageLinkIdRef.current === pageLinkId) {
+      const root = bodyRef.current;
+      if (
+        selectedPageLinkIdRef.current === pageLinkId &&
+        (!selectedPageLinkElementRef.current || root?.contains(selectedPageLinkElementRef.current))
+      ) {
         return;
       }
+      setSelectedElement(selectedPageLinkElementRef.current, false);
       selectedPageLinkIdRef.current = pageLinkId;
-      if (bodyRef.current) {
-        selectPageLinkToken(bodyRef.current, pageLinkId);
-      }
+      const nextElement = root && pageLinkId ? findPageLinkElement(root, pageLinkId) : null;
+      setSelectedElement(nextElement, true);
+      selectedPageLinkElementRef.current = nextElement;
     }
 
     function updateSelectedTopic(topicId: string | null) {
-      if (selectedTopicIdRef.current === topicId) {
+      const root = bodyRef.current;
+      if (
+        selectedTopicIdRef.current === topicId &&
+        (!selectedTopicElementRef.current || root?.contains(selectedTopicElementRef.current))
+      ) {
         return;
       }
+      setSelectedElement(selectedTopicElementRef.current, false);
       selectedTopicIdRef.current = topicId;
-      if (bodyRef.current) {
-        selectTopicCardToken(bodyRef.current, topicId);
-      }
+      const nextElement = root && topicId ? findTopicCardElement(root, topicId) : null;
+      setSelectedElement(nextElement, true);
+      selectedTopicElementRef.current = nextElement;
     }
 
     function clearTokenSelection() {
@@ -520,7 +557,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         bookId: note?.bookId,
         render
       });
-      blocksRef.current = nextState.blocks;
+      setCurrentBlocks(nextState.blocks);
       historyRef.current = nextState.history;
       if (render) {
         pendingSelectionRestoreRef.current = nextState.pendingSelectionRestore;
@@ -555,7 +592,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         mergeKey,
         bookId: note?.bookId
       });
-      blocksRef.current = nextState.blocks;
+      setCurrentBlocks(nextState.blocks);
       historyRef.current = nextState.history;
       pendingSelectionRestoreRef.current = nextState.pendingSelectionRestore;
       setRenderedBlocks(nextState.blocks);
@@ -591,7 +628,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       applyingHistoryRef.current = true;
       const blocks = nextHistory.current.blocks;
       historyRef.current = nextHistory;
-      blocksRef.current = blocks;
+      setCurrentBlocks(blocks);
       pendingSelectionRestoreRef.current = nextHistory.current.selection;
       setRenderedBlocks(blocksRef.current);
       const updateProfile = markNoteBlocksUpdate(blocksRef.current, {
@@ -785,7 +822,12 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         extend && existing
           ? { anchor: existing.anchor, focus: point }
           : collapsedModelSelection(point);
-      restoreModelSelection(bodyRef.current, blocksRef.current, selection);
+      restoreModelSelection(
+        bodyRef.current,
+        blocksRef.current,
+        selection,
+        blocksByIdRef.current
+      );
       updateHistorySelectionFromDom();
     }
 
@@ -802,7 +844,12 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         anchor: blockOffsetToPoint(firstBlock, 0, "after"),
         focus: blockOffsetToPoint(lastBlock, blockLogicalLength(lastBlock), "after")
       };
-      restoreModelSelection(bodyRef.current, blocksRef.current, selection);
+      restoreModelSelection(
+        bodyRef.current,
+        blocksRef.current,
+        selection,
+        blocksByIdRef.current
+      );
       updateHistorySelectionFromDom();
       return true;
     }
@@ -1046,7 +1093,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             blocksRef.current,
             rangeResult.range.startContainer,
             rangeResult.range.startOffset,
-            "after"
+            "after",
+            blocksByIdRef.current
           );
         }
       }
@@ -1090,10 +1138,14 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     useEffect(() => {
       if (!note) {
         const runtime = createNoteEditorRuntimeState([createEmptyNoteBlock()], null, null);
-        blocksRef.current = runtime.blocks;
+        setCurrentBlocks(runtime.blocks);
         setRenderedBlocks(runtime.blocks);
         appliedNoteIdRef.current = null;
         historyRef.current = runtime.history;
+        clearTokenSelection();
+        updateSelectedBlock(null);
+        pendingPageLinkPointRef.current = null;
+        pendingTopicSelectionRef.current = null;
         clearPendingTextMarks();
         compositionSessionRef.current = null;
         return;
@@ -1102,7 +1154,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         return;
       }
       const runtime = createNoteEditorRuntimeState(note.blocks, note.bookId, null);
-      blocksRef.current = runtime.blocks;
+      setCurrentBlocks(runtime.blocks);
       setRenderedBlocks(runtime.blocks);
       historyRef.current = runtime.history;
       appliedNoteIdRef.current = note.id;
@@ -1118,15 +1170,16 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       if (!bodyRef.current) {
         return;
       }
-      selectBlockElement(bodyRef.current, selectedBlockIdRef.current);
-      selectPageLinkToken(bodyRef.current, selectedPageLinkIdRef.current);
-      selectTopicCardToken(bodyRef.current, selectedTopicIdRef.current);
+      updateSelectedBlock(selectedBlockIdRef.current);
+      updateSelectedPageLink(selectedPageLinkIdRef.current);
+      updateSelectedTopic(selectedTopicIdRef.current);
       const pendingSelection = pendingSelectionRestoreRef.current;
       if (pendingSelection) {
         const restored = restoreModelSelection(
           bodyRef.current,
           blocksRef.current,
-          pendingSelection
+          pendingSelection,
+          blocksByIdRef.current
         );
         if (!SHOULD_VERIFY_SELECTION_RESTORE && restored) {
           pendingSelectionRestoreRef.current = null;
@@ -1134,7 +1187,11 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         }
         const actualSelection =
           restored && SHOULD_VERIFY_SELECTION_RESTORE
-            ? captureModelSelection(bodyRef.current, blocksRef.current)
+            ? captureModelSelection(
+                bodyRef.current,
+                blocksRef.current,
+                blocksByIdRef.current
+              )
             : null;
         if (
           actualSelection &&
@@ -1147,12 +1204,54 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     }, [renderTick, renderedBlocks]);
 
     useEffect(() => {
-      function handleSelectionChange() {
+      const ownerWindow = bodyRef.current?.ownerDocument.defaultView ?? window;
+
+      function flushSelectionChange() {
+        selectionChangeFrameRef.current = null;
+        const root = bodyRef.current;
+        const history = historyRef.current;
+        if (!root || !history || applyingHistoryRef.current) {
+          return;
+        }
+        const selection = root.ownerDocument.defaultView?.getSelection();
+        const ownsSelection = Boolean(
+          selection &&
+            selection.rangeCount > 0 &&
+            root.contains(selection.anchorNode) &&
+            root.contains(selection.focusNode)
+        );
+        if (!ownsSelection) {
+          if (history.current.selection === null) {
+            return;
+          }
+          historyRef.current = replaceNoteEditorSelection({
+            history,
+            selection: null
+          });
+          return;
+        }
         updateHistorySelectionFromDom();
       }
+
+      function handleSelectionChange() {
+        if (selectionChangeFrameRef.current != null) {
+          return;
+        }
+        selectionChangeFrameRef.current = ownerWindow.requestAnimationFrame(
+          flushSelectionChange
+        );
+      }
       document.addEventListener("selectionchange", handleSelectionChange);
-      return () => document.removeEventListener("selectionchange", handleSelectionChange);
+      return () => {
+        document.removeEventListener("selectionchange", handleSelectionChange);
+        if (selectionChangeFrameRef.current != null) {
+          ownerWindow.cancelAnimationFrame(selectionChangeFrameRef.current);
+          selectionChangeFrameRef.current = null;
+        }
+      };
     }, []);
+
+    beforeInputHandlerRef.current = handleBeforeInputEvent;
 
     useEffect(() => {
       const root = bodyRef.current;
@@ -1164,7 +1263,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         if (event.defaultPrevented) {
           return;
         }
-        if (handleBeforeInputEvent(event)) {
+        if (beforeInputHandlerRef.current(event)) {
           event.preventDefault();
         }
       }
@@ -1173,7 +1272,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       return () => {
         root.removeEventListener("beforeinput", handleNativeBeforeInput, true);
       };
-    });
+    }, []);
 
     useImperativeHandle(
       ref,
