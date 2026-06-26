@@ -55,29 +55,55 @@ export function createEmptyNoteBlock(id = crypto.randomUUID()): NoteBlock {
   };
 }
 
-function sourceReferencesEqual(
-  left: DocumentSourceReference | null | undefined,
-  right: DocumentSourceReference | null | undefined
-) {
-  if (!left || !right) {
-    return false;
+function normalizePageLinkOrigin(origin: NotePageLinkNode["origin"]): NotePageLinkNode["origin"] {
+  if (!origin) {
+    return null;
   }
 
+  if (origin.kind === "inline") {
+    return { kind: "inline" };
+  }
+
+  if (origin.kind === "heading-reference" && origin.ownerBlockId.trim().length > 0) {
+    return {
+      kind: "heading-reference",
+      ownerBlockId: origin.ownerBlockId
+    };
+  }
+
+  return null;
+}
+
+function headingReferenceOrigin(blockId: string): NonNullable<NotePageLinkNode["origin"]> {
+  return {
+    kind: "heading-reference",
+    ownerBlockId: blockId
+  };
+}
+
+function isHeadingReferencePageLink(node: NoteInlineNode, ownerBlockId: string): node is NotePageLinkNode {
   return (
-    left.documentId === right.documentId &&
-    left.kind === right.kind &&
-    left.outlineItemId === right.outlineItemId &&
-    left.outlineSource === right.outlineSource &&
-    left.title === right.title &&
-    JSON.stringify(left.target ?? null) === JSON.stringify(right.target ?? null)
+    node.type === "page-link" &&
+    node.origin?.kind === "heading-reference" &&
+    node.origin.ownerBlockId === ownerBlockId
   );
 }
 
-function createLegacyHeadingPageLink(
-  sourceReference: DocumentSourceReference | null,
-  fallbackDocumentId?: string | null
-) {
-  const pageIndex = sourceReference?.target?.pageIndex;
+function findHeadingReferencePageLink(children: NoteInlineNode[], ownerBlockId: string): NotePageLinkNode | null {
+  return children.find((child): child is NotePageLinkNode => isHeadingReferencePageLink(child, ownerBlockId)) ?? null;
+}
+
+function removeHeadingReferencePageLink(children: NoteInlineNode[], ownerBlockId: string) {
+  return children.filter((child) => !isHeadingReferencePageLink(child, ownerBlockId));
+}
+
+function createPageLinkFromSourceReference(args: {
+  reference: DocumentSourceReference | null;
+  ownerBlockId: string;
+  fallbackDocumentId?: string | null;
+  existing?: NotePageLinkNode | null;
+}) {
+  const pageIndex = args.reference?.target?.pageIndex;
   if (!Number.isInteger(pageIndex) || pageIndex == null || pageIndex < 0) {
     return null;
   }
@@ -87,11 +113,68 @@ function createLegacyHeadingPageLink(
     text: formatPageLinkText(pageNumber),
     bookPageLabel: String(pageNumber),
     documentId:
-      sourceReference?.target?.documentId ??
-      sourceReference?.documentId ??
-      fallbackDocumentId ??
+      args.reference?.target?.documentId ??
+      args.reference?.documentId ??
+      args.fallbackDocumentId ??
       null,
-    pdfPageIndex: pageIndex
+    pdfPageIndex: pageNumber,
+    id: args.existing?.id,
+    createdAt: args.existing?.createdAt,
+    origin: headingReferenceOrigin(args.ownerBlockId)
+  });
+}
+
+function migrateLegacyHeadingReferences(blocks: NoteBlock[], fallbackDocumentId?: string | null) {
+  return blocks.map((block) => {
+    if (block.type === "paragraph") {
+      return block;
+    }
+
+    const normalizedSourceReference = normalizeDocumentSourceReference(
+      block.sourceReference,
+      fallbackDocumentId
+    );
+    if (!normalizedSourceReference) {
+      return block.sourceReference == null
+        ? block
+        : {
+            ...block,
+            sourceReference: null
+          };
+    }
+
+    const normalizedChildren = normalizeNoteInlineNodes(block.children ?? [], fallbackDocumentId);
+    const hasVisibleText = normalizedChildren.some((child) => child.text.trim().length > 0);
+    const existing = findHeadingReferencePageLink(normalizedChildren, block.id);
+    const childrenWithoutHeadingReference = removeHeadingReferencePageLink(
+      normalizedChildren,
+      block.id
+    );
+
+    if (!hasVisibleText) {
+      return {
+        ...block,
+        sourceReference: null,
+        children: childrenWithoutHeadingReference
+      };
+    }
+
+    const pageLink =
+      createPageLinkFromSourceReference({
+        reference: normalizedSourceReference,
+        ownerBlockId: block.id,
+        fallbackDocumentId,
+        existing
+      }) ??
+      null;
+
+    return {
+      ...block,
+      sourceReference: null,
+      children: pageLink
+        ? [...childrenWithoutHeadingReference, pageLink]
+        : childrenWithoutHeadingReference
+    };
   });
 }
 
@@ -247,7 +330,8 @@ function normalizePageLinkNode(node: NotePageLinkNode): NotePageLinkNode {
         ? node.pdfPageIndex
         : null,
     bookPageLabel: node.bookPageLabel.trim(),
-    createdAt: node.createdAt || new Date().toISOString()
+    createdAt: node.createdAt || new Date().toISOString(),
+    ...(normalizePageLinkOrigin(node.origin) ? { origin: normalizePageLinkOrigin(node.origin) } : {})
   };
 }
 
@@ -308,10 +392,11 @@ export function normalizeNoteInlineNodes(nodes: NoteInlineNode[], fallbackDocume
 }
 
 export function normalizeNoteBlocks(blocks: NoteBlock[], fallbackDocumentId?: string | null): NoteBlock[] {
+  const migratedBlocks = migrateLegacyHeadingReferences(blocks, fallbackDocumentId);
   const seenIds = new Set<string>();
   const normalized: NoteBlock[] = [];
 
-  for (const block of blocks) {
+  for (const block of migratedBlocks) {
     if ((block.type as string) === "sectionBreak") {
       continue;
     }
@@ -339,40 +424,13 @@ export function normalizeNoteBlocks(blocks: NoteBlock[], fallbackDocumentId?: st
       Array.isArray(block.children) && block.children.length > 0
         ? [...legacyTopicNodes, ...block.children]
         : [...legacyTopicNodes, ...fallbackChildren];
-    let normalizedChildren = normalizeNoteInlineNodes(children, fallbackDocumentId);
-    const hasVisibleText = normalizedChildren.some((child) => child.text.trim().length > 0);
-
-    const normalizedSourceReference =
-      block.type === "paragraph" || !hasVisibleText
-        ? null
-        : normalizeDocumentSourceReference(block.sourceReference, fallbackDocumentId);
-    const hasInlinePageLink = normalizedChildren.some((child) => child.type === "page-link");
-    const legacyHeadingPageLink =
-      !hasInlinePageLink && normalizedSourceReference
-        ? createLegacyHeadingPageLink(normalizedSourceReference, fallbackDocumentId)
-        : null;
-    if (legacyHeadingPageLink) {
-      normalizedChildren = normalizeNoteInlineNodes(
-        [...normalizedChildren, legacyHeadingPageLink],
-        fallbackDocumentId
-      );
-    }
-    const previousBlock = normalized[normalized.length - 1];
-    const sourceReference =
-      legacyHeadingPageLink
-        ? null
-        : previousBlock &&
-            previousBlock.type === block.type &&
-            normalizedSourceReference &&
-            sourceReferencesEqual(previousBlock.sourceReference, normalizedSourceReference)
-          ? null
-          : normalizedSourceReference;
+    const normalizedChildren = normalizeNoteInlineNodes(children, fallbackDocumentId);
 
     normalized.push({
       id: blockId,
       type: block.type,
       children: normalizedChildren,
-      sourceReference
+      sourceReference: block.type === "paragraph" ? null : block.sourceReference ?? null
     });
   }
 
@@ -422,10 +480,7 @@ export function replaceBlockType(
             ...block,
             type: nextType,
             children: block.children,
-            sourceReference:
-              nextType === "paragraph"
-                ? null
-                : block.sourceReference ?? null
+            sourceReference: null
           }
         : block
     )
@@ -438,18 +493,43 @@ export function replaceBlockSourceReference(
   sourceReference: DocumentSourceReference | null,
   fallbackDocumentId?: string | null
 ) {
+  const normalizedReference = normalizeDocumentSourceReference(sourceReference, fallbackDocumentId);
   return normalizeNoteBlocks(
-    blocks.map((block) =>
-      block.id === blockId
-        ? {
-            ...block,
-            sourceReference:
-              block.type === "paragraph"
-                ? null
-                : normalizeDocumentSourceReference(sourceReference, fallbackDocumentId)
-          }
-        : block
-    ),
+    blocks.map((block) => {
+      if (block.id !== blockId) {
+        return block;
+      }
+
+      if (block.type === "paragraph") {
+        return {
+          ...block,
+          sourceReference: null
+        };
+      }
+
+      const existing = findHeadingReferencePageLink(block.children, block.id);
+      const children = removeHeadingReferencePageLink(block.children, block.id);
+      if (!normalizedReference) {
+        return {
+          ...block,
+          sourceReference: null,
+          children
+        };
+      }
+
+      const pageLink = createPageLinkFromSourceReference({
+        reference: normalizedReference,
+        ownerBlockId: block.id,
+        fallbackDocumentId,
+        existing
+      });
+
+      return {
+        ...block,
+        sourceReference: null,
+        children: pageLink ? [...children, pageLink] : children
+      };
+    }),
     fallbackDocumentId
   );
 }
@@ -494,15 +574,19 @@ export function createPageLinkNode(args: {
   bookPageLabel: string;
   documentId: string | null;
   pdfPageIndex: number | null;
+  id?: string;
+  createdAt?: string;
+  origin?: NotePageLinkNode["origin"];
 }) {
   return normalizePageLinkNode({
     type: "page-link",
-    id: crypto.randomUUID(),
+    id: args.id || crypto.randomUUID(),
     text: args.text,
     documentId: args.documentId,
     pdfPageIndex: args.pdfPageIndex,
     bookPageLabel: args.bookPageLabel,
-    createdAt: new Date().toISOString()
+    createdAt: args.createdAt || new Date().toISOString(),
+    ...(args.origin ? { origin: args.origin } : {})
   });
 }
 

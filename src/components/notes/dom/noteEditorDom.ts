@@ -229,7 +229,7 @@ function renderPageLinkNodeHtml(node: NotePageLinkNode) {
     node.pdfPageIndex == null ? "" : String(node.pdfPageIndex)
   )}" data-book-page-label="${escapeHtml(node.bookPageLabel)}" data-created-at="${escapeHtml(
     node.createdAt
-  )}" contenteditable="false" tabindex="-1"><span class="page-link__icon" aria-hidden="true"><svg viewBox="5 3 14 18" focusable="false"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" /></svg></span><span class="page-link__paren" aria-hidden="true">(</span><span class="page-link__label">${escapeHtml(
+  )}"${node.origin ? ` data-page-link-origin-kind="${escapeHtml(node.origin.kind)}"` : ""}${node.origin?.kind === "heading-reference" ? ` data-page-link-origin-owner-block-id="${escapeHtml(node.origin.ownerBlockId)}"` : ""} contenteditable="false" tabindex="-1"><span class="page-link__icon" aria-hidden="true"><svg viewBox="5 3 14 18" focusable="false"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3-6 3V5.5a1 1 0 0 1 1-1Z" /></svg></span><span class="page-link__paren" aria-hidden="true">(</span><span class="page-link__label">${escapeHtml(
     visibleLabel
   )}</span><span class="page-link__paren" aria-hidden="true">)</span></span>`;
 }
@@ -265,14 +265,11 @@ export function renderNoteInlineNodesHtml(children: NoteInlineNode[]) {
 }
 
 export function renderNoteBlocksHtml(blocks: NoteBlock[]) {
-  return normalizeNoteBlocks(blocks)
+  return blocks
     .map((block) => {
       const tagName = blockTagName(block.type);
-      const sourceReference = block.sourceReference
-        ? ` data-source-reference="${escapeHtml(encodeDataJson(block.sourceReference))}"`
-        : "";
       const contentMarkup = renderNoteInlineNodesHtml(block.children) || "<br>";
-      return `<${tagName} data-block-id="${escapeHtml(block.id)}" data-block-type="${block.type}"${sourceReference}>${contentMarkup}</${tagName}>`;
+      return `<${tagName} data-block-id="${escapeHtml(block.id)}" data-block-type="${block.type}">${contentMarkup}</${tagName}>`;
     })
     .join("");
 }
@@ -291,7 +288,18 @@ function pageLinkNodeFromElement(element: HTMLElement): NotePageLinkNode {
     documentId: element.dataset.documentId?.trim() || null,
     pdfPageIndex: Number.isFinite(pdfPageIndex) ? pdfPageIndex : null,
     bookPageLabel: element.dataset.bookPageLabel?.trim() || "",
-    createdAt: element.dataset.createdAt || new Date().toISOString()
+    createdAt: element.dataset.createdAt || new Date().toISOString(),
+    ...(element.dataset.pageLinkOriginKind === "inline"
+      ? { origin: { kind: "inline" as const } }
+      : element.dataset.pageLinkOriginKind === "heading-reference" &&
+          element.dataset.pageLinkOriginOwnerBlockId
+        ? {
+            origin: {
+              kind: "heading-reference" as const,
+              ownerBlockId: element.dataset.pageLinkOriginOwnerBlockId
+            }
+          }
+        : {})
   };
 }
 
@@ -1254,6 +1262,17 @@ function createPageLinkElement(node: NotePageLinkNode) {
   element.dataset.pdfPageIndex = node.pdfPageIndex == null ? "" : String(node.pdfPageIndex);
   element.dataset.bookPageLabel = node.bookPageLabel;
   element.dataset.createdAt = node.createdAt;
+  if (node.origin) {
+    element.dataset.pageLinkOriginKind = node.origin.kind;
+    if (node.origin.kind === "heading-reference") {
+      element.dataset.pageLinkOriginOwnerBlockId = node.origin.ownerBlockId;
+    } else {
+      delete element.dataset.pageLinkOriginOwnerBlockId;
+    }
+  } else {
+    delete element.dataset.pageLinkOriginKind;
+    delete element.dataset.pageLinkOriginOwnerBlockId;
+  }
   configurePageLinkElement(element);
   return element;
 }

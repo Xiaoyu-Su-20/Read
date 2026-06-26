@@ -23,8 +23,21 @@ export type NoteEditorRuntimeState = {
   changed: boolean;
 };
 
-function blocksEqual(left: NoteBlock[], right: NoteBlock[]) {
-  return JSON.stringify(left) === JSON.stringify(right);
+function pointsEqual(left: NoteModelSelection["anchor"], right: NoteModelSelection["anchor"]) {
+  return (
+    left.blockId === right.blockId &&
+    left.inlineIndex === right.inlineIndex &&
+    left.textOffset === right.textOffset &&
+    left.affinity === right.affinity
+  );
+}
+
+function selectionsEqual(left: NoteModelSelection | null, right: NoteModelSelection | null) {
+  if (!left || !right) {
+    return left === right;
+  }
+
+  return pointsEqual(left.anchor, right.anchor) && pointsEqual(left.focus, right.focus);
 }
 
 export function createNoteEditorRuntimeState(
@@ -50,24 +63,46 @@ export function commitNoteEditorBlocks(params: {
   bookId: string | null | undefined;
   render: boolean;
 }): NoteEditorRuntimeState {
-  const normalized = normalizeNoteBlocks(params.nextBlocks, params.bookId ?? null);
   const history = params.history;
+  const blocksChanged = params.nextBlocks !== params.currentBlocks;
+  const selectionChanged = !selectionsEqual(history?.current.selection ?? null, params.selection);
+
+  if (!history) {
+    const initialHistory = createNoteModelHistory({
+      blocks: params.nextBlocks,
+      selection: params.selection
+    });
+    return {
+      blocks: params.nextBlocks,
+      history: initialHistory,
+      pendingSelectionRestore: params.render ? params.selection : null,
+      changed: blocksChanged
+    };
+  }
+
+  if (!blocksChanged && !selectionChanged) {
+    return {
+      blocks: params.currentBlocks,
+      history,
+      pendingSelectionRestore: null,
+      changed: false
+    };
+  }
+
   const nextHistory =
-    !history
-      ? createNoteModelHistory({ blocks: normalized, selection: params.selection })
-      : blocksEqual(history.current.blocks, normalized)
-        ? replaceNoteModelHistorySelection(history, params.selection)
-        : commitNoteModelHistory(
-            history,
-            { blocks: normalized, selection: params.selection },
-            params.mergeKey
-          );
+    !blocksChanged
+      ? replaceNoteModelHistorySelection(history, params.selection)
+      : commitNoteModelHistory(
+          history,
+          { blocks: params.nextBlocks, selection: params.selection },
+          params.mergeKey
+        );
 
   return {
-    blocks: normalized,
+    blocks: params.nextBlocks,
     history: nextHistory,
     pendingSelectionRestore: params.render ? params.selection : null,
-    changed: !blocksEqual(params.currentBlocks, normalized)
+    changed: blocksChanged
   };
 }
 
@@ -108,9 +143,8 @@ export function undoNoteEditorRuntime(params: {
   if (!nextHistory) {
     return null;
   }
-  const blocks = normalizeNoteBlocks(nextHistory.current.blocks, params.bookId ?? null);
   return {
-    blocks,
+    blocks: nextHistory.current.blocks,
     history: nextHistory,
     pendingSelectionRestore: nextHistory.current.selection,
     changed: true
@@ -125,9 +159,8 @@ export function redoNoteEditorRuntime(params: {
   if (!nextHistory) {
     return null;
   }
-  const blocks = normalizeNoteBlocks(nextHistory.current.blocks, params.bookId ?? null);
   return {
-    blocks,
+    blocks: nextHistory.current.blocks,
     history: nextHistory,
     pendingSelectionRestore: nextHistory.current.selection,
     changed: true

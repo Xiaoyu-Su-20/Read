@@ -249,6 +249,15 @@ export type NotePageLinkNode = {
   pdfPageIndex: number | null;
   bookPageLabel: string;
   createdAt: string;
+  origin?:
+    | {
+        kind: "inline";
+      }
+    | {
+        kind: "heading-reference";
+        ownerBlockId: string;
+      }
+    | null;
 };
 
 export type ParagraphTopic = {

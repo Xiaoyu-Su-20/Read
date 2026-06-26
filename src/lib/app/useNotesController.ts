@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getOrCreateNoteForBook, openStandaloneNote, saveNote } from "../api";
-import { runDebugProcess, startDebugProcess } from "../debugLog";
+import { debugLocalAction, runDebugProcess, startDebugProcess } from "../debugLog";
+import {
+  getNoteBlocksUpdateProfile,
+  type NoteBlocksUpdateProfile
+} from "../noteEditorPerformance";
 import {
   NOTE_SAVE_DEBOUNCE_MS,
   deriveNoteNavigationItems,
@@ -28,6 +32,13 @@ type UseNotesControllerArgs = {
   setStatusMessage: (message: string) => void;
 };
 
+type PendingBlocksCommitProfile = NoteBlocksUpdateProfile & {
+  controllerReceivedAt: number;
+  normalizeElapsedMs: number;
+  updaterElapsedMs: number;
+  normalizedBlockCount: number;
+};
+
 export function useNotesController({
   target,
   onStandaloneNoteChange,
@@ -42,6 +53,7 @@ export function useNotesController({
   const saveInFlightRef = useRef(false);
   const pendingFlushRef = useRef(false);
   const activeTargetKeyRef = useRef<string | null>(null);
+  const pendingBlocksCommitProfilesRef = useRef<PendingBlocksCommitProfile[]>([]);
 
   const targetKey = useMemo(() => {
     if (!target) {
@@ -132,6 +144,34 @@ export function useNotesController({
   }, [note]);
 
   useEffect(() => {
+    if (!note || pendingBlocksCommitProfilesRef.current.length === 0) {
+      return;
+    }
+
+    const pendingProfile = pendingBlocksCommitProfilesRef.current.shift();
+    if (!pendingProfile) {
+      return;
+    }
+
+    debugLocalAction("notes.performance.blocks-propagation-committed", {
+      noteId: note.id,
+      updateId: pendingProfile.id,
+      source: pendingProfile.source,
+      blockCount: pendingProfile.blockCount,
+      normalizedBlockCount: pendingProfile.normalizedBlockCount,
+      editorToControllerMs: Math.round(
+        pendingProfile.controllerReceivedAt - pendingProfile.startedAt
+      ),
+      controllerToCommittedNoteMs: Math.round(
+        performance.now() - pendingProfile.controllerReceivedAt
+      ),
+      totalElapsedMs: Math.round(performance.now() - pendingProfile.startedAt),
+      normalizeElapsedMs: Math.round(pendingProfile.normalizeElapsedMs),
+      updaterElapsedMs: Math.round(pendingProfile.updaterElapsedMs)
+    });
+  }, [note?.blocks, note?.id]);
+
+  useEffect(() => {
     const previousTargetKey = activeTargetKeyRef.current;
     const targetChanged = previousTargetKey !== targetKey;
 
@@ -143,6 +183,7 @@ export function useNotesController({
     clearScheduledSave();
     dirtyRef.current = false;
     pendingFlushRef.current = false;
+    pendingBlocksCommitProfilesRef.current = [];
     activeTargetKeyRef.current = targetKey;
 
     if (!target) {
@@ -251,17 +292,55 @@ export function useNotesController({
 
   const updateBlocks = useCallback(
     (blocks: NoteBlock[]) => {
+      const updateProfile = getNoteBlocksUpdateProfile(blocks);
+      const controllerReceivedAt = performance.now();
+      if (updateProfile) {
+        debugLocalAction("notes.performance.blocks-propagation-received", {
+          noteId: updateProfile.noteId,
+          updateId: updateProfile.id,
+          source: updateProfile.source,
+          blockCount: updateProfile.blockCount,
+          editorToControllerMs: Math.round(controllerReceivedAt - updateProfile.startedAt)
+        });
+      }
+
       setNote((current) => {
         if (!current) {
           return current;
         }
+        const updaterStartedAt = performance.now();
+        const normalizeStartedAt = performance.now();
+        const normalizedBlocks = normalizeNoteBlocks(blocks, current.bookId);
+        const normalizeElapsedMs = performance.now() - normalizeStartedAt;
         const nextNote = {
           ...current,
-          blocks: normalizeNoteBlocks(blocks, current.bookId)
+          blocks: normalizedBlocks
         };
         noteRef.current = nextNote;
         dirtyRef.current = true;
         scheduleSave();
+        if (updateProfile) {
+          const updaterElapsedMs = performance.now() - updaterStartedAt;
+          pendingBlocksCommitProfilesRef.current.push({
+            ...updateProfile,
+            controllerReceivedAt,
+            normalizeElapsedMs,
+            updaterElapsedMs,
+            normalizedBlockCount: normalizedBlocks.length
+          });
+          debugLocalAction("notes.performance.blocks-propagation-updated", {
+            noteId: current.id,
+            updateId: updateProfile.id,
+            source: updateProfile.source,
+            blockCount: updateProfile.blockCount,
+            normalizedBlockCount: normalizedBlocks.length,
+            editorToControllerMs: Math.round(
+              controllerReceivedAt - updateProfile.startedAt
+            ),
+            normalizeElapsedMs: Math.round(normalizeElapsedMs),
+            updaterElapsedMs: Math.round(updaterElapsedMs)
+          });
+        }
         return nextNote;
       });
     },

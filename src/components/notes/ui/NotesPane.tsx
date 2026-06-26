@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "reac
 import { createPortal } from "react-dom";
 
 import { logNoteDebugEvent } from "../../../lib/api";
+import { debugLocalAction } from "../../../lib/debugLog";
 import {
   headingLevel,
   headingTitle
@@ -683,15 +684,38 @@ const NotesPane = memo(function NotesPane({
   }
 
   function handlePageLinkOpen(node: NotePageLinkNode) {
+    debugLocalAction("notes.page-link-open", {
+      noteId: note?.id ?? null,
+      documentCapabilities,
+      documentId: node.documentId,
+      pdfPageIndex: node.pdfPageIndex,
+      bookPageLabel: node.bookPageLabel,
+      originKind: node.origin?.kind ?? null,
+      originOwnerBlockId:
+        node.origin?.kind === "heading-reference" ? node.origin.ownerBlockId : null
+    });
     if (!documentCapabilities) {
+      debugLocalAction("notes.page-link-open-ignored", {
+        noteId: note?.id ?? null,
+        reason: "document-capabilities-disabled"
+      });
       return;
     }
 
     if (node.pdfPageIndex == null) {
+      debugLocalAction("notes.page-link-open-missing-page", {
+        noteId: note?.id ?? null,
+        documentId: node.documentId,
+        bookPageLabel: node.bookPageLabel
+      });
       showToast("PageLink has no saved page.");
       return;
     }
 
+    debugLocalAction("notes.page-link-open-go-to-page", {
+      noteId: note?.id ?? null,
+      page: node.pdfPageIndex
+    });
     onGoToPage(node.pdfPageIndex);
   }
 

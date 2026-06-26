@@ -155,6 +155,49 @@ function compactInlineNodes(nodes: NoteInlineNode[]) {
   return compacted.length > 0 ? compacted : [createTextNode("")];
 }
 
+function replaceRangeWithinBlock(
+  blocks: NoteBlock[],
+  blockId: string,
+  startOffset: number,
+  endOffset: number,
+  inserted: NoteInlineNode[]
+): NoteModelEdit | null {
+  const blockIndex = blocks.findIndex((block) => block.id === blockId);
+  if (blockIndex < 0) {
+    return null;
+  }
+
+  const block = blocks[blockIndex];
+  const blockLength = blockLogicalLength(block);
+  const safeStartOffset = Math.max(0, Math.min(startOffset, blockLength));
+  const safeEndOffset = Math.max(safeStartOffset, Math.min(endOffset, blockLength));
+  const startSplit = splitInlineNodesAtOffset(block.children, safeStartOffset);
+  const selectedSplit = splitInlineNodesAtOffset(
+    startSplit.after,
+    safeEndOffset - safeStartOffset
+  );
+  const insertedNodes = inserted.map(cloneInlineNode);
+  const nextChildren = compactInlineNodes([
+    ...startSplit.before,
+    ...insertedNodes,
+    ...selectedSplit.after
+  ]);
+  const replacementBlock: NoteBlock = {
+    ...block,
+    children: nextChildren
+  };
+  const nextBlocks = blocks.slice();
+  nextBlocks[blockIndex] = replacementBlock;
+  const caretOffset =
+    startSplit.before.reduce((length, node) => length + inlineLength(node), 0) +
+    insertedNodes.reduce((length, node) => length + inlineLength(node), 0);
+
+  return {
+    blocks: nextBlocks,
+    selection: collapsedModelSelection(blockOffsetToPoint(replacementBlock, caretOffset))
+  };
+}
+
 export function splitInlineNodesAtOffset(children: NoteInlineNode[], requestedOffset: number) {
   const totalLength = children.reduce((length, node) => length + inlineLength(node), 0);
   const offset = Math.max(0, Math.min(requestedOffset, totalLength));
@@ -231,9 +274,9 @@ export function replaceModelRange(
   selection: NoteModelSelection,
   inserted: NoteInlineNode[] = []
 ): NoteModelEdit {
-  const normalizedBlocks = normalizeNoteBlocks(blocks).map(cloneBlock);
-  const ordered = orderedSelection(normalizedBlocks, selection);
+  const ordered = orderedSelection(blocks, selection);
   if (!ordered) {
+    const normalizedBlocks = normalizeNoteBlocks(blocks).map(cloneBlock);
     const fallback = normalizedBlocks[0] ?? createEmptyNoteBlock();
     const point = blockOffsetToPoint(fallback, 0);
     return {
@@ -242,12 +285,49 @@ export function replaceModelRange(
     };
   }
 
-  const startIndex = normalizedBlocks.findIndex((block) => block.id === ordered.start.blockId);
-  const endIndex = normalizedBlocks.findIndex((block) => block.id === ordered.end.blockId);
+  if (ordered.start.blockId === ordered.end.blockId) {
+    const block = blocks.find((candidate) => candidate.id === ordered.start.blockId);
+    if (block) {
+      const startOffset = pointToBlockOffset(block, ordered.start);
+      const endOffset = pointToBlockOffset(block, ordered.end);
+      const replacesWholeDocument =
+        inserted.length === 0 &&
+        blocks.length === 1 &&
+        startOffset === 0 &&
+        endOffset === blockLogicalLength(block);
+
+      if (!replacesWholeDocument) {
+        const local = replaceRangeWithinBlock(
+          blocks,
+          block.id,
+          startOffset,
+          endOffset,
+          inserted
+        );
+        if (local) {
+          return local;
+        }
+      }
+    }
+  }
+
+  const normalizedBlocks = normalizeNoteBlocks(blocks).map(cloneBlock);
+  const normalizedOrdered = orderedSelection(normalizedBlocks, selection);
+  if (!normalizedOrdered) {
+    const fallback = normalizedBlocks[0] ?? createEmptyNoteBlock();
+    const point = blockOffsetToPoint(fallback, 0);
+    return {
+      blocks: normalizedBlocks.length > 0 ? normalizedBlocks : [fallback],
+      selection: collapsedModelSelection(point)
+    };
+  }
+
+  const startIndex = normalizedBlocks.findIndex((block) => block.id === normalizedOrdered.start.blockId);
+  const endIndex = normalizedBlocks.findIndex((block) => block.id === normalizedOrdered.end.blockId);
   const startBlock = normalizedBlocks[startIndex];
   const endBlock = normalizedBlocks[endIndex];
-  const startOffset = pointToBlockOffset(startBlock, ordered.start);
-  const endOffset = pointToBlockOffset(endBlock, ordered.end);
+  const startOffset = pointToBlockOffset(startBlock, normalizedOrdered.start);
+  const endOffset = pointToBlockOffset(endBlock, normalizedOrdered.end);
   const replacesWholeDocument =
     inserted.length === 0 &&
     startIndex === 0 &&
@@ -300,7 +380,7 @@ export function insertTextAtSelection(
   if (text.length === 0) {
     return isCollapsedModelSelection(selection)
       ? {
-          blocks: normalizeNoteBlocks(blocks).map(cloneBlock),
+          blocks,
           selection
         }
       : replaceModelRange(blocks, selection);
@@ -313,8 +393,7 @@ function deleteAtSelection(blocks: NoteBlock[], selection: NoteModelSelection, d
     return replaceModelRange(blocks, selection);
   }
 
-  const normalizedBlocks = normalizeNoteBlocks(blocks).map(cloneBlock);
-  const block = normalizedBlocks.find((candidate) => candidate.id === selection.focus.blockId);
+  const block = blocks.find((candidate) => candidate.id === selection.focus.blockId);
   if (!block) {
     return null;
   }
@@ -322,21 +401,15 @@ function deleteAtSelection(blocks: NoteBlock[], selection: NoteModelSelection, d
   const offset = pointToBlockOffset(block, selection.focus);
   if (direction === "backward") {
     if (offset === 0) {
-      return mergeBlockBackward(normalizedBlocks, block.id);
+      return mergeBlockBackward(blocks, block.id);
     }
-    return replaceModelRange(normalizedBlocks, {
-      anchor: blockOffsetToPoint(block, offset - 1),
-      focus: blockOffsetToPoint(block, offset)
-    });
+    return replaceRangeWithinBlock(blocks, block.id, offset - 1, offset, []);
   }
 
   if (offset === blockLogicalLength(block)) {
-    return mergeBlockForward(normalizedBlocks, block.id);
+    return mergeBlockForward(blocks, block.id);
   }
-  return replaceModelRange(normalizedBlocks, {
-    anchor: blockOffsetToPoint(block, offset),
-    focus: blockOffsetToPoint(block, offset + 1)
-  });
+  return replaceRangeWithinBlock(blocks, block.id, offset, offset + 1, []);
 }
 
 export function deleteBackward(blocks: NoteBlock[], selection: NoteModelSelection) {
@@ -616,6 +689,23 @@ export function splitBlockAtSelection(
   const block = deletion.blocks[blockIndex];
   const offset = pointToBlockOffset(block, point);
   const blockLength = blockLogicalLength(block);
+
+  if (blockLength === 0) {
+    const paragraph: NoteBlock = {
+      id: createId(),
+      type: "paragraph",
+      children: [createTextNode("")]
+    };
+    const nextBlocks = [
+      ...deletion.blocks.slice(0, blockIndex + 1),
+      paragraph,
+      ...deletion.blocks.slice(blockIndex + 1)
+    ];
+    return {
+      blocks: normalizeNoteBlocks(nextBlocks),
+      selection: collapsedModelSelection(blockOffsetToPoint(paragraph, 0))
+    };
+  }
 
   if (offset === 0) {
     const paragraph: NoteBlock = {

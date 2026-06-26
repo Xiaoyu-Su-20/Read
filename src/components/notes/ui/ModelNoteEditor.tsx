@@ -1,14 +1,17 @@
 import {
+  memo,
   forwardRef,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
+  useMemo,
   useState
 } from "react";
 
 import { logNoteDebugEvent } from "../../../lib/api";
 import { debugAction, debugLocalAction } from "../../../lib/debugLog";
+import { markNoteBlocksUpdate } from "../../../lib/noteEditorPerformance";
 import {
   blockLogicalLength,
   blockOffsetToPoint,
@@ -73,8 +76,7 @@ import {
   createPageLinkNode,
   createTextNode,
   createTopicCardNode,
-  formatPageLinkText,
-  normalizeNoteBlocks
+  formatPageLinkText
 } from "../../../lib/notes";
 import { DEFAULT_TOPIC_COLOR, normalizeTopicText } from "../../../lib/paragraphTopics";
 import { extractStandaloneSpellcheckWord } from "../../../lib/spellcheck";
@@ -97,6 +99,8 @@ import type {
 import { computeCenteredChildScrollTop } from "./noteEditorScroll";
 
 const NOTE_CLIPBOARD_MIME = "application/x-calmreader-note-fragment";
+const SHOULD_VERIFY_SELECTION_RESTORE = import.meta.env.DEV;
+const SHOULD_LOG_HIGH_FREQUENCY_INTERACTIONS = import.meta.env.DEV;
 const useClientLayoutEffect =
   typeof window === "undefined" ? useEffect : useLayoutEffect;
 
@@ -150,14 +154,37 @@ type CompositionSession = {
   selection: NoteModelSelection;
 };
 
-function cloneBlocks(blocks: NoteBlock[]) {
-  return JSON.parse(JSON.stringify(blocks)) as NoteBlock[];
-}
+const NoteBlockView = memo(function NoteBlockView({ block }: { block: NoteBlock }) {
+  const html = useMemo(
+    () => renderNoteInlineNodesHtml(block.children) || "<br>",
+    [block.children]
+  );
+
+  return (
+    <div
+      className="note-editor__block"
+      data-block-id={block.id}
+      data-block-type={block.type}
+    >
+      <div
+        className="note-editor__block-content"
+        spellCheck={false}
+        dangerouslySetInnerHTML={{
+          __html: html
+        }}
+      />
+    </div>
+  );
+});
 
 function blockContentElement(node: EventTarget | null) {
   return node instanceof HTMLElement
     ? node.closest<HTMLElement>(".note-editor__block-content")
     : null;
+}
+
+function closestTargetElement(target: EventTarget | null) {
+  return target instanceof Element ? target : null;
 }
 
 function inlineNodeLength(node: NoteInlineNode) {
@@ -212,6 +239,25 @@ function atomicBoundaryAtPoint(
   return null;
 }
 
+function shouldLogBeforeInput(inputType: string | undefined) {
+  return (
+    SHOULD_LOG_HIGH_FREQUENCY_INTERACTIONS ||
+    (inputType !== "insertText" &&
+      inputType !== "insertReplacementText" &&
+      inputType !== "deleteContentBackward" &&
+      inputType !== "deleteContentForward")
+  );
+}
+
+function shouldLogKeyDown(event: KeyboardEvent) {
+  return (
+    SHOULD_LOG_HIGH_FREQUENCY_INTERACTIONS ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey
+  );
+}
+
 const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
   function ModelNoteEditor(
     {
@@ -228,13 +274,18 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
   ) {
     const bodyRef = useRef<HTMLDivElement | null>(null);
     const appliedNoteIdRef = useRef<string | null>(null);
-    const initialRuntime = createNoteEditorRuntimeState(
-      note?.blocks ?? [createEmptyNoteBlock()],
-      note?.bookId,
-      null
-    );
+    const initialRuntimeRef = useRef<ReturnType<typeof createNoteEditorRuntimeState> | null>(null);
+    if (!initialRuntimeRef.current) {
+      initialRuntimeRef.current = createNoteEditorRuntimeState(
+        note?.blocks ?? [createEmptyNoteBlock()],
+        note?.bookId,
+        null
+      );
+    }
+    const initialRuntime = initialRuntimeRef.current;
     const blocksRef = useRef<NoteBlock[]>(initialRuntime.blocks);
-    const [renderedBlocks, setRenderedBlocks] = useState(() => cloneBlocks(blocksRef.current));
+    const [renderedBlocks, setRenderedBlocks] = useState(() => blocksRef.current);
+    const [renderTick, setRenderTick] = useState(0);
     const selectedBlockIdRef = useRef<string | null>(null);
     const selectedPageLinkIdRef = useRef<string | null>(null);
     const selectedTopicIdRef = useRef<string | null>(null);
@@ -261,6 +312,9 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     }
 
     function updateSelectedBlock(blockId: string | null) {
+      if (selectedBlockIdRef.current === blockId) {
+        return;
+      }
       selectedBlockIdRef.current = blockId;
       if (bodyRef.current) {
         selectBlockElement(bodyRef.current, blockId);
@@ -268,6 +322,9 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     }
 
     function updateSelectedPageLink(pageLinkId: string | null) {
+      if (selectedPageLinkIdRef.current === pageLinkId) {
+        return;
+      }
       selectedPageLinkIdRef.current = pageLinkId;
       if (bodyRef.current) {
         selectPageLinkToken(bodyRef.current, pageLinkId);
@@ -275,6 +332,9 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     }
 
     function updateSelectedTopic(topicId: string | null) {
+      if (selectedTopicIdRef.current === topicId) {
+        return;
+      }
       selectedTopicIdRef.current = topicId;
       if (bodyRef.current) {
         selectTopicCardToken(bodyRef.current, topicId);
@@ -284,6 +344,11 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     function clearTokenSelection() {
       updateSelectedPageLink(null);
       updateSelectedTopic(null);
+    }
+
+    function resolvePageLink(pageLinkId: string): NotePageLinkNode | null {
+      const found = findInlineNode(blocksRef.current, pageLinkId);
+      return found?.node.type === "page-link" ? found.node : null;
     }
 
     function selectedAtomicInline(): AtomicInlineSelection | null {
@@ -459,10 +524,23 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       historyRef.current = nextState.history;
       if (render) {
         pendingSelectionRestoreRef.current = nextState.pendingSelectionRestore;
-        setRenderedBlocks(cloneBlocks(nextState.blocks));
+        setRenderedBlocks(nextState.blocks);
       }
       if (nextState.changed) {
+        const updateProfile = markNoteBlocksUpdate(nextState.blocks, {
+          source: "ModelNoteEditor.commitBlocks",
+          noteId: note?.id ?? null,
+          blockCount: nextState.blocks.length
+        });
+        const callbackStartedAt = performance.now();
         onChangeBlocks(nextState.blocks);
+        debugLocalAction("notes.performance.blocks-propagation-dispatched", {
+          noteId: note?.id ?? null,
+          updateId: updateProfile.id,
+          source: updateProfile.source,
+          blockCount: updateProfile.blockCount,
+          callbackElapsedMs: Math.round(performance.now() - callbackStartedAt)
+        });
       }
     }
 
@@ -480,9 +558,22 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       blocksRef.current = nextState.blocks;
       historyRef.current = nextState.history;
       pendingSelectionRestoreRef.current = nextState.pendingSelectionRestore;
-      setRenderedBlocks(cloneBlocks(nextState.blocks));
+      setRenderedBlocks(nextState.blocks);
       if (nextState.changed) {
+        const updateProfile = markNoteBlocksUpdate(nextState.blocks, {
+          source: "ModelNoteEditor.applyModelEdit",
+          noteId: note?.id ?? null,
+          blockCount: nextState.blocks.length
+        });
+        const callbackStartedAt = performance.now();
         onChangeBlocks(nextState.blocks);
+        debugLocalAction("notes.performance.blocks-propagation-dispatched", {
+          noteId: note?.id ?? null,
+          updateId: updateProfile.id,
+          source: updateProfile.source,
+          blockCount: updateProfile.blockCount,
+          callbackElapsedMs: Math.round(performance.now() - callbackStartedAt)
+        });
       }
     }
 
@@ -498,12 +589,25 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
 
     function applyHistoryState(nextHistory: NoteModelHistoryState) {
       applyingHistoryRef.current = true;
-      const blocks = normalizeNoteBlocks(nextHistory.current.blocks, note?.bookId ?? null);
+      const blocks = nextHistory.current.blocks;
       historyRef.current = nextHistory;
       blocksRef.current = blocks;
       pendingSelectionRestoreRef.current = nextHistory.current.selection;
-      setRenderedBlocks(cloneBlocks(blocksRef.current));
+      setRenderedBlocks(blocksRef.current);
+      const updateProfile = markNoteBlocksUpdate(blocksRef.current, {
+        source: "ModelNoteEditor.applyHistoryState",
+        noteId: note?.id ?? null,
+        blockCount: blocksRef.current.length
+      });
+      const callbackStartedAt = performance.now();
       onChangeBlocks(blocksRef.current);
+      debugLocalAction("notes.performance.blocks-propagation-dispatched", {
+        noteId: note?.id ?? null,
+        updateId: updateProfile.id,
+        source: updateProfile.source,
+        blockCount: updateProfile.blockCount,
+        callbackElapsedMs: Math.round(performance.now() - callbackStartedAt)
+      });
       clearTokenSelection();
       updateSelectedBlock(null);
       clearPendingTextMarks();
@@ -537,7 +641,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
 
     function rerenderFromModel(selection: NoteModelSelection | null) {
       pendingSelectionRestoreRef.current = selection;
-      setRenderedBlocks(cloneBlocks(blocksRef.current));
+      setRenderTick((value) => value + 1);
     }
 
     function applyTextInsertion(
@@ -563,10 +667,12 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     }
 
     function handleBeforeInputEvent(inputEvent: InputEvent) {
-      logInteraction("beforeinput", {
-        inputType: inputEvent.inputType,
-        data: inputEvent.data
-      });
+      if (shouldLogBeforeInput(inputEvent.inputType)) {
+        logInteraction("beforeinput", {
+          inputType: inputEvent.inputType,
+          data: inputEvent.data
+        });
+      }
       if (compositionSessionRef.current) {
         return false;
       }
@@ -985,7 +1091,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       if (!note) {
         const runtime = createNoteEditorRuntimeState([createEmptyNoteBlock()], null, null);
         blocksRef.current = runtime.blocks;
-        setRenderedBlocks(cloneBlocks(runtime.blocks));
+        setRenderedBlocks(runtime.blocks);
         appliedNoteIdRef.current = null;
         historyRef.current = runtime.history;
         clearPendingTextMarks();
@@ -997,7 +1103,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       }
       const runtime = createNoteEditorRuntimeState(note.blocks, note.bookId, null);
       blocksRef.current = runtime.blocks;
-      setRenderedBlocks(cloneBlocks(runtime.blocks));
+      setRenderedBlocks(runtime.blocks);
       historyRef.current = runtime.history;
       appliedNoteIdRef.current = note.id;
       clearTokenSelection();
@@ -1015,15 +1121,30 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       selectBlockElement(bodyRef.current, selectedBlockIdRef.current);
       selectPageLinkToken(bodyRef.current, selectedPageLinkIdRef.current);
       selectTopicCardToken(bodyRef.current, selectedTopicIdRef.current);
-      if (pendingSelectionRestoreRef.current) {
-        restoreModelSelection(
+      const pendingSelection = pendingSelectionRestoreRef.current;
+      if (pendingSelection) {
+        const restored = restoreModelSelection(
           bodyRef.current,
           blocksRef.current,
-          pendingSelectionRestoreRef.current
+          pendingSelection
         );
-        pendingSelectionRestoreRef.current = null;
+        if (!SHOULD_VERIFY_SELECTION_RESTORE && restored) {
+          pendingSelectionRestoreRef.current = null;
+          return;
+        }
+        const actualSelection =
+          restored && SHOULD_VERIFY_SELECTION_RESTORE
+            ? captureModelSelection(bodyRef.current, blocksRef.current)
+            : null;
+        if (
+          actualSelection &&
+          actualSelection.focus.blockId === pendingSelection.focus.blockId &&
+          actualSelection.anchor.blockId === pendingSelection.anchor.blockId
+        ) {
+          pendingSelectionRestoreRef.current = null;
+        }
       }
-    }, [renderedBlocks]);
+    }, [renderTick, renderedBlocks]);
 
     useEffect(() => {
       function handleSelectionChange() {
@@ -1141,16 +1262,15 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           return { ok: true, node };
         },
         openPageLink(pageLinkId) {
-          const found = findInlineNode(blocksRef.current, pageLinkId);
-          if (!found || found.node.type !== "page-link") {
+          const node = resolvePageLink(pageLinkId);
+          if (!node) {
             return null;
           }
-          onOpenPageLink(found.node);
-          return found.node;
+          onOpenPageLink(node);
+          return node;
         },
         getPageLink(pageLinkId) {
-          const found = findInlineNode(blocksRef.current, pageLinkId);
-          return found?.node.type === "page-link" ? found.node : null;
+          return resolvePageLink(pageLinkId);
         },
         editPageLink(pageLinkId, pageNumber): PageLinkCommandResult {
           const found = findInlineNode(blocksRef.current, pageLinkId);
@@ -1366,15 +1486,19 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           }}
           onInput={(event) => {
             const inputEvent = event.nativeEvent as InputEvent;
-            logInteraction("input", {
-              inputType: inputEvent.inputType,
-              data: inputEvent.data
-            });
-            if (!compositionSessionRef.current) {
-              logInteraction("input-ignored", {
-                reason: "model-owned-text",
-                inputType: inputEvent.inputType
+            if (shouldLogBeforeInput(inputEvent.inputType)) {
+              logInteraction("input", {
+                inputType: inputEvent.inputType,
+                data: inputEvent.data
               });
+            }
+            if (!compositionSessionRef.current) {
+              if (shouldLogBeforeInput(inputEvent.inputType)) {
+                logInteraction("input-ignored", {
+                  reason: "model-owned-text",
+                  inputType: inputEvent.inputType
+                });
+              }
             }
           }}
           onBeforeInput={(event) => {
@@ -1436,12 +1560,14 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           }}
           onKeyDown={(event) => {
             event.stopPropagation();
-            logInteraction("keydown", {
-              key: event.key,
-              ctrlKey: event.ctrlKey,
-              metaKey: event.metaKey,
-              shiftKey: event.shiftKey
-            });
+            if (shouldLogKeyDown(event.nativeEvent)) {
+              logInteraction("keydown", {
+                key: event.key,
+                ctrlKey: event.ctrlKey,
+                metaKey: event.metaKey,
+                shiftKey: event.shiftKey
+              });
+            }
             if (event.metaKey || event.ctrlKey) {
               const key = event.key.toLowerCase();
               if (key === "a") {
@@ -1512,15 +1638,22 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             if (!bodyRef.current || event.button !== 0 || !documentCapabilities) {
               return;
             }
+            const targetElement = closestTargetElement(event.target);
             const pageLink =
-              event.target instanceof HTMLElement
-                ? event.target.closest<HTMLElement>("[data-inline-type='page-link']")
+              targetElement
+                ? targetElement.closest<HTMLElement>("[data-inline-type='page-link']")
                 : null;
             const pageLinkId = pageLink?.dataset.pageLinkId;
             const found = pageLinkId
               ? findInlineNode(blocksRef.current, pageLinkId)
               : null;
             if (pageLink && found) {
+              if (
+                found.node.type === "page-link" &&
+                found.node.origin?.kind === "heading-reference"
+              ) {
+                return;
+              }
               event.preventDefault();
               const rect = pageLink.getBoundingClientRect();
               const after = event.clientX >= rect.left + rect.width / 2;
@@ -1535,9 +1668,10 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             if (!bodyRef.current) {
               return;
             }
+            const targetElement = closestTargetElement(event.target);
             const topic =
-              event.target instanceof HTMLElement
-                ? event.target.closest<HTMLElement>("[data-inline-type='topic-card']")
+              targetElement
+                ? targetElement.closest<HTMLElement>("[data-inline-type='topic-card']")
                 : null;
             if (topic) {
               event.preventDefault();
@@ -1549,17 +1683,18 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
               return;
             }
             if (
-              !(event.target instanceof HTMLElement) ||
-              !event.target.closest("[data-inline-type='page-link']")
+              !targetElement ||
+              !targetElement.closest("[data-inline-type='page-link']")
             ) {
               clearTokenSelection();
               updateSelectedBlock(null);
             }
           }}
           onDoubleClick={(event) => {
+            const targetElement = closestTargetElement(event.target);
             const pageLink =
-              event.target instanceof HTMLElement
-                ? event.target.closest<HTMLElement>("[data-inline-type='page-link']")
+              targetElement
+                ? targetElement.closest<HTMLElement>("[data-inline-type='page-link']")
                 : null;
             if (pageLink?.dataset.pageLinkId) {
               event.preventDefault();
@@ -1567,9 +1702,10 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             }
           }}
           onClick={(event) => {
+            const targetElement = closestTargetElement(event.target);
             const topic =
-              event.target instanceof HTMLElement
-                ? event.target.closest<HTMLElement>("[data-inline-type='topic-card']")
+              targetElement
+                ? targetElement.closest<HTMLElement>("[data-inline-type='topic-card']")
                 : null;
             if (topic) {
               event.preventDefault();
@@ -1578,42 +1714,55 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
               return;
             }
             const pageLink =
-              event.target instanceof HTMLElement
-                ? event.target.closest<HTMLElement>("[data-inline-type='page-link']")
+              targetElement
+                ? targetElement.closest<HTMLElement>("[data-inline-type='page-link']")
                 : null;
             const pageLinkId = pageLink?.dataset.pageLinkId;
+            logInteraction("page-link-click", {
+              pageLinkId: pageLinkId ?? null,
+              documentCapabilities,
+              blockId:
+                pageLink
+                  ?.closest<HTMLElement>("[data-block-id]")
+                  ?.dataset.blockId ?? null,
+              targetTag: targetElement?.tagName ?? null,
+              originKind: pageLink?.dataset.pageLinkOriginKind ?? null,
+              originOwnerBlockId:
+                pageLink?.dataset.pageLinkOriginOwnerBlockId ?? null
+            });
             if (!pageLinkId || !documentCapabilities) {
+              logInteraction("page-link-click-ignored", {
+                reason: !pageLinkId ? "missing-page-link-id" : "document-capabilities-disabled"
+              });
               return;
             }
-            const found = findInlineNode(blocksRef.current, pageLinkId);
-            if (found?.node.type === "page-link") {
-              event.preventDefault();
-              event.stopPropagation();
-              updateSelectedPageLink(pageLinkId);
-              onOpenPageLink(found.node);
+            const node = resolvePageLink(pageLinkId);
+            if (!node) {
+              logInteraction("page-link-click-unresolved", {
+                pageLinkId
+              });
+              return;
             }
+            logInteraction("page-link-click-resolved", {
+              pageLinkId,
+              documentId: node.documentId,
+              pdfPageIndex: node.pdfPageIndex,
+              bookPageLabel: node.bookPageLabel,
+              originKind: node.origin?.kind ?? null,
+              originOwnerBlockId:
+                node.origin?.kind === "heading-reference" ? node.origin.ownerBlockId : null
+            });
+            event.preventDefault();
+            event.stopPropagation();
+            updateSelectedPageLink(pageLinkId);
+            logInteraction("page-link-click-dispatch-open", {
+              pageLinkId
+            });
+            onOpenPageLink(node);
           }}
         >
           {renderedBlocks.map((block) => (
-            <div
-              key={block.id}
-              className="note-editor__block"
-              data-block-id={block.id}
-              data-block-type={block.type}
-              data-source-reference={
-                block.sourceReference
-                  ? encodeURIComponent(JSON.stringify(block.sourceReference))
-                  : undefined
-              }
-            >
-              <div
-                className="note-editor__block-content"
-                spellCheck={false}
-                dangerouslySetInnerHTML={{
-                  __html: renderNoteInlineNodesHtml(block.children) || "<br>"
-                }}
-              />
-            </div>
+            <NoteBlockView key={block.id} block={block} />
           ))}
         </div>
       </div>

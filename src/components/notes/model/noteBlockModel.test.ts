@@ -107,6 +107,29 @@ describe("note block model", () => {
     expect(result.blocks[0].children).toEqual([createTextNode("Hello reader")]);
   });
 
+  it("keeps untouched block references stable for same-block replacement", () => {
+    const blocks = [
+      block("a", "paragraph", "Alpha"),
+      block("b", "paragraph", "Hello world"),
+      block("c", "paragraph", "Omega")
+    ];
+    const originalMiddle = blocks[1];
+    const originalMiddleChildren = blocks[1].children;
+    const result = replaceModelRange(blocks, selection(blocks, "b", 6, "b", 11), [
+      createTextNode("reader")
+    ]);
+
+    expect(result.blocks).not.toBe(blocks);
+    expect(result.blocks[0]).toBe(blocks[0]);
+    expect(result.blocks[2]).toBe(blocks[2]);
+    expect(result.blocks[1]).not.toBe(originalMiddle);
+    expect(result.blocks[1]?.children).not.toBe(originalMiddleChildren);
+    expect(blocks[1]).toBe(originalMiddle);
+    expect(blocks[1]?.children).toBe(originalMiddleChildren);
+    expect(blocks[1]?.children[0]).toEqual(createTextNode("Hello world"));
+    expect(result.blocks[1]?.children).toEqual([createTextNode("Hello reader")]);
+  });
+
   it("normalizes reversed cross-block selections before replacement", () => {
     const blocks = [
       block("a", "paragraph", "Alpha"),
@@ -147,6 +170,31 @@ describe("note block model", () => {
 
     expect(backward?.blocks[0].children).toEqual([createTextNode("Hell")]);
     expect(forward?.blocks[0].children).toEqual([createTextNode("ello")]);
+  });
+
+  it("keeps untouched block references stable for intra-block delete", () => {
+    const blocks = [
+      block("a", "paragraph", "Alpha"),
+      block("b", "paragraph", "Hello"),
+      block("c", "paragraph", "Omega")
+    ];
+    const result = deleteBackward(blocks, selection(blocks, "b", 5));
+
+    expect(result?.blocks).not.toBe(blocks);
+    expect(result?.blocks[0]).toBe(blocks[0]);
+    expect(result?.blocks[2]).toBe(blocks[2]);
+    expect(result?.blocks[1]).not.toBe(blocks[1]);
+    expect(result?.blocks[1]?.children).toEqual([createTextNode("Hell")]);
+    expect(blocks[1]?.children).toEqual([createTextNode("Hello")]);
+  });
+
+  it("preserves block array identity for empty collapsed insertions", () => {
+    const blocks = [block("a", "paragraph", "Hello")];
+    const modelSelection = selection(blocks, "a", 5);
+    const result = insertTextAtSelection(blocks, modelSelection, "");
+
+    expect(result.blocks).toBe(blocks);
+    expect(result.selection).toBe(modelSelection);
   });
 
   it("keeps atomic nodes on the correct side of a split", () => {

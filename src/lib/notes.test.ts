@@ -334,7 +334,7 @@ describe("notes helpers", () => {
     expect(blocks[0]?.children[blocks[0].children.length - 1]).toMatchObject({
       type: "page-link",
       bookPageLabel: "5",
-      pdfPageIndex: 4
+      pdfPageIndex: 5
     });
     expect(blocks[1]?.sourceReference).toBeNull();
   });
@@ -368,9 +368,113 @@ describe("notes helpers", () => {
     expect(blocks[0]?.children[1]).toMatchObject({
       type: "page-link",
       bookPageLabel: "9",
-      pdfPageIndex: 8
+      pdfPageIndex: 9,
+      origin: {
+        kind: "heading-reference",
+        ownerBlockId: "heading"
+      }
     });
     expect(blocks[0]?.sourceReference).toBeNull();
+  });
+
+  it("updates an existing heading-associated page-link in place and preserves its id", () => {
+    const first = replaceBlockSourceReference(
+      [
+        {
+          id: "heading",
+          type: "heading2",
+          children: [createTextNode("Section")]
+        }
+      ],
+      "heading",
+      {
+        id: "ref-1",
+        documentId: "doc-1",
+        kind: "direct",
+        outlineItemId: null,
+        outlineSource: null,
+        title: "Section",
+        target: {
+          documentId: "doc-1",
+          pageIndex: 8
+        },
+        createdAt: "2026-06-14T00:00:00Z"
+      }
+    );
+    const firstLink = first[0]?.children.find((child) => child.type === "page-link");
+    expect(firstLink?.type).toBe("page-link");
+
+    const updated = replaceBlockSourceReference(
+      first,
+      "heading",
+      {
+        id: "ref-2",
+        documentId: "doc-1",
+        kind: "direct",
+        outlineItemId: null,
+        outlineSource: null,
+        title: "Section",
+        target: {
+          documentId: "doc-1",
+          pageIndex: 10
+        },
+        createdAt: "2026-06-15T00:00:00Z"
+      }
+    );
+    const updatedLink = updated[0]?.children.find((child) => child.type === "page-link");
+    expect(updatedLink).toMatchObject({
+      id: firstLink?.id,
+      bookPageLabel: "11",
+      pdfPageIndex: 11,
+      origin: {
+        kind: "heading-reference",
+        ownerBlockId: "heading"
+      }
+    });
+  });
+
+  it("removes only the heading-associated page-link when clearing the reference", () => {
+    const blocks = replaceBlockSourceReference(
+      [
+        {
+          id: "heading",
+          type: "heading2",
+          children: [
+            createTextNode("Section"),
+            createPageLinkNode({
+              text: "(p. 21)",
+              bookPageLabel: "21",
+              documentId: "doc-1",
+              pdfPageIndex: 21,
+              origin: { kind: "inline" }
+            })
+          ]
+        }
+      ],
+      "heading",
+      {
+        id: "ref-1",
+        documentId: "doc-1",
+        kind: "direct",
+        outlineItemId: null,
+        outlineSource: null,
+        title: "Section",
+        target: {
+          documentId: "doc-1",
+          pageIndex: 8
+        },
+        createdAt: "2026-06-14T00:00:00Z"
+      }
+    );
+
+    const cleared = replaceBlockSourceReference(blocks, "heading", null);
+    const pageLinks = cleared[0]?.children.filter((child) => child.type === "page-link") ?? [];
+    expect(pageLinks).toHaveLength(1);
+    expect(pageLinks[0]).toMatchObject({
+      bookPageLabel: "21",
+      pdfPageIndex: 21,
+      origin: { kind: "inline" }
+    });
   });
 
   it("converts duplicated adjacent heading references into a single visible heading page-link", () => {
@@ -407,9 +511,41 @@ describe("notes helpers", () => {
     expect(blocks[0]?.children[blocks[0].children.length - 1]).toMatchObject({
       type: "page-link",
       bookPageLabel: "13",
-      pdfPageIndex: 12
+      pdfPageIndex: 13
     });
     expect(blocks[1]?.sourceReference).toBeNull();
+  });
+
+  it("preserves the generated heading page-link id across repeated normalization", () => {
+    const reference = normalizeDocumentSourceReference({
+      id: "ref-stable",
+      documentId: "doc-1",
+      kind: "direct",
+      outlineItemId: null,
+      outlineSource: null,
+      title: "Chapter",
+      target: {
+        documentId: "doc-1",
+        pageIndex: 10
+      },
+      createdAt: "2026-06-25T00:00:00Z"
+    });
+
+    const once = normalizeNoteBlocks([
+      {
+        id: "heading",
+        type: "heading1",
+        children: [createTextNode("Chapter")],
+        sourceReference: reference
+      }
+    ]);
+    const generated = once[0]?.children.find((child) => child.type === "page-link");
+    expect(generated?.type).toBe("page-link");
+
+    const twice = normalizeNoteBlocks(once);
+    const regenerated = twice[0]?.children.find((child) => child.type === "page-link");
+    expect(regenerated?.type).toBe("page-link");
+    expect(regenerated?.id).toBe(generated?.id);
   });
 
   it("clears heading references from empty headings", () => {

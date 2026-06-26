@@ -193,6 +193,13 @@ type DomPoint = {
 };
 
 function domPointAtOffset(content: HTMLElement, requestedOffset: number): DomPoint {
+  if (requestedOffset <= 0 && domNodeLogicalLength(content) === 0) {
+    return {
+      node: content,
+      offset: 0
+    };
+  }
+
   let remaining = Math.max(0, requestedOffset);
 
   function visit(parent: Node): DomPoint | null {

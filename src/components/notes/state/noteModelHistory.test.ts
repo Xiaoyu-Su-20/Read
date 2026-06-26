@@ -4,6 +4,7 @@ import { blockOffsetToPoint, collapsedModelSelection } from "../model/noteBlockM
 import {
   commitNoteModelHistory,
   createNoteModelHistory,
+  NOTE_MODEL_HISTORY_MAX_UNDO,
   redoNoteModelHistory,
   undoNoteModelHistory
 } from "./noteModelHistory";
@@ -48,6 +49,19 @@ describe("note model history", () => {
     const split = commitNoteModelHistory(second, entry("AB\n"), null, 250);
 
     expect(second.undoStack).toHaveLength(1);
+    expect(second.undoStack).toBe(first.undoStack);
     expect(split.undoStack).toHaveLength(2);
+  });
+
+  it("caps undo history at 100 snapshots", () => {
+    let state = createNoteModelHistory(entry(""));
+
+    for (let index = 1; index <= NOTE_MODEL_HISTORY_MAX_UNDO + 25; index += 1) {
+      state = commitNoteModelHistory(state, entry(String(index)), null, index);
+    }
+
+    expect(state.undoStack).toHaveLength(NOTE_MODEL_HISTORY_MAX_UNDO);
+    expect(state.undoStack[0]?.blocks[0].children[0].text).toBe("25");
+    expect(state.current.blocks[0].children[0].text).toBe("125");
   });
 });
