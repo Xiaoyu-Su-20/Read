@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
+use serde_json::json;
+
 use crate::models::{RenderVariant, RenderedPagePayload, TextLayerTransform};
 
 use super::PageRenderRequest;
 
-pub const MAX_RENDER_CACHE_ENTRIES: usize = 20;
+pub const DEFAULT_RENDER_CACHE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 struct RenderCacheEntry {
@@ -22,13 +24,30 @@ struct RenderCacheEntry {
     text_layer_transform: TextLayerTransform,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RenderCache {
     entries: HashMap<String, RenderCacheEntry>,
     next_access_order: u64,
+    resident_bytes: usize,
+    max_bytes: usize,
+}
+
+impl Default for RenderCache {
+    fn default() -> Self {
+        Self::with_byte_budget(DEFAULT_RENDER_CACHE_BYTE_BUDGET)
+    }
 }
 
 impl RenderCache {
+    pub fn with_byte_budget(max_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            next_access_order: 0,
+            resident_bytes: 0,
+            max_bytes,
+        }
+    }
+
     fn next_access_order(&mut self) -> u64 {
         self.next_access_order = self.next_access_order.saturating_add(1);
         self.next_access_order
@@ -74,7 +93,23 @@ impl RenderCache {
         normalization_token: Option<String>,
         text_layer_transform: TextLayerTransform,
     ) {
+        if let Some(existing) = self.entries.remove(&request.cache_key) {
+            self.resident_bytes = self.resident_bytes.saturating_sub(existing.image_bytes.len());
+        }
+        if image_bytes.len() > self.max_bytes {
+            crate::debug::action(
+                "render-cache.admission-skipped",
+                json!({
+                    "byteLength": image_bytes.len(),
+                    "cacheKey": request.cache_key,
+                    "maxBytes": self.max_bytes,
+                    "reason": "entry-exceeds-budget",
+                }),
+            );
+            return;
+        }
         let access_order = self.next_access_order();
+        self.resident_bytes = self.resident_bytes.saturating_add(image_bytes.len());
 
         self.entries.insert(
             request.cache_key.clone(),
@@ -94,7 +129,7 @@ impl RenderCache {
             },
         );
 
-        while self.entries.len() > MAX_RENDER_CACHE_ENTRIES {
+        while self.resident_bytes > self.max_bytes {
             let oldest_key = self
                 .entries
                 .iter()
@@ -105,17 +140,49 @@ impl RenderCache {
                 break;
             };
 
-            self.entries.remove(&oldest_key);
+            if let Some(removed) = self.entries.remove(&oldest_key) {
+                self.resident_bytes = self.resident_bytes.saturating_sub(removed.image_bytes.len());
+                crate::debug::action(
+                    "render-cache.evicted",
+                    json!({
+                        "byteLength": removed.image_bytes.len(),
+                        "cacheKey": removed.cache_key,
+                        "maxBytes": self.max_bytes,
+                        "residentBytes": self.resident_bytes,
+                    }),
+                );
+            }
         }
+        crate::debug::action(
+            "render-cache.admitted",
+            json!({
+                "cacheKey": request.cache_key,
+                "entryCount": self.entries.len(),
+                "maxBytes": self.max_bytes,
+                "residentBytes": self.resident_bytes,
+            }),
+        );
     }
 
     pub fn remove_fingerprint(&mut self, fingerprint: &str) {
+        let removed_bytes = self
+            .entries
+            .values()
+            .filter(|entry| entry.fingerprint == fingerprint)
+            .map(|entry| entry.image_bytes.len())
+            .sum::<usize>();
         self.entries
             .retain(|_, entry| entry.fingerprint != fingerprint);
+        self.resident_bytes = self.resident_bytes.saturating_sub(removed_bytes);
     }
 
     #[cfg(test)]
     pub(crate) fn cache_keys(&self) -> Vec<String> {
         self.entries.keys().cloned().collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resident_bytes(&self) -> usize {
+        self.resident_bytes
     }
 }

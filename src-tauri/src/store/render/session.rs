@@ -11,7 +11,8 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         NativePoint, NativeQuad, NativeRect, NativeTextChar, NativeTextLine, NativeTextPagePayload,
-        PdfNavigationTarget, PdfOutlineItem, PdfOutlineSource,
+        EffectivePageGeometry, EffectivePageGeometrySource, PdfNavigationTarget, PdfOutlineItem,
+        PdfOutlineSource,
     },
     store::PageRenderRequest,
 };
@@ -44,6 +45,8 @@ pub struct NativeOutlineRequest {
     pub fingerprint: String,
     pub document_path: String,
 }
+
+pub type PageGeometryRequest = NativeOutlineRequest;
 
 #[derive(Clone)]
 pub struct RenderSessionRegistry {
@@ -139,6 +142,18 @@ impl RenderSessionRegistry {
             &request.document_id,
         )?;
         session.get_native_outline(&request.document_id)
+    }
+
+    pub fn get_page_geometries(
+        &self,
+        request: PageGeometryRequest,
+    ) -> AppResult<Vec<EffectivePageGeometry>> {
+        let session = self.session_for(
+            &request.fingerprint,
+            &request.document_path,
+            &request.document_id,
+        )?;
+        session.get_page_geometries(&request.document_id)
     }
 
     pub fn drop_fingerprint(&self, fingerprint: &str) {
@@ -286,6 +301,21 @@ impl PdfRenderSession {
             .map_err(AppError::Render)
     }
 
+    fn get_page_geometries(&self, document_id: &str) -> AppResult<Vec<EffectivePageGeometry>> {
+        let (reply_sender, reply_receiver) = mpsc::channel();
+        self.sender
+            .send(RenderSessionMessage::GetPageGeometries {
+                document_id: document_id.to_string(),
+                reply_sender,
+            })
+            .map_err(|_| AppError::Render("PDF render session is unavailable.".to_string()))?;
+
+        reply_receiver
+            .recv()
+            .map_err(|_| AppError::Render("PDF render session stopped.".to_string()))?
+            .map_err(AppError::Render)
+    }
+
     #[cfg(test)]
     fn stats(&self) -> Result<DisplayListSessionStats, String> {
         let (reply_sender, reply_receiver) = mpsc::channel();
@@ -319,6 +349,10 @@ enum RenderSessionMessage {
         document_id: String,
         reply_sender: mpsc::Sender<Result<Vec<PdfOutlineItem>, String>>,
     },
+    GetPageGeometries {
+        document_id: String,
+        reply_sender: mpsc::Sender<Result<Vec<EffectivePageGeometry>, String>>,
+    },
     #[cfg(test)]
     Stats {
         reply_sender: mpsc::Sender<DisplayListSessionStats>,
@@ -332,6 +366,7 @@ struct RenderSessionActor {
     document_error: Option<String>,
     cache: DisplayListCache,
     text_cache: NativeTextPageCache,
+    page_geometries: Option<Vec<EffectivePageGeometry>>,
 }
 
 impl RenderSessionActor {
@@ -343,6 +378,7 @@ impl RenderSessionActor {
             document_error: None,
             cache: DisplayListCache::new(display_list_byte_budget),
             text_cache: NativeTextPageCache::default(),
+            page_geometries: None,
         }
     }
 
@@ -377,6 +413,12 @@ impl RenderSessionActor {
                 } => {
                     let _ = reply_sender.send(self.load_native_outline(&document_id));
                 }
+                RenderSessionMessage::GetPageGeometries {
+                    document_id,
+                    reply_sender,
+                } => {
+                    let _ = reply_sender.send(self.load_page_geometries(&document_id));
+                }
                 #[cfg(test)]
                 RenderSessionMessage::Stats { reply_sender } => {
                     let _ = reply_sender.send(self.cache.stats());
@@ -409,6 +451,39 @@ impl RenderSessionActor {
         self.document
             .as_ref()
             .ok_or_else(|| "PDF render session has no document.".to_string())
+    }
+
+    fn load_page_geometries(
+        &mut self,
+        document_id: &str,
+    ) -> Result<Vec<EffectivePageGeometry>, String> {
+        if let Some(geometries) = self.page_geometries.as_ref() {
+            return Ok(geometries.clone());
+        }
+
+        let document = self.ensure_document(document_id)?;
+        let page_count = document
+            .page_count()
+            .map_err(|error| format!("Unable to inspect PDF pages: {error}"))?;
+        let mut geometries = Vec::with_capacity(page_count as usize);
+        for page_index in 0..page_count {
+            let page = document
+                .load_page(page_index)
+                .map_err(|error| format!("Unable to load page {}: {error}", page_index + 1))?;
+            let bounds = page
+                .bounds()
+                .map_err(|error| format!("Unable to measure page {}: {error}", page_index + 1))?;
+            geometries.push(EffectivePageGeometry {
+                page_number: page_index as u32 + 1,
+                base_width: bounds.width(),
+                base_height: bounds.height(),
+                rotation: 0,
+                normalization_token: None,
+                source: EffectivePageGeometrySource::Raw,
+            });
+        }
+        self.page_geometries = Some(geometries.clone());
+        Ok(geometries)
     }
 
     fn load_display_list(

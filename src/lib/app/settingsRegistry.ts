@@ -26,7 +26,7 @@ import {
 import { normalizeIgnoredSpellcheckWords } from "../spellcheck";
 
 export const APP_SETTINGS_STORAGE_KEY = "calm-reader.settings";
-export const APP_SETTINGS_VERSION = 14;
+export const APP_SETTINGS_VERSION = 15;
 const LEGACY_READER_PANE_SPLIT_RATIO = 0.46;
 
 export type ReaderPreferences = {
@@ -38,6 +38,7 @@ export type ReaderPreferences = {
 };
 
 export type AppSettingsSchema = {
+  automaticUpdates: boolean;
   readerPaneSplitRatio: number;
   readerPreferences: ReaderPreferences;
   activeThemeId: string;
@@ -625,6 +626,10 @@ function createUniqueThemeName(
 }
 
 export const appSettingsRegistry = {
+  automaticUpdates: {
+    defaultValue: true,
+    normalize: (value) => normalizeBoolean(value, true)
+  },
   readerPaneSplitRatio: {
     defaultValue: DEFAULT_READER_PANE_SPLIT_RATIO,
     normalize: normalizeReaderPaneSplitRatio
@@ -655,6 +660,7 @@ export const appSettingsRegistry = {
 
 export function createDefaultAppSettings(): AppSettingsSchema {
   return {
+    automaticUpdates: appSettingsRegistry.automaticUpdates.defaultValue,
     readerPaneSplitRatio: appSettingsRegistry.readerPaneSplitRatio.defaultValue,
     readerPreferences: appSettingsRegistry.readerPreferences.defaultValue,
     activeThemeId: appSettingsRegistry.activeThemeId.defaultValue,
@@ -675,6 +681,7 @@ export function normalizeAppSettings(candidate: unknown): AppSettingsSchema {
   const customThemes = appSettingsRegistry.customThemes.normalize(record.customThemes);
 
   return {
+    automaticUpdates: appSettingsRegistry.automaticUpdates.normalize(record.automaticUpdates),
     readerPaneSplitRatio: appSettingsRegistry.readerPaneSplitRatio.normalize(
       record.readerPaneSplitRatio
     ),
@@ -752,6 +759,9 @@ export function migrateAppSettingsPayload(candidate: unknown): AppSettingsPayloa
         break;
       case 13:
         version = 14;
+        break;
+      case 14:
+        version = 15;
         break;
       default:
         version = APP_SETTINGS_VERSION;

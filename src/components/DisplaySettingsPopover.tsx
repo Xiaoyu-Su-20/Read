@@ -17,6 +17,7 @@ import {
   type ThemeDefinition,
   type ThemeDraft
 } from "../lib/app/settingsRegistry";
+import type { UpdateState } from "../lib/app/AppUpdater";
 
 type DisplaySettingsSection = "general" | "themes";
 
@@ -24,6 +25,8 @@ type DisplaySettingsPopoverProps = {
   id: string;
   activeTheme: ThemeDefinition;
   activeThemeId: string;
+  automaticUpdates: boolean;
+  currentVersion: string;
   readerPreferences: ReaderPreferences;
   readerPreferenceStates?: Partial<
     Record<
@@ -42,6 +45,14 @@ type DisplaySettingsPopoverProps = {
   onSaveThemeDraft: (themeId: string, themeDraft: ThemeDraft) => void;
   onSelectTheme: (themeId: string) => void;
   onToggleReaderPreference: (key: keyof ReaderPreferences) => void;
+  onToggleAutomaticUpdates: () => void;
+  onCheckForUpdates: () => void;
+  onDownloadUpdate: () => void;
+  onRestartAndUpdate: () => void;
+  onDeferUpdate: () => void;
+  onRecoverUpdate: () => void;
+  updateState: UpdateState;
+  initialSection?: DisplaySettingsSection;
 };
 
 const sectionDefinitions: Array<{ key: DisplaySettingsSection; label: string }> = [
@@ -117,10 +128,45 @@ function ThemePresetCard({
   );
 }
 
+function UpdateStatus({ state, currentVersion }: { state: UpdateState; currentVersion: string }) {
+  let message = `Readr ${currentVersion} is up to date.`;
+  if (state.status === "disabled") {
+    message = state.reason === "development"
+      ? "Updates are unavailable in development builds."
+      : "Updates are unavailable in this build.";
+  } else if (state.status === "checking") {
+    message = "Checking for updates...";
+  } else if (state.status === "available") {
+    message = `Readr ${state.version} is available.`;
+  } else if (state.status === "downloading") {
+    message = state.progress === null
+      ? `Downloading Readr ${state.version}...`
+      : `Downloading Readr ${state.version}: ${Math.round(state.progress * 100)}%.`;
+  } else if (state.status === "ready") {
+    message = `Readr ${state.version} is ready to install.`;
+  } else if (state.status === "installing") {
+    message = `Installing Readr ${state.version}...`;
+  } else if (state.status === "error") {
+    message = state.message;
+  }
+
+  return (
+    <div className="display-settings-popover__update-status">
+      <span className={`display-settings-popover__update-dot display-settings-popover__update-dot--${state.status}`} aria-hidden="true" />
+      <span>
+        <strong>{message}</strong>
+        <small>Current version {currentVersion}</small>
+      </span>
+    </div>
+  );
+}
+
 export default function DisplaySettingsPopover({
   id,
   activeTheme,
   activeThemeId,
+  automaticUpdates,
+  currentVersion,
   readerPreferences,
   readerPreferenceStates,
   themeList,
@@ -130,10 +176,19 @@ export default function DisplaySettingsPopover({
   onPreviewTheme,
   onSaveThemeDraft,
   onSelectTheme,
-  onToggleReaderPreference
+  onToggleReaderPreference,
+  onToggleAutomaticUpdates,
+  onCheckForUpdates,
+  onDownloadUpdate,
+  onRestartAndUpdate,
+  onDeferUpdate,
+  onRecoverUpdate,
+  updateState,
+  initialSection = "general"
 }: DisplaySettingsPopoverProps) {
   const [selectedSection, setSelectedSection] =
-    useState<DisplaySettingsSection>("themes");
+    useState<DisplaySettingsSection>(initialSection);
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [themeDraft, setThemeDraft] = useState<ThemeDraft | null>(() =>
     activeTheme.kind === "custom" ? createThemeDraft(activeTheme) : null
   );
@@ -257,7 +312,7 @@ export default function DisplaySettingsPopover({
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [selectedSection, activeThemeId, themeDraft, readerPreferences, readerPreferenceStates, themeList]);
+  }, [selectedSection, activeThemeId, themeDraft, readerPreferences, readerPreferenceStates, themeList, updateState, releaseNotesOpen]);
 
   useEffect(() => {
     const panelElement = panelRef.current;
@@ -362,6 +417,85 @@ export default function DisplaySettingsPopover({
                   updatePanelScrollbar();
                 }}
               >
+                <div className="display-settings-popover__section">
+                  <p className="display-settings-popover__label">Updates</p>
+                  <div className="display-settings-popover__update-card display-settings-popover__update-card--toggle">
+                    <span>
+                      <strong>Automatic updates</strong>
+                      <small>Check for new versions automatically</small>
+                    </span>
+                    <button
+                      className={`display-settings-popover__switch${
+                        automaticUpdates ? " display-settings-popover__switch--checked" : ""
+                      }`}
+                      type="button"
+                      role="switch"
+                      aria-checked={automaticUpdates}
+                      aria-label="Automatic updates"
+                      onClick={onToggleAutomaticUpdates}
+                    >
+                      <span className="display-settings-popover__switch-handle" />
+                    </button>
+                  </div>
+
+                  <div className="display-settings-popover__update-card" aria-live="polite">
+                    <span className="display-settings-popover__update-card-title">Update status</span>
+                    <UpdateStatus state={updateState} currentVersion={currentVersion} />
+                    {("notes" in updateState && updateState.notes) ? (
+                      <>
+                        <button
+                          className="display-settings-popover__update-link"
+                          type="button"
+                          aria-expanded={releaseNotesOpen}
+                          onClick={() => setReleaseNotesOpen((open) => !open)}
+                        >
+                          {releaseNotesOpen ? "Hide changes" : "View changes"}
+                        </button>
+                        {releaseNotesOpen ? (
+                          <p className="display-settings-popover__release-notes">
+                            {updateState.notes}
+                          </p>
+                        ) : null}
+                      </>
+                    ) : null}
+                    {updateState.status === "downloading" ? (
+                      <progress
+                        className="display-settings-popover__update-progress"
+                        max={1}
+                        value={updateState.progress ?? undefined}
+                        aria-label="Update download progress"
+                      />
+                    ) : null}
+                  </div>
+
+                  <div className="display-settings-popover__actions-row display-settings-popover__actions-row--updates">
+                    {updateState.status === "available" ? (
+                      <button className="display-settings-popover__button display-settings-popover__button--primary" type="button" onClick={onDownloadUpdate}>
+                        Download update
+                      </button>
+                    ) : updateState.status === "ready" ? (
+                      <button className="display-settings-popover__button display-settings-popover__button--primary" type="button" onClick={onRestartAndUpdate}>
+                        Restart and update
+                      </button>
+                    ) : updateState.status === "error" ? (
+                      <button className="display-settings-popover__button display-settings-popover__button--primary" type="button" onClick={onRecoverUpdate}>
+                        {updateState.phase === "check" || updateState.phase === "download"
+                          ? "Try again"
+                          : "Return to update"}
+                      </button>
+                    ) : null}
+                    <button
+                      className="display-settings-popover__button"
+                      type="button"
+                      disabled={updateState.status === "checking" || updateState.status === "downloading" || updateState.status === "installing" || updateState.status === "disabled"}
+                      onClick={updateState.status === "ready" ? onDeferUpdate : onCheckForUpdates}
+                    >
+                      {updateState.status === "ready" ? "Later" : "Check for updates"}
+                    </button>
+                  </div>
+                  <p className="display-settings-popover__scope-note">Updates are installed after restart.</p>
+                </div>
+
                 <div className="display-settings-popover__section">
                   <p className="display-settings-popover__label">Reader Preferences</p>
                   <div className="display-settings-popover__toggles">

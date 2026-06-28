@@ -494,7 +494,7 @@ const PdfViewer = memo(function PdfViewer({
             buildOpenSessionFields({
               currentGeneration: navigationGeneration,
               currentTargetPage: targetPage,
-              imageByteLength: displayedPage.imageBytes.length,
+              imageByteLength: displayedPage.encodedByteSize,
               pageNumber: displayedPage.pageNumber,
               phase: "assign",
               requestKey: displayedPage.requestKey,
@@ -534,7 +534,7 @@ const PdfViewer = memo(function PdfViewer({
             buildOpenSessionFields({
               currentGeneration: navigationGeneration,
               currentTargetPage: targetPage,
-              imageByteLength: incomingPage.imageBytes.length,
+              imageByteLength: incomingPage.encodedByteSize,
               pageNumber: incomingPage.pageNumber,
               phase: "assign",
               requestKey: incomingPage.requestKey,

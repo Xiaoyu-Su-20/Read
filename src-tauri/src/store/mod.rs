@@ -25,8 +25,6 @@ pub(crate) mod paths;
 mod render;
 mod state;
 
-#[cfg(test)]
-pub use render::MAX_RENDER_CACHE_ENTRIES;
 pub use render::{
     DisplayListWarmupRequest, NativeOutlineRequest, NativeTextPageRequest, PageRenderRequest,
     RenderCache, RenderSessionRegistry,

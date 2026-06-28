@@ -6,6 +6,7 @@ import {
   computeContinuousTotalHeight,
   computeContinuousVirtualRange,
   createEstimatedPageMetrics,
+  mergeContinuousVirtualRanges,
   resolveContinuousActivePage,
   restoreScrollTopForContinuousSemanticAnchor,
   restoreScrollTopForContinuousAnchor,
@@ -104,5 +105,21 @@ describe("continuousPageMetrics", () => {
       normalizedOffset: 0.5
     });
     expect(restoreScrollTopForContinuousSemanticAnchor(afterZoom, anchor, 20, 30)).toBe(235);
+  });
+
+  it("keeps a pinned mounted range while expanding to include the restored viewport", () => {
+    const metrics = createEstimatedPageMetrics(10, () => 100);
+    const merged = mergeContinuousVirtualRanges(metrics, 20, [
+      { startPage: 2, endPage: 4 },
+      { startPage: 6, endPage: 8 }
+    ]);
+
+    expect(merged).toEqual({
+      startPage: 2,
+      endPage: 8,
+      topSpacerHeight: 120,
+      bottomSpacerHeight: 240,
+      totalHeight: 1180
+    });
   });
 });

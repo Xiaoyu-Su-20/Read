@@ -155,11 +155,9 @@ type CompositionSession = {
 };
 
 const NoteBlockView = memo(function NoteBlockView({
-  block,
-  editable
+  block
 }: {
   block: NoteBlock;
-  editable: boolean;
 }) {
   const html = useMemo(
     () => renderNoteInlineNodesHtml(block.children) || "<br>",
@@ -174,8 +172,6 @@ const NoteBlockView = memo(function NoteBlockView({
     >
       <div
         className="note-editor__block-content"
-        contentEditable={editable}
-        suppressContentEditableWarning
         spellCheck={false}
         dangerouslySetInnerHTML={{
           __html: html
@@ -224,6 +220,16 @@ function clipboardBlocksFromText(text: string) {
 
 function sanitizeClipboardText(text: string) {
   return text.replace(/\u200b/g, "");
+}
+
+function noteBlocksContentEqual(left: NoteBlock[], right: NoteBlock[]) {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function atomicBoundaryAtPoint(
@@ -443,8 +449,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     }
 
     function serializeSelectionFragmentPayload(
-      fragment: DocumentFragment,
-      text: string
+      fragment: DocumentFragment
     ): ClipboardPayload {
       const wrapper = document.createElement("div");
       wrapper.appendChild(fragment.cloneNode(true));
@@ -465,15 +470,52 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       return {
         internalHtml: wrapper.innerHTML,
         html: wrapper.innerHTML,
-        text: sanitizeClipboardText(text)
+        text: plainTextFromClipboardNode(wrapper)
       };
+    }
+
+    function atomicClipboardText(element: Element) {
+      if (element.matches("[data-inline-type='page-link']")) {
+        const label = element.querySelector(".page-link__label")?.textContent?.trim() ?? "";
+        return label ? `(${label})` : "";
+      }
+      if (element.matches("[data-inline-type='topic-card']")) {
+        const label =
+          element.getAttribute("data-topic-text") ??
+          element.querySelector(".paragraph-topic__label")?.textContent?.trim() ??
+          "";
+        return label ? `[${label}] ` : "";
+      }
+      return null;
+    }
+
+    function plainTextFromClipboardNode(root: Node) {
+      function visit(node: Node): string {
+        if (node.nodeType === Node.TEXT_NODE) {
+          return sanitizeClipboardText(node.textContent ?? "");
+        }
+        if (!(node instanceof Element)) {
+          return Array.from(node.childNodes).map(visit).join("");
+        }
+        const atomicText = atomicClipboardText(node);
+        if (atomicText !== null) {
+          return atomicText;
+        }
+        if (node.tagName === "BR") {
+          return "\n";
+        }
+        const text = Array.from(node.childNodes).map(visit).join("");
+        return node.hasAttribute("data-block-id") ? `${text}\n` : text;
+      }
+
+      return visit(root).replace(/\n+$/, "");
     }
 
     function serializeElementPayload(element: HTMLElement): ClipboardPayload {
       return {
         internalHtml: element.outerHTML,
         html: element.outerHTML,
-        text: sanitizeClipboardText(element.textContent ?? "")
+        text: plainTextFromClipboardNode(element)
       };
     }
 
@@ -491,7 +533,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       if (range.collapsed) {
         return null;
       }
-      return serializeSelectionFragmentPayload(range.cloneContents(), selection.toString());
+      return serializeSelectionFragmentPayload(range.cloneContents());
     }
 
     function currentClipboardPayload() {
@@ -820,16 +862,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       if (!root) {
         return;
       }
-      const selection = currentSelection();
-      const targetBlock =
-        (selection
-          ? findBlockElement(root, selection.focus.blockId)
-          : findBlockElement(root, blocksRef.current[0]?.id ?? "")) ?? null;
-      const target =
-        targetBlock?.querySelector<HTMLElement>(".note-editor__block-content") ??
-        root.querySelector<HTMLElement>(".note-editor__block-content") ??
-        root;
-      target.focus({ preventScroll: true });
+      root.focus({ preventScroll: true });
     }
 
     function moveSelectionTo(point: NoteModelPoint, extend = false) {
@@ -1177,8 +1210,11 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       const isLocalEcho =
         sameNote &&
         (note.blocks === blocksRef.current ||
-          note.blocks === lastDispatchedBlocksRef.current);
+          note.blocks === lastDispatchedBlocksRef.current ||
+          (lastDispatchedBlocksRef.current !== null &&
+            noteBlocksContentEqual(note.blocks, lastDispatchedBlocksRef.current)));
       if (isLocalEcho) {
+        lastDispatchedBlocksRef.current = note.blocks;
         return;
       }
       const runtime = createNoteEditorRuntimeState(note.blocks, note.bookId, null);
@@ -1527,6 +1563,9 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         <div
           ref={bodyRef}
           className="note-editor__body note-editor__body--model"
+          contentEditable={!loading}
+          suppressContentEditableWarning
+          data-note-editor-root="true"
           role="textbox"
           aria-label="Note body"
           aria-multiline="true"
@@ -1556,6 +1595,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
               );
               if (payload && event.nativeEvent.clipboardData) {
                 event.preventDefault();
+                event.stopPropagation();
                 event.nativeEvent.clipboardData.setData("text/plain", payload.text);
                 event.nativeEvent.clipboardData.setData("text/html", payload.html);
                 event.nativeEvent.clipboardData.setData(
@@ -1568,6 +1608,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             const payload = currentClipboardPayload();
             if (payload && event.nativeEvent.clipboardData) {
               event.preventDefault();
+              event.stopPropagation();
               writeClipboardDataTransfer(event.nativeEvent.clipboardData, payload);
             }
           }}
@@ -1792,6 +1833,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
                 (after ? 1 : 0);
               clearTokenSelection();
               moveSelectionTo(blockOffsetToPoint(found.block, offset));
+              return;
             }
           }}
           onMouseDown={(event) => {
@@ -1892,7 +1934,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           }}
         >
           {renderedBlocks.map((block) => (
-            <NoteBlockView key={block.id} block={block} editable={!loading} />
+            <NoteBlockView key={block.id} block={block} />
           ))}
         </div>
       </div>

@@ -14,6 +14,10 @@ import {
   type DocumentMenuView
 } from "../lib/collectionDocumentMenu";
 import { debugAction, debugLocalAction } from "../lib/debugLog";
+import {
+  sortCollectionDocumentsByRecent,
+  type CollectionDocumentSortMode
+} from "../lib/collectionSorting";
 import type {
   DocumentDeleteState,
   DocumentRecord,
@@ -268,6 +272,9 @@ export default function CollectionViewRefresh({
   const [editingDocumentValue, setEditingDocumentValue] = useState("");
   const [editingStandaloneNoteId, setEditingStandaloneNoteId] = useState<string | null>(null);
   const [editingStandaloneNoteValue, setEditingStandaloneNoteValue] = useState("");
+  const [documentSortMode, setDocumentSortMode] =
+    useState<CollectionDocumentSortMode>("recent");
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [openCollectionMenu, setOpenCollectionMenu] = useState<CollectionMenuAnchor>(null);
   const [openDocumentMenu, setOpenDocumentMenu] = useState<OpenDocumentMenuState>(null);
   const [openNotesSectionMenu, setOpenNotesSectionMenu] = useState(false);
@@ -371,11 +378,15 @@ export default function CollectionViewRefresh({
     optimisticBookOrder.collectionId === selectedCollection?.folder.id
       ? optimisticBookOrder.ids
       : null;
-  const books = applyOrder(
+  const manuallyOrderedBooks = applyOrder(
     selectedCollection?.documents ?? [],
     optimisticSelectedBookOrderIds,
     (document) => document.id
   );
+  const books =
+    documentSortMode === "recent"
+      ? sortCollectionDocumentsByRecent(manuallyOrderedBooks)
+      : manuallyOrderedBooks;
   const openMenuDocument =
     openDocumentMenu ? books.find((document) => document.id === openDocumentMenu.documentId) ?? null : null;
   const openMenuStandaloneNote =
@@ -1327,6 +1338,9 @@ export default function CollectionViewRefresh({
   useEffect(() => {
     function handleWindowPointerDown(event: PointerEvent) {
       const target = event.target as HTMLElement | null;
+      if (!target?.closest(".collection-header__sort-control-wrap")) {
+        setSortMenuOpen(false);
+      }
       if (
         target?.closest(
           ".collection-row__actions, .collection-row__menu, .collection-header__actions, .book-row__actions, .book-row__menu, .notes-row__actions, .notes-row__menu, .collection-sidebar__section-header"
@@ -1339,6 +1353,7 @@ export default function CollectionViewRefresh({
       closeDocumentMenu();
       closeNotesSectionMenu();
       closeStandaloneNoteMenu();
+      setSortMenuOpen(false);
     }
 
     function handleWindowKeyDown(event: KeyboardEvent) {
@@ -1347,6 +1362,7 @@ export default function CollectionViewRefresh({
         closeDocumentMenu();
         closeNotesSectionMenu();
         closeStandaloneNoteMenu();
+        setSortMenuOpen(false);
       }
     }
 
@@ -2485,8 +2501,66 @@ export default function CollectionViewRefresh({
                 <h1>{selectedCollection.folder.name}</h1>
               </div>
               <div className="collection-header__actions">
+                <div className="collection-header__sort-control-wrap">
+                  <button
+                    className="collection-header__sort-control"
+                    type="button"
+                    aria-haspopup="menu"
+                    aria-expanded={sortMenuOpen}
+                    onClick={() => {
+                      closeCollectionMenu();
+                      closeDocumentMenu();
+                      closeNotesSectionMenu();
+                      closeStandaloneNoteMenu();
+                      setSortMenuOpen((open) => !open);
+                    }}
+                  >
+                    <span className="collection-header__sort-label">Sort:</span>
+                    <span className="collection-header__sort-value">
+                      {documentSortMode === "recent" ? "Recent" : "Manual"}
+                    </span>
+                    <svg
+                      className={sortMenuOpen ? "collection-header__sort-chevron--open" : ""}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      aria-hidden="true"
+                    >
+                      <path d="m8 10 4 4 4-4" />
+                    </svg>
+                  </button>
+                  {sortMenuOpen ? (
+                    <div className="collection-header__sort-menu" role="menu" aria-label="Sort collection documents">
+                      {(["manual", "recent"] as const).map((mode) => {
+                        const selected = documentSortMode === mode;
+                        return (
+                          <button
+                            key={mode}
+                            className={`collection-header__sort-option${selected ? " collection-header__sort-option--selected" : ""}`}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={selected}
+                            onClick={() => {
+                              cancelDrag();
+                              setDocumentSortMode(mode);
+                              setSortMenuOpen(false);
+                            }}
+                          >
+                            <span>{mode === "recent" ? "Recent" : "Manual"}</span>
+                            {selected ? (
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                                <path d="m5 12 4 4L19 6" />
+                              </svg>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
                 <button
-                  className="collection-header__import-button"
+                  className="collection-header__import-button collection-header__import-button--book"
                   type="button"
                   onClick={() => {
                     void onPromptImportCollection(selectedCollection.folder.id);
@@ -2672,16 +2746,27 @@ export default function CollectionViewRefresh({
                     ) : (
                       <>
                         <span
-                          className="book-row__drag-handle"
+                          className={`book-row__drag-handle${
+                            documentSortMode === "manual"
+                              ? ""
+                              : " book-row__drag-handle--disabled"
+                          }`}
                           role="button"
                           tabIndex={-1}
-                          aria-label={`Reorder ${document.title}`}
-                          {...createHandleProps({
-                            kind: "book",
-                            collectionId: selectedCollection.folder.id,
-                            documentId: document.id,
-                            label: document.title
-                          })}
+                          aria-label={
+                            documentSortMode === "manual"
+                              ? `Reorder ${document.title}`
+                              : `Reordering ${document.title} is available in Manual sort`
+                          }
+                          aria-disabled={documentSortMode !== "manual"}
+                          {...(documentSortMode === "manual"
+                            ? createHandleProps({
+                                kind: "book",
+                                collectionId: selectedCollection.folder.id,
+                                documentId: document.id,
+                                label: document.title
+                              })
+                            : {})}
                         >
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
                             <path d="M7 4.75h6l4.25 4.5V19A1.25 1.25 0 0 1 16 20.25H7A1.25 1.25 0 0 1 5.75 19V6A1.25 1.25 0 0 1 7 4.75Z" />

@@ -5,6 +5,58 @@ import { describe, expect, it, vi } from "vitest";
 import DisplaySettingsPopover from "./DisplaySettingsPopover";
 
 describe("DisplaySettingsPopover", () => {
+  it("renders updater controls in General settings", () => {
+    const theme = {
+      id: "builtin-midnight",
+      name: "Night",
+      kind: "builtin" as const,
+      source: {
+        chrome: "#13191e",
+        uiText: "#d8d8d8",
+        documentPaper: "#20242a",
+        documentInk: "#d8d8d8",
+        accent: "#d4aa63",
+        interactive: "#7682da",
+        danger: "#b34444"
+      },
+      document: { surfaceTone: "dark" as const }
+    };
+    const markup = renderToStaticMarkup(createElement(DisplaySettingsPopover, {
+      id: "display-settings-popover",
+      activeTheme: theme,
+      activeThemeId: theme.id,
+      automaticUpdates: true,
+      currentVersion: "0.9.0",
+      readerPreferences: {
+        fullscreenMode: false,
+        showPageNumbers: true,
+        twoPageView: false,
+        verticalScrolling: true,
+        autoHidePageResizer: true
+      },
+      themeList: [theme],
+      onCreateTheme: vi.fn(),
+      onDeleteTheme: vi.fn(),
+      onDuplicateTheme: vi.fn(),
+      onPreviewTheme: vi.fn(),
+      onSaveThemeDraft: vi.fn(),
+      onSelectTheme: vi.fn(),
+      onToggleReaderPreference: vi.fn(),
+      onToggleAutomaticUpdates: vi.fn(),
+      onCheckForUpdates: vi.fn(),
+      onDownloadUpdate: vi.fn(),
+      onRestartAndUpdate: vi.fn(),
+      onDeferUpdate: vi.fn(),
+      onRecoverUpdate: vi.fn(),
+      updateState: { status: "available", version: "1.0.0", notes: "Changes" }
+    }));
+
+    expect(markup).toContain("Automatic updates");
+    expect(markup).toContain("Readr 1.0.0 is available.");
+    expect(markup).toContain("Download update");
+    expect(markup).toContain("View changes");
+  });
+
   it("renders grouped source sections and derived preview samples", () => {
     const customTheme = {
       id: "custom-1",
@@ -29,6 +81,9 @@ describe("DisplaySettingsPopover", () => {
         id: "display-settings-popover",
         activeTheme: customTheme,
         activeThemeId: "custom-1",
+        automaticUpdates: true,
+        currentVersion: "0.1.0",
+        initialSection: "themes",
         readerPreferences: {
           fullscreenMode: false,
           showPageNumbers: true,
@@ -51,7 +106,14 @@ describe("DisplaySettingsPopover", () => {
         onPreviewTheme: vi.fn(),
         onSaveThemeDraft: vi.fn(),
         onSelectTheme: vi.fn(),
-        onToggleReaderPreference: vi.fn()
+        onToggleReaderPreference: vi.fn(),
+        onToggleAutomaticUpdates: vi.fn(),
+        onCheckForUpdates: vi.fn(),
+        onDownloadUpdate: vi.fn(),
+        onRestartAndUpdate: vi.fn(),
+        onDeferUpdate: vi.fn(),
+        onRecoverUpdate: vi.fn(),
+        updateState: { status: "idle" as const }
       })
     );
 
@@ -107,6 +169,9 @@ describe("DisplaySettingsPopover", () => {
         id: "display-settings-popover",
         activeTheme: builtinTheme,
         activeThemeId: builtinTheme.id,
+        automaticUpdates: true,
+        currentVersion: "0.1.0",
+        initialSection: "themes",
         readerPreferences: {
           fullscreenMode: false,
           showPageNumbers: true,
@@ -121,7 +186,14 @@ describe("DisplaySettingsPopover", () => {
         onPreviewTheme: vi.fn(),
         onSaveThemeDraft: vi.fn(),
         onSelectTheme: vi.fn(),
-        onToggleReaderPreference: vi.fn()
+        onToggleReaderPreference: vi.fn(),
+        onToggleAutomaticUpdates: vi.fn(),
+        onCheckForUpdates: vi.fn(),
+        onDownloadUpdate: vi.fn(),
+        onRestartAndUpdate: vi.fn(),
+        onDeferUpdate: vi.fn(),
+        onRecoverUpdate: vi.fn(),
+        updateState: { status: "idle" as const }
       })
     );
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { loadAppSettings, saveAppSettings } from "../api";
 import type { AppSettingKey, AppSettingsPayload, AppSettingsSchema } from "./settingsRegistry";
@@ -22,6 +22,10 @@ function loadInitialSettingsPayload(): AppSettingsPayload {
 export function useAppSettings() {
   const [payload, setPayload] = useState<AppSettingsPayload>(() => loadInitialSettingsPayload());
   const [hydrated, setHydrated] = useState(false);
+  const latestPayloadRef = useRef(payload);
+  const savePromiseRef = useRef<Promise<void>>(Promise.resolve());
+
+  latestPayloadRef.current = payload;
 
   useEffect(() => {
     let cancelled = false;
@@ -66,8 +70,16 @@ export function useAppSettings() {
       return;
     }
 
-    void saveAppSettings(serializeAppSettingsPayload(payload));
+    savePromiseRef.current = saveAppSettings(serializeAppSettingsPayload(payload));
   }, [hydrated, payload]);
+
+  const flushSettings = useCallback(async () => {
+    if (!hydrated) {
+      throw new Error("Settings are not ready to save yet.");
+    }
+    await savePromiseRef.current;
+    await saveAppSettings(serializeAppSettingsPayload(latestPayloadRef.current));
+  }, [hydrated]);
 
   useEffect(() => {
     if (typeof document === "undefined") {
@@ -124,6 +136,8 @@ export function useAppSettings() {
   }
 
   return {
+    flushSettings,
+    hydrated,
     settings: payload.settings,
     selectors: appSettingsSelectors,
     setSetting,

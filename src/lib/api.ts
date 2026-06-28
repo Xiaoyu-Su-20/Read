@@ -13,6 +13,7 @@ import type {
   FolderRecord,
   FolderTreeNode,
   NativeTextPagePayload,
+  EffectivePageGeometry,
   PdfOutlineItem,
   StandaloneNoteSearchHit
 } from "./types";
@@ -164,15 +165,32 @@ export function renderPdfPage(
   documentId: string,
   pageNumber: number,
   zoom: number,
-  options?: { openSessionId?: string; requestSequence?: number }
+  options?: {
+    openSessionId?: string;
+    requestId?: string;
+    requestSequence?: number;
+    expectedNormalizationToken?: string | null;
+    expectedRenderVariant?: RenderedPagePayload["renderVariant"];
+    rotation?: number;
+    bypassInFlightJoin?: boolean;
+  }
 ) {
   return invokeLogged<RenderedPagePayload>("render_pdf_page", {
     documentId,
     pageNumber,
     zoom,
     openSessionId: options?.openSessionId ?? null,
-    requestSequence: options?.requestSequence ?? null
+    requestId: options?.requestId ?? null,
+    requestSequence: options?.requestSequence ?? null,
+    expectedNormalizationToken: options?.expectedNormalizationToken ?? null,
+    expectedRenderVariant: options?.expectedRenderVariant ?? null,
+    rotation: options?.rotation ?? null,
+    bypassInFlightJoin: options?.bypassInFlightJoin ?? false
   });
+}
+
+export function cancelPdfPageRender(requestId: string) {
+  return invokeLogged<void>("cancel_pdf_page_render", { requestId });
 }
 
 export function warmPdfDisplayLists(
@@ -195,6 +213,13 @@ export function getPdfNativeTextPage(
   return invokeLogged<NativeTextPagePayload>("get_pdf_native_text_page", {
     documentId,
     pageNumber,
+    openSessionId: options?.openSessionId ?? null
+  });
+}
+
+export function getPdfPageGeometries(documentId: string, options?: { openSessionId?: string }) {
+  return invokeLogged<EffectivePageGeometry[]>("get_pdf_page_geometries", {
+    documentId,
     openSessionId: options?.openSessionId ?? null
   });
 }

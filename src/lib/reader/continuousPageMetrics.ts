@@ -240,3 +240,43 @@ export function computeContinuousVirtualRange(args: {
     totalHeight
   };
 }
+
+export function mergeContinuousVirtualRanges(
+  metrics: ContinuousPageMetric[],
+  pageGapPx: number,
+  ranges: Array<Pick<ContinuousVirtualRange, "startPage" | "endPage"> | null>
+): ContinuousVirtualRange {
+  const placements = computeContinuousPagePlacements(metrics, pageGapPx);
+  const totalHeight = placements[placements.length - 1]?.bottom ?? 0;
+  const validRanges = ranges.filter(
+    (range): range is Pick<ContinuousVirtualRange, "startPage" | "endPage"> =>
+      range !== null && range.startPage > 0 && range.endPage >= range.startPage
+  );
+  if (placements.length === 0 || validRanges.length === 0) {
+    return {
+      startPage: 0,
+      endPage: 0,
+      topSpacerHeight: 0,
+      bottomSpacerHeight: 0,
+      totalHeight
+    };
+  }
+
+  const startPage = Math.max(
+    Math.min(...validRanges.map((range) => range.startPage)),
+    1
+  );
+  const endPage = Math.min(
+    Math.max(...validRanges.map((range) => range.endPage)),
+    placements.length
+  );
+  const first = placements[startPage - 1];
+  const last = placements[endPage - 1];
+  return {
+    startPage,
+    endPage,
+    topSpacerHeight: first.top,
+    bottomSpacerHeight: Math.max(totalHeight - last.bottom, 0),
+    totalHeight
+  };
+}

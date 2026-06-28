@@ -7,6 +7,25 @@ const inFlightPageRenders = new Map<string, Promise<CachedRenderedPage>>();
 const completedPageRenders = new Map<string, { documentId: string; payload: RenderedPagePayload; zoom: number }>();
 const MAX_COMPLETED_PAGE_RENDERS = 40;
 
+type RasterIdentity = {
+  normalizationToken?: string | null;
+  renderVariant?: RenderedPagePayload["renderVariant"];
+  rotation?: number;
+};
+
+function makeRasterRequestKey(
+  documentId: string,
+  pageNumber: number,
+  zoom: number,
+  identity?: RasterIdentity
+) {
+  const baseKey = makePageCacheKey(documentId, pageNumber, zoom);
+  if (!identity) {
+    return baseKey;
+  }
+  return `${baseKey}:r${identity.rotation ?? 0}:n${identity.normalizationToken ?? "raw"}:v${identity.renderVariant ?? "raw"}`;
+}
+
 export type RenderRequestCaller = "foreground" | "preload";
 export type RendererAcquisitionSource = "completed-registry" | "inflight-join" | "fresh-render";
 
@@ -28,9 +47,10 @@ export function getCompletedRenderedPage(
   documentId: string,
   pageNumber: number,
   zoom: number,
-  caller: RenderRequestCaller
+  caller: RenderRequestCaller,
+  identity?: RasterIdentity
 ) {
-  const requestKey = makePageCacheKey(documentId, pageNumber, zoom);
+  const requestKey = makeRasterRequestKey(documentId, pageNumber, zoom, identity);
   const cached = completedPageRenders.get(requestKey);
   if (!cached) {
     return null;
@@ -52,9 +72,10 @@ export function getInFlightRenderedPage(
   documentId: string,
   pageNumber: number,
   zoom: number,
-  caller: RenderRequestCaller
+  caller: RenderRequestCaller,
+  identity?: RasterIdentity
 ) {
-  const requestKey = makePageCacheKey(documentId, pageNumber, zoom);
+  const requestKey = makeRasterRequestKey(documentId, pageNumber, zoom, identity);
   const existing = inFlightPageRenders.get(requestKey);
   if (!existing) {
     return null;
@@ -71,11 +92,11 @@ export function getInFlightRenderedPage(
 }
 
 function rememberCompletedRenderedPage(
+  requestKey: string,
   documentId: string,
   zoom: number,
   payload: RenderedPagePayload
 ) {
-  const requestKey = makePageCacheKey(documentId, payload.pageNumber, zoom);
   if (completedPageRenders.has(requestKey)) {
     completedPageRenders.delete(requestKey);
   }
@@ -106,15 +127,31 @@ export async function renderVisiblePdfPage(
     caller?: RenderRequestCaller;
     openSessionId?: string | null;
     requestSequence?: number;
+    expectedNormalizationToken?: string | null;
+    expectedRenderVariant?: RenderedPagePayload["renderVariant"];
+    rotation?: number;
+    bypassRegistry?: boolean;
   }
 ): Promise<CachedRenderedPage> {
   const caller = options?.caller ?? "foreground";
-  const completed = getCompletedRenderedPage(documentId, pageNumber, zoom, caller);
+  const identity =
+    options?.expectedNormalizationToken === undefined
+      ? undefined
+      : {
+          normalizationToken: options.expectedNormalizationToken,
+          renderVariant: options.expectedRenderVariant,
+          rotation: options.rotation
+        };
+  const completed = options?.bypassRegistry
+    ? null
+    : getCompletedRenderedPage(documentId, pageNumber, zoom, caller, identity);
   if (completed) {
     return completed;
   }
 
-  const existing = getInFlightRenderedPage(documentId, pageNumber, zoom, caller);
+  const existing = options?.bypassRegistry
+    ? null
+    : getInFlightRenderedPage(documentId, pageNumber, zoom, caller, identity);
   if (existing) {
     return existing;
   }
@@ -130,10 +167,21 @@ export function startFreshPdfPageRender(
     caller?: RenderRequestCaller;
     openSessionId?: string | null;
     requestSequence?: number;
+    expectedNormalizationToken?: string | null;
+    expectedRenderVariant?: RenderedPagePayload["renderVariant"];
+    rotation?: number;
   }
 ) {
   const caller = options?.caller ?? "foreground";
-  const requestKey = makePageCacheKey(documentId, pageNumber, zoom);
+  const identity =
+    options?.expectedNormalizationToken === undefined
+      ? undefined
+      : {
+          normalizationToken: options.expectedNormalizationToken,
+          renderVariant: options.expectedRenderVariant,
+          rotation: options.rotation
+        };
+  const requestKey = makeRasterRequestKey(documentId, pageNumber, zoom, identity);
   debugAction("renderer.tauri-invoked", {
     caller,
     documentId,
@@ -144,10 +192,13 @@ export function startFreshPdfPageRender(
   });
   const nextRender = renderPdfPage(documentId, pageNumber, zoom, {
     openSessionId: options?.openSessionId ?? undefined,
-    requestSequence: options?.requestSequence
+    requestSequence: options?.requestSequence,
+    expectedNormalizationToken: options?.expectedNormalizationToken,
+    expectedRenderVariant: options?.expectedRenderVariant,
+    rotation: options?.rotation
   })
     .then((payload) => {
-      rememberCompletedRenderedPage(documentId, zoom, payload);
+      rememberCompletedRenderedPage(requestKey, documentId, zoom, payload);
       return toCachedRenderedPage(documentId, zoom, payload);
     })
     .finally(() => {
@@ -163,8 +214,14 @@ export function startFreshPdfPageRender(
 export function toCachedRenderedPage(
   documentId: string,
   zoom: number,
-  payload: RenderedPagePayload
+  payload: RenderedPagePayload,
+  options?: {
+    documentGenerationId?: string | null;
+    logicalKey?: string;
+    rotation?: number;
+  }
 ): CachedRenderedPage {
+  const encodedByteSize = payload.imageBytes.length;
   const imageBlob = new Blob([Uint8Array.from(payload.imageBytes)], {
     type: "image/jpeg"
   });
@@ -179,11 +236,23 @@ export function toCachedRenderedPage(
   });
 
   return {
-    ...payload,
+    pageNumber: payload.pageNumber,
+    width: payload.width,
+    height: payload.height,
+    pageBaseWidth: payload.pageBaseWidth,
+    pageBaseHeight: payload.pageBaseHeight,
+    cacheKey: payload.cacheKey,
+    renderVariant: payload.renderVariant,
+    normalizationToken: payload.normalizationToken,
+    textLayerTransform: payload.textLayerTransform,
     documentId,
+    documentGenerationId: options?.documentGenerationId ?? null,
     imageUrl,
     requestKey: payload.cacheKey,
-    logicalKey: makePageCacheKey(documentId, payload.pageNumber, zoom),
-    renderZoom: zoom
+    logicalKey: options?.logicalKey ?? makePageCacheKey(documentId, payload.pageNumber, zoom),
+    renderZoom: zoom,
+    rotation: options?.rotation ?? 0,
+    encodedByteSize,
+    estimatedResidentBytes: payload.width * payload.height * 4 + encodedByteSize
   };
 }

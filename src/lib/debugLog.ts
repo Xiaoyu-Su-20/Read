@@ -102,6 +102,10 @@ function eventLevel(event: string, explicitLevel: "info" | "error"): LogLevel {
     return "warn";
   }
 
+  if (event.startsWith("scroll-render.") || event.startsWith("continuous-reader.geometry-")) {
+    return "info";
+  }
+
   if (
     event === "reader.open:click" ||
     event === "reader.open:document-ready" ||

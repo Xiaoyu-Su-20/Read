@@ -52,8 +52,8 @@ describe("ModelNoteEditor", () => {
 
     expect(markup).toContain('data-block-type="heading1"');
     expect(markup).toContain('class="note-editor__block-content"');
-    expect(markup).not.toMatch(/note-editor__body[^>]*contenteditable/);
-    expect(markup.match(/contenteditable="true"/g)).toHaveLength(2);
+    expect(markup).toMatch(/note-editor__body[^>]*contenteditable="true"/);
+    expect(markup.match(/contenteditable="true"/g)).toHaveLength(1);
     expect(markup).not.toContain("<h1");
     expect(markup).not.toContain("font-size:");
     expect(markup).toContain('data-inline-type="page-link"');

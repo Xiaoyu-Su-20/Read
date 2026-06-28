@@ -7,6 +7,22 @@ const KEYBOARD_ZOOM_FACTOR = 1.03;
 const AUTO_MAXIMIZE_VERTICAL_MARGIN_PX = 0;
 export const AUTO_MAXIMIZE_HORIZONTAL_MARGIN_PX = 12;
 const AUTO_MAXIMIZE_ZOOM_EPSILON = 0.01;
+const SCROLL_RASTER_SCALE_STEP = 0.05;
+const MAX_SCROLL_RASTER_SCALE = 5;
+export const SCROLL_ZOOM_LEVELS = [
+  0.7,
+  0.75,
+  0.8,
+  0.9,
+  1,
+  1.1,
+  1.25,
+  1.5,
+  1.75,
+  2,
+  2.25,
+  2.5
+] as const;
 
 export type ResolvedReaderFitMode = Exclude<ReaderFitMode, "width">;
 
@@ -30,6 +46,26 @@ export function scaleZoomByWheelDelta(currentZoom: number, delta: number) {
 export function scaleZoomByKeyboardDirection(currentZoom: number, direction: "in" | "out") {
   const directionFactor = direction === "in" ? KEYBOARD_ZOOM_FACTOR : 1 / KEYBOARD_ZOOM_FACTOR;
   return normalizeZoom(currentZoom * directionFactor);
+}
+
+export function snapScrollZoom(zoom: number) {
+  return Number((Math.round(clampZoom(zoom) / 0.05) * 0.05).toFixed(2));
+}
+
+export function stepScrollZoom(currentZoom: number, direction: "in" | "out") {
+  const normalized = snapScrollZoom(currentZoom);
+  if (direction === "in") {
+    return SCROLL_ZOOM_LEVELS.find((level) => level > normalized) ?? SCROLL_ZOOM_LEVELS[SCROLL_ZOOM_LEVELS.length - 1];
+  }
+  return [...SCROLL_ZOOM_LEVELS].reverse().find((level) => level < normalized) ?? SCROLL_ZOOM_LEVELS[0];
+}
+
+export function resolveScrollRasterScale(layoutZoom: number, devicePixelRatio: number) {
+  const requestedScale = layoutZoom * Math.max(devicePixelRatio, 1);
+  return Math.min(
+    Math.ceil(requestedScale / SCROLL_RASTER_SCALE_STEP) * SCROLL_RASTER_SCALE_STEP,
+    MAX_SCROLL_RASTER_SCALE
+  );
 }
 
 export function normalizeReaderFitMode(fitMode: unknown): ResolvedReaderFitMode {

@@ -33,6 +33,8 @@ import {
   type ThemeDraft
 } from "./lib/app/settingsRegistry";
 import { useAppSettings } from "./lib/app/useAppSettings";
+import { useAppUpdater } from "./lib/app/useAppUpdater";
+import { runRestartPreflight } from "./lib/app/restartPreflight";
 import { useCommandRegistry } from "./lib/app/useCommandRegistry";
 import { useLibraryFlows } from "./lib/app/useLibraryFlows";
 import { useNotesController, type NoteTarget } from "./lib/app/useNotesController";
@@ -160,7 +162,11 @@ export default function App() {
     onStandaloneNoteChange: workspace.refreshStandaloneNotes,
     setStatusMessage: workspace.setStatusMessage
   });
-  const { settings, selectors, setSetting, updateSettings } = useAppSettings();
+  const { flushSettings, hydrated: settingsHydrated, settings, selectors, setSetting, updateSettings } = useAppSettings();
+  const { currentVersion, updater, state: updateState } = useAppUpdater({
+    automaticUpdates: settings.automaticUpdates,
+    settingsHydrated
+  });
   const palette = usePaletteController();
   const searchController = useMemo(() => createUnifiedSearchController(), []);
   const [searchFocusRequest, setSearchFocusRequest] = useState(0);
@@ -1374,6 +1380,8 @@ export default function App() {
               id="display-settings-popover"
               activeTheme={activeTheme}
               activeThemeId={settings.activeThemeId}
+              automaticUpdates={settings.automaticUpdates}
+              currentVersion={currentVersion}
               readerPreferences={readerPreferences}
               readerPreferenceStates={readerPreferenceStates}
               themeList={themeList}
@@ -1417,6 +1425,36 @@ export default function App() {
                   [key]: !currentValue[key]
                 }));
               }}
+              onToggleAutomaticUpdates={() => {
+                setSetting("automaticUpdates", (enabled) => !enabled);
+              }}
+              onCheckForUpdates={() => {
+                void updater.check("manual");
+              }}
+              onDownloadUpdate={() => {
+                void updater.download();
+              }}
+              onRestartAndUpdate={() => {
+                void updater.installAndRestart(async () => {
+                  await Promise.all([
+                    notes.flushForRestart("app-update"),
+                    flushSettings(),
+                    runRestartPreflight("app-update")
+                  ]);
+                  setSettingsOpen(false);
+                });
+              }}
+              onDeferUpdate={() => setSettingsOpen(false)}
+              onRecoverUpdate={() => {
+                const failedPhase = updateState.status === "error" ? updateState.phase : null;
+                updater.recover();
+                if (failedPhase === "check") {
+                  void updater.check("manual");
+                } else if (failedPhase === "download") {
+                  void updater.download();
+                }
+              }}
+              updateState={updateState}
             />
           ) : null}
           <button
@@ -1436,6 +1474,9 @@ export default function App() {
                 d="M14.08 1.5a.75.75 0 0 1 .714.52l.825 2.564c.346.17.678.36.994.575l2.634-.568a.75.75 0 0 1 .807.36l2.079 3.6a.75.75 0 0 1-.094.879l-1.808 1.996a8.37 8.37 0 0 1 0 1.149l1.808 1.998a.75.75 0 0 1 .094.878l-2.079 3.6a.75.75 0 0 1-.807.36l-2.633-.568a8.238 8.238 0 0 1-.993.575l-.827 2.564a.75.75 0 0 1-.713.52H9.92a.75.75 0 0 1-.714-.52l-.824-2.562a8.553 8.553 0 0 1-.998-.578l-2.633.57a.75.75 0 0 1-.807-.36l-2.079-3.6a.75.75 0 0 1 .095-.879l1.807-1.997a8.37 8.37 0 0 1 0-1.146L1.959 9.43a.75.75 0 0 1-.094-.879l2.079-3.6a.75.75 0 0 1 .807-.359l2.633.569c.318-.214.65-.406.996-.575l.824-2.563A.75.75 0 0 1 9.92 1.5h4.159Zm-.549 1.5H10.47l-.852 2.651-.575.28a6.893 6.893 0 0 0-.815.47l-.53.359-2.724-.588-1.53 2.651 1.869 2.069-.045.636a6.87 6.87 0 0 0 0 .942l.045.636-1.87 2.068 1.532 2.652 2.722-.586.531.358c.258.175.53.332.815.47l.575.281.853 2.651h3.06l.855-2.652.573-.278c.288-.14.56-.297.814-.47l.53-.358 2.724.586 1.53-2.651-1.868-2.069.045-.636a6.87 6.87 0 0 0 0-.944l-.045-.635 1.87-2.067-1.532-2.652-2.724.585-.529-.357a6.734 6.734 0 0 0-.814-.47l-.573-.278L13.53 3Zm-1.53 4.5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Zm0 1.5a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z"
               />
             </ChromeIcon>
+            {updateState.status === "available" || updateState.status === "ready" ? (
+              <span className="sidebar__update-indicator" aria-label="Update available" />
+            ) : null}
           </button>
         </div>
       </nav>
@@ -1525,7 +1566,8 @@ export default function App() {
                 startViewNavigationTrace(targetMode === "book" ? "book" : "reader", "collection-document-open");
                 await workspace.handleOpenDocument(documentId, {
                   source: "collection",
-                  targetMode
+                  targetMode,
+                  refreshLibrary: true
                 });
               }}
               onRenameDocument={async (documentId, nextName) => {

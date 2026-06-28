@@ -16,7 +16,7 @@ import {
 
 import NativePdfTextLayer from "./NativePdfTextLayer";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
-import { getPdfNativeOutline, getPdfNativeTextPage, saveDocumentState } from "../lib/api";
+import { getPdfNativeOutline, getPdfNativeTextPage, getPdfPageGeometries, saveDocumentState } from "../lib/api";
 import { dedupeBookmarks } from "../lib/commands";
 import { debugAction } from "../lib/debugLog";
 import {
@@ -25,20 +25,33 @@ import {
   computeContinuousPagePlacements,
   computeContinuousVirtualRange,
   createEstimatedPageMetrics,
+  mergeContinuousVirtualRanges,
   resolveContinuousActivePage,
   restoreScrollTopForContinuousAnchor,
   restoreScrollTopForContinuousSemanticAnchor,
   updateMeasuredPageHeight,
   type ContinuousPageMetric
 } from "../lib/reader/continuousPageMetrics";
-import { createPageCache, makePageCacheKey, type CachedRenderedPage } from "../lib/reader/PageCache";
-import { renderVisiblePdfPage } from "../lib/reader/PdfPageRenderer";
-import { scaleZoomByKeyboardDirection, scaleZoomByWheelDelta } from "../lib/reader/zoom";
+import { createPageCache, type CachedRenderedPage } from "../lib/reader/PageCache";
+import {
+  isScrollRenderIdentityChangedError,
+  makeRasterIdentityKey,
+  ScrollRenderCoordinator,
+  type RasterIdentity,
+  type RenderPriority
+} from "../lib/reader/ScrollRenderCoordinator";
+import {
+  resolveScrollRasterScale,
+  scaleZoomByWheelDelta,
+  snapScrollZoom,
+  stepScrollZoom
+} from "../lib/reader/zoom";
 import type {
   Bookmark,
   DocumentState,
   NativeTextPagePayload,
   OutlineItem,
+  EffectivePageGeometry,
   PdfNavigationTarget,
   ReaderFitMode,
   ReaderSession,
@@ -59,12 +72,13 @@ type ContinuousPdfViewerProps = {
   suspendAutoFitDuringPaneResize: boolean;
 };
 
-const CONTINUOUS_RENDER_CACHE_SIZE = 60;
-const CONTINUOUS_PAGE_GAP_PX = 28;
+const CONTINUOUS_RENDER_CACHE_BYTES = 192 * 1024 * 1024;
+const CONTINUOUS_PAGE_GAP_PX = 0;
 const CONTINUOUS_OVERSCAN_PX = 720;
 const DEFAULT_ESTIMATED_PAGE_WIDTH = 800;
 const DEFAULT_ESTIMATED_PAGE_HEIGHT = 1120;
 const READER_STATE_SAVE_DEBOUNCE_MS = 700;
+const WHEEL_ZOOM_COMMIT_DELAY_MS = 110;
 const SCROLL_READER_FIT_MODE: ReaderFitMode = "free";
 
 function clampPage(page: number, pageCount: number) {
@@ -107,22 +121,86 @@ function estimateHeightFromKnownPage(
   return (baseHeightsRef.current.get(pageNumber) ?? DEFAULT_ESTIMATED_PAGE_HEIGHT) * zoom;
 }
 
-function estimateWidthFromKnownPage(
-  pageNumber: number,
-  baseWidthsRef: MutableRefObject<Map<number, number>>,
-  zoom: number
+function getPageGeometry(page: EffectivePageGeometry, zoom: number) {
+  const rotated = Math.abs(page.rotation) % 180 === 90;
+  return {
+    width: (rotated ? page.baseHeight : page.baseWidth) * zoom,
+    height: (rotated ? page.baseWidth : page.baseHeight) * zoom
+  };
+}
+
+function validatePageGeometries(
+  geometries: EffectivePageGeometry[],
+  pageCount: number
 ) {
-  return (baseWidthsRef.current.get(pageNumber) ?? DEFAULT_ESTIMATED_PAGE_WIDTH) * zoom;
+  const byPage = new Map(geometries.map((geometry) => [geometry.pageNumber, geometry]));
+  if (geometries.length !== pageCount || byPage.size !== pageCount) {
+    throw new Error(`Expected geometry for ${pageCount} pages, received ${byPage.size}.`);
+  }
+
+  return Array.from({ length: pageCount }, (_, index) => {
+    const pageNumber = index + 1;
+    const geometry = byPage.get(pageNumber);
+    if (
+      !geometry ||
+      !Number.isFinite(geometry.baseWidth) ||
+      geometry.baseWidth <= 0 ||
+      !Number.isFinite(geometry.baseHeight) ||
+      geometry.baseHeight <= 0
+    ) {
+      throw new Error(`Invalid geometry for page ${pageNumber}.`);
+    }
+    return geometry;
+  });
+}
+
+function centerHorizontalOverflow(scrollSurface: HTMLDivElement) {
+  scrollSurface.scrollLeft = Math.max(
+    (scrollSurface.scrollWidth - scrollSurface.clientWidth) / 2,
+    0
+  );
+}
+
+function scaleTextLayerTransform(
+  transform: CachedRenderedPage["textLayerTransform"],
+  layoutZoom: number,
+  rasterScale: number
+) {
+  const scale = rasterScale > 0 ? layoutZoom / rasterScale : 1;
+  return {
+    ...transform,
+    matrix: transform.matrix.map((value) => value * scale) as typeof transform.matrix
+  };
+}
+
+function makeEffectivePageIdentity(
+  documentId: string,
+  documentGenerationId: string,
+  pageNumber: number,
+  zoom: number,
+  geometry: EffectivePageGeometry
+): RasterIdentity {
+  return {
+    documentId,
+    documentGenerationId,
+    pageNumber,
+    rasterScale: zoom,
+    rotation: geometry.rotation,
+    normalizationToken: geometry.normalizationToken,
+    renderVariant: geometry.source
+  };
 }
 
 function ContinuousScrollModel({
   children,
+  zoomGestureActive,
   metrics,
   onScroll,
   scrollSurfaceRef,
   viewerDisplayConfig
 }: {
   children: ReactNode;
+  zoomGestureActive: boolean;
   metrics: ContinuousPageMetric[];
   onScroll: (event: UIEvent<HTMLDivElement>) => void;
   scrollSurfaceRef: RefObject<HTMLDivElement>;
@@ -131,6 +209,7 @@ function ContinuousScrollModel({
   return (
     <div
       className="reader-stage continuous-reader"
+      data-zoom-gesture={zoomGestureActive ? "active" : undefined}
       data-document-appearance={viewerDisplayConfig.mode}
       style={appearanceStyle(viewerDisplayConfig)}
     >
@@ -147,24 +226,38 @@ function ContinuousScrollModel({
 }
 
 function ContinuousPageList({
+  coordinator,
   documentId,
-  metrics,
+  pageGeometries,
   openSessionId,
-  baseWidthsRef,
   pageCacheRef,
+  placements,
   range,
+  readingLineY,
   renderZoom,
+  rasterScale,
+  transientScale,
+  transientOriginY,
+  visibleRange,
   viewerDisplayConfig,
+  onIdentityChanged,
   onPageMeasured
 }: {
+  coordinator: ScrollRenderCoordinator;
   documentId: string;
-  metrics: ContinuousPageMetric[];
+  pageGeometries: EffectivePageGeometry[];
   openSessionId: string | null;
-  baseWidthsRef: MutableRefObject<Map<number, number>>;
   pageCacheRef: MutableRefObject<ReturnType<typeof createPageCache>>;
+  placements: ReturnType<typeof computeContinuousPagePlacements>;
   range: ReturnType<typeof computeContinuousVirtualRange>;
+  readingLineY: number;
   renderZoom: number;
+  rasterScale: number;
+  transientScale: number;
+  transientOriginY: number;
+  visibleRange: ReturnType<typeof computeContinuousVirtualRange>;
   viewerDisplayConfig: ViewerDisplayConfig;
+  onIdentityChanged: () => void;
   onPageMeasured: (page: CachedRenderedPage, measuredHeight: number) => void;
 }) {
   const mountedPages = [];
@@ -173,19 +266,19 @@ function ContinuousPageList({
       mountedPages.push(pageNumber);
     }
   }
-  const documentWidth = Math.max(
-    ...mountedPages.map((pageNumber) =>
-      estimateWidthFromKnownPage(pageNumber, baseWidthsRef, renderZoom)
-    ),
-    DEFAULT_ESTIMATED_PAGE_WIDTH * renderZoom
-  );
-
+  const documentWidth =
+    pageGeometries.reduce(
+      (widestWidth, page) => Math.max(widestWidth, getPageGeometry(page, renderZoom).width),
+      1
+    );
   return (
     <div
       className="continuous-reader__document"
       style={{
         minHeight: `${range.totalHeight}px`,
-        width: `${documentWidth}px`
+        width: `${documentWidth}px`,
+        transform: transientScale === 1 ? undefined : `scale(${transientScale})`,
+        transformOrigin: `center ${transientOriginY}px`
       }}
     >
       <div style={{ height: `${range.topSpacerHeight}px` }} aria-hidden="true" />
@@ -193,14 +286,24 @@ function ContinuousPageList({
         {mountedPages.map((pageNumber) => (
           <ContinuousPage
             key={`${documentId}:${pageNumber}`}
+            coordinator={coordinator}
             documentId={documentId}
-            metric={metrics[pageNumber - 1]}
+            geometry={pageGeometries[pageNumber - 1]}
             openSessionId={openSessionId}
-            baseWidthsRef={baseWidthsRef}
             pageCacheRef={pageCacheRef}
             pageNumber={pageNumber}
+            priority={
+              pageNumber >= visibleRange.startPage && pageNumber <= visibleRange.endPage
+                ? "visible"
+                : "overscan"
+            }
+            readingLineDistance={Math.abs(
+              (placements[pageNumber - 1]?.top ?? 0) - readingLineY
+            )}
             renderZoom={renderZoom}
+            rasterScale={rasterScale}
             viewerDisplayConfig={viewerDisplayConfig}
+            onIdentityChanged={onIdentityChanged}
             onPageMeasured={onPageMeasured}
           />
         ))}
@@ -211,57 +314,158 @@ function ContinuousPageList({
 }
 
 const ContinuousPage = memo(function ContinuousPage({
+  coordinator,
   documentId,
-  metric,
+  geometry,
   openSessionId,
-  baseWidthsRef,
   pageCacheRef,
   pageNumber,
+  priority,
+  readingLineDistance,
+  rasterScale,
   renderZoom,
   viewerDisplayConfig,
+  onIdentityChanged,
   onPageMeasured
 }: {
+  coordinator: ScrollRenderCoordinator;
   documentId: string;
-  metric: ContinuousPageMetric | undefined;
+  geometry: EffectivePageGeometry;
   openSessionId: string | null;
-  baseWidthsRef: MutableRefObject<Map<number, number>>;
   pageCacheRef: MutableRefObject<ReturnType<typeof createPageCache>>;
   pageNumber: number;
+  priority: RenderPriority;
+  readingLineDistance: number;
+  rasterScale: number;
   renderZoom: number;
   viewerDisplayConfig: ViewerDisplayConfig;
+  onIdentityChanged: () => void;
   onPageMeasured: (page: CachedRenderedPage, measuredHeight: number) => void;
 }) {
   const shellRef = useRef<HTMLDivElement | null>(null);
-  const [page, setPage] = useState<CachedRenderedPage | null>(() => {
-    return pageCacheRef.current.get(makePageCacheKey(documentId, pageNumber, renderZoom)) ?? null;
-  });
+  const [page, setPage] = useState<CachedRenderedPage | null>(null);
+  const pageRef = useRef(page);
+  const previousPageRef = useRef<CachedRenderedPage | null>(null);
+  const fadeFrameRef = useRef<number | null>(null);
+  const fadeTimerRef = useRef<number | null>(null);
+  const [previousPage, setPreviousPage] = useState<CachedRenderedPage | null>(null);
+  const [incomingVisible, setIncomingVisible] = useState(true);
   const [textLayer, setTextLayer] = useState<NativeTextPagePayload | null>(null);
-  const estimatedHeight = metric?.measuredHeight ?? metric?.estimatedHeight ?? DEFAULT_ESTIMATED_PAGE_HEIGHT * renderZoom;
-  const estimatedWidth = Math.max(estimateWidthFromKnownPage(pageNumber, baseWidthsRef, renderZoom), 1);
+  const targetGeometry = getPageGeometry(geometry, renderZoom);
+  const targetRasterKey = makeRasterIdentityKey(
+    makeEffectivePageIdentity(
+      documentId,
+      openSessionId ?? "legacy",
+      pageNumber,
+      rasterScale,
+      geometry
+    )
+  );
+  const pageIsFallback = page !== null && page.logicalKey !== targetRasterKey;
+  const previousPageIsFallback =
+    previousPage !== null && previousPage.logicalKey !== targetRasterKey;
+  pageRef.current = page;
+
+  const promotePage = useCallback((nextPage: CachedRenderedPage) => {
+    const currentPage = pageRef.current;
+    if (currentPage?.logicalKey === nextPage.logicalKey) {
+      return;
+    }
+    if (!pageCacheRef.current.retain(nextPage)) {
+      return;
+    }
+    if (fadeFrameRef.current !== null) {
+      window.cancelAnimationFrame(fadeFrameRef.current);
+    }
+    if (fadeTimerRef.current !== null) {
+      window.clearTimeout(fadeTimerRef.current);
+    }
+    const supersededPreviousPage = previousPageRef.current;
+    if (supersededPreviousPage) {
+      pageCacheRef.current.release(supersededPreviousPage);
+    }
+    const canCrossfade =
+      currentPage !== null &&
+      currentPage.documentId === nextPage.documentId &&
+      currentPage.documentGenerationId === nextPage.documentGenerationId &&
+      currentPage.pageNumber === nextPage.pageNumber &&
+      currentPage.rotation === nextPage.rotation &&
+      currentPage.normalizationToken === nextPage.normalizationToken &&
+      currentPage.renderVariant === nextPage.renderVariant;
+    if (currentPage && !canCrossfade) {
+      pageCacheRef.current.release(currentPage);
+    }
+    previousPageRef.current = canCrossfade ? currentPage : null;
+    setPreviousPage(canCrossfade ? currentPage : null);
+    setIncomingVisible(!canCrossfade);
+    pageRef.current = nextPage;
+    setPage(nextPage);
+    if (canCrossfade) {
+      fadeFrameRef.current = window.requestAnimationFrame(() => {
+        fadeFrameRef.current = null;
+        setIncomingVisible(true);
+        fadeTimerRef.current = window.setTimeout(() => {
+          fadeTimerRef.current = null;
+          const fadedPage = previousPageRef.current;
+          previousPageRef.current = null;
+          setPreviousPage(null);
+          if (fadedPage) {
+            pageCacheRef.current.release(fadedPage);
+          }
+        }, 90);
+      });
+    }
+  }, [pageCacheRef]);
+
+  useLayoutEffect(() => {
+    const identity = makeEffectivePageIdentity(
+      documentId,
+      openSessionId ?? "legacy",
+      pageNumber,
+      rasterScale,
+      geometry
+    );
+    const cachedPage =
+      pageCacheRef.current.getExact(identity) ??
+      pageCacheRef.current.getCompatibleFallback(identity);
+    if (cachedPage) {
+      promotePage(cachedPage);
+    }
+  }, [documentId, geometry, openSessionId, pageCacheRef, pageNumber, promotePage, rasterScale]);
 
   useEffect(() => {
     let cancelled = false;
-    const cacheKey = makePageCacheKey(documentId, pageNumber, renderZoom);
-    const cached = pageCacheRef.current.get(cacheKey);
+    const identity = makeEffectivePageIdentity(
+      documentId,
+      openSessionId ?? "legacy",
+      pageNumber,
+      rasterScale,
+      geometry
+    );
+    const cacheKey = makeRasterIdentityKey(identity);
+    const cached = pageCacheRef.current.getExact(identity);
     if (cached) {
-      setPage(cached);
+      promotePage(cached);
       return;
     }
 
-    void renderVisiblePdfPage(documentId, pageNumber, renderZoom, {
-      caller: "foreground"
-    })
+    const lease = coordinator.request({ identity, priority, distanceFromReadingLine: readingLineDistance });
+    void lease.promise
       .then((renderedPage) => {
         if (cancelled) {
+          pageCacheRef.current.discard(renderedPage, "obsolete-render");
           return;
         }
-        baseWidthsRef.current.set(renderedPage.pageNumber, renderedPage.pageBaseWidth);
-        pageCacheRef.current.set(cacheKey, renderedPage);
-        setPage(renderedPage);
-        onPageMeasured(renderedPage, renderedPage.height);
+        const canonicalPage = pageCacheRef.current.set(cacheKey, renderedPage);
+        promotePage(canonicalPage);
+        onPageMeasured(canonicalPage, targetGeometry.height);
       })
       .catch((error) => {
-        if (cancelled) {
+        if (cancelled || (error instanceof DOMException && error.name === "AbortError")) {
+          return;
+        }
+        if (isScrollRenderIdentityChangedError(error)) {
+          onIdentityChanged();
           return;
         }
         debugAction("continuous-reader.page-render-error", {
@@ -273,48 +477,72 @@ const ContinuousPage = memo(function ContinuousPage({
 
     return () => {
       cancelled = true;
+      lease.release();
     };
-  }, [documentId, onPageMeasured, pageCacheRef, pageNumber, renderZoom]);
+  }, [coordinator, documentId, geometry, onIdentityChanged, onPageMeasured, openSessionId, pageCacheRef, pageNumber, promotePage, rasterScale, renderZoom, targetGeometry.height]);
 
   useEffect(() => {
-    if (!page) {
-      setTextLayer(null);
-      return;
-    }
+    coordinator.reprioritize({
+      identity: makeEffectivePageIdentity(
+        documentId,
+        openSessionId ?? "legacy",
+        pageNumber,
+        rasterScale,
+        geometry
+      ),
+      priority,
+      distanceFromReadingLine: readingLineDistance
+    });
+  }, [coordinator, documentId, geometry, openSessionId, pageNumber, priority, rasterScale, readingLineDistance]);
 
+  useEffect(() => {
     let cancelled = false;
-    const timeoutId = window.setTimeout(() => {
-      if (cancelled) {
-        return;
-      }
-      void getPdfNativeTextPage(documentId, pageNumber, {
-        openSessionId: openSessionId ?? undefined
-      })
-        .then((payload) => {
-          if (cancelled || payload.pageNumber !== pageNumber) {
-            return;
-          }
-          setTextLayer(payload);
-        })
-        .catch((error) => {
-          if (cancelled) {
-            return;
-          }
-          debugAction("continuous-reader.text-layer-error", {
-            documentId,
-            pageNumber,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        });
-    }, 80);
-
     setTextLayer(null);
+    void getPdfNativeTextPage(documentId, pageNumber, {
+      openSessionId: openSessionId ?? undefined
+    })
+      .then((payload) => {
+        if (cancelled || payload.pageNumber !== pageNumber) {
+          return;
+        }
+        setTextLayer(payload);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        debugAction("continuous-reader.text-layer-error", {
+          documentId,
+          pageNumber,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timeoutId);
     };
-  }, [documentId, openSessionId, page, pageNumber]);
+  }, [documentId, openSessionId, pageNumber]);
+
+  useEffect(() => {
+    return () => {
+      if (fadeFrameRef.current !== null) {
+        window.cancelAnimationFrame(fadeFrameRef.current);
+      }
+      if (fadeTimerRef.current !== null) {
+        window.clearTimeout(fadeTimerRef.current);
+      }
+      const currentPage = pageRef.current;
+      const priorPage = previousPageRef.current;
+      pageRef.current = null;
+      previousPageRef.current = null;
+      if (currentPage) {
+        pageCacheRef.current.release(currentPage);
+      }
+      if (priorPage) {
+        pageCacheRef.current.release(priorPage);
+      }
+    };
+  }, [pageCacheRef]);
 
   useLayoutEffect(() => {
     const shell = shellRef.current;
@@ -339,38 +567,55 @@ const ContinuousPage = memo(function ContinuousPage({
         ref={shellRef}
         className="reader-page__surface-shell continuous-reader__page-shell"
         style={{
-          width: `${page?.width ?? estimatedWidth}px`,
-          height: `${page?.height ?? estimatedHeight}px`
+          width: `${targetGeometry.width}px`,
+          height: `${targetGeometry.height}px`
         }}
       >
         {page ? (
           <div
             className="reader-page__surface"
             style={{
-              width: `${page.width}px`,
-              height: `${page.height}px`
+              width: `${targetGeometry.width}px`,
+              height: `${targetGeometry.height}px`
             }}
           >
-            <img
-              className="reader-page__image reader-page__image--active"
-              src={page.imageUrl}
-              alt={`Page ${page.pageNumber}`}
-              draggable={false}
-              style={{
-                filter: viewerDisplayConfig.imageFilter,
-                mixBlendMode: viewerDisplayConfig.blendMode
-              }}
-            />
+            <div className="continuous-reader__page-image-stack">
+              {previousPage ? (
+                <img
+                  className={`reader-page__image reader-page__image--active continuous-reader__page-image--previous${previousPageIsFallback ? " continuous-reader__page-image--fallback" : ""}`}
+                  src={previousPage.imageUrl}
+                  alt=""
+                  draggable={false}
+                  style={{
+                    opacity: incomingVisible ? 0 : previousPageIsFallback ? 0.96 : 1
+                  }}
+                />
+              ) : null}
+              <img
+                className={`reader-page__image reader-page__image--active continuous-reader__page-image--incoming${pageIsFallback ? " continuous-reader__page-image--fallback" : ""}`}
+                src={page.imageUrl}
+                alt={`Page ${page.pageNumber}`}
+                draggable={false}
+                style={{ opacity: incomingVisible ? (pageIsFallback ? 0.96 : 1) : 0 }}
+              />
+            </div>
             <NativePdfTextLayer
               pageNumber={page.pageNumber}
               textLayer={textLayer}
-              renderedWidth={page.width}
-              renderedHeight={page.height}
-              renderTransform={page.textLayerTransform}
+              renderedWidth={targetGeometry.width}
+              renderedHeight={targetGeometry.height}
+              renderTransform={scaleTextLayerTransform(
+                page.textLayerTransform,
+                renderZoom,
+                rasterScale
+              )}
             />
           </div>
         ) : (
-          <div className="continuous-reader__page-placeholder" aria-label={`Loading page ${pageNumber}`} />
+          <div
+            className="continuous-reader__page-placeholder"
+            aria-label={`Loading page ${pageNumber}`}
+          />
         )}
       </div>
     </article>
@@ -391,23 +636,44 @@ export default function ContinuousPdfViewer({
   const documentId = document?.document.id ?? null;
   const pageCount = document?.pageCount ?? 0;
   const openSessionId = readerSession?.openSessionId ?? null;
-  const initialZoom = readerSession?.zoom ?? readerSession?.document.state.zoom ?? 1;
+  const initialZoom = snapScrollZoom(readerSession?.zoom ?? readerSession?.document.state.zoom ?? 1);
   const initialFitMode = SCROLL_READER_FIT_MODE;
   const initialBookmarks = readerSession?.document.state.bookmarks ?? [];
   const initialPage = readerSession ? clampPage(readerSession.page || readerSession.document.state.lastPage, pageCount) : 1;
   const scrollSurfaceRef = useRef<HTMLDivElement | null>(null);
-  const pageCacheRef = useRef(createPageCache(CONTINUOUS_RENDER_CACHE_SIZE));
-  const baseWidthsRef = useRef(new Map<number, number>());
+  const pageCacheRef = useRef(createPageCache({ maxBytes: CONTINUOUS_RENDER_CACHE_BYTES }));
+  const renderCoordinatorRef = useRef<ScrollRenderCoordinator | null>(null);
+  if (renderCoordinatorRef.current === null) {
+    renderCoordinatorRef.current = new ScrollRenderCoordinator({ maxConcurrent: 2 });
+  }
+  const renderCoordinator = renderCoordinatorRef.current;
   const baseHeightsRef = useRef(new Map<number, number>());
   const saveTimerRef = useRef<number | null>(null);
+  const wheelZoomTimerRef = useRef<number | null>(null);
+  const wheelZoomTargetRef = useRef<number | null>(null);
+  const geometryRefreshFrameRef = useRef<number | null>(null);
+  const pendingZoomScrollTopRef = useRef<number | null>(null);
+  const rangeReleaseFrameRef = useRef<number | null>(null);
+  const rangeReleaseStableFrameRef = useRef<number | null>(null);
   const latestStateRef = useRef<DocumentState | null>(readerSession?.document.state ?? null);
   const initialScrollAppliedRef = useRef<string | null>(null);
   const [displayZoom, setDisplayZoom] = useState(() => initialZoom);
+  const [wheelPreviewZoom, setWheelPreviewZoom] = useState<number | null>(null);
   const [fitMode, setFitModeState] = useState<ReaderFitMode>(() => initialFitMode);
   const [bookmarks, setBookmarksState] = useState<Bookmark[]>(() => initialBookmarks);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
+  const [viewportWidth, setViewportWidth] = useState(0);
+  const [devicePixelRatio, setDevicePixelRatio] = useState(() =>
+    typeof window === "undefined" ? 1 : window.devicePixelRatio
+  );
   const [currentPage, setCurrentPage] = useState(initialPage);
+  const [pageGeometries, setPageGeometries] = useState<EffectivePageGeometry[]>([]);
+  const [geometryRevision, setGeometryRevision] = useState(0);
+  const [pinnedVirtualRange, setPinnedVirtualRange] = useState<{
+    startPage: number;
+    endPage: number;
+  } | null>(null);
   const [metrics, setMetrics] = useState<ContinuousPageMetric[]>(() =>
     createEstimatedPageMetrics(pageCount, (pageNumber) =>
       estimateHeightFromKnownPage(pageNumber, baseHeightsRef, initialZoom)
@@ -433,13 +699,36 @@ export default function ContinuousPdfViewer({
   metricsRef.current = metrics;
   pageCountRef.current = pageCount;
   scrollTopRef.current = scrollTop;
-  const virtualRange = useMemo(
+  const desiredVirtualRange = useMemo(
     () =>
       computeContinuousVirtualRange({
         metrics,
         scrollTop,
         viewportHeight,
         overscanPx: CONTINUOUS_OVERSCAN_PX,
+        pageGapPx: CONTINUOUS_PAGE_GAP_PX
+      }),
+    [metrics, scrollTop, viewportHeight]
+  );
+  const virtualRange = useMemo(
+    () =>
+      pinnedVirtualRange
+        ? mergeContinuousVirtualRanges(metrics, CONTINUOUS_PAGE_GAP_PX, [
+            pinnedVirtualRange,
+            desiredVirtualRange
+          ])
+        : desiredVirtualRange,
+    [desiredVirtualRange, metrics, pinnedVirtualRange]
+  );
+  const mountedRangeRef = useRef(virtualRange);
+  mountedRangeRef.current = virtualRange;
+  const visibleRange = useMemo(
+    () =>
+      computeContinuousVirtualRange({
+        metrics,
+        scrollTop,
+        viewportHeight,
+        overscanPx: 0,
         pageGapPx: CONTINUOUS_PAGE_GAP_PX
       }),
     [metrics, scrollTop, viewportHeight]
@@ -503,44 +792,66 @@ export default function ContinuousPdfViewer({
 
   const updateZoom = useCallback(
     (nextZoom: number) => {
-      const normalizedZoom = Math.min(Math.max(nextZoom, 0.4), 3);
+      const normalizedZoom = snapScrollZoom(nextZoom);
+      const mountedRange = mountedRangeRef.current;
+      if (mountedRange.startPage > 0) {
+        setPinnedVirtualRange({
+          startPage: mountedRange.startPage,
+          endPage: mountedRange.endPage
+        });
+      }
+      if (rangeReleaseFrameRef.current !== null) {
+        window.cancelAnimationFrame(rangeReleaseFrameRef.current);
+        rangeReleaseFrameRef.current = null;
+      }
+      if (rangeReleaseStableFrameRef.current !== null) {
+        window.cancelAnimationFrame(rangeReleaseStableFrameRef.current);
+        rangeReleaseStableFrameRef.current = null;
+      }
       const anchor = captureContinuousSemanticAnchor(
         metrics,
         scrollSurfaceRef.current?.scrollTop ?? scrollTop,
         readingLineOffsetPx,
         CONTINUOUS_PAGE_GAP_PX
       );
-      setDisplayZoom(normalizedZoom);
-      setMetrics(
-        createEstimatedPageMetrics(pageCount, (pageNumber) =>
-          estimateHeightFromKnownPage(pageNumber, baseHeightsRef, normalizedZoom)
-        )
+      const nextMetrics = createEstimatedPageMetrics(pageCount, (pageNumber) =>
+        estimateHeightFromKnownPage(pageNumber, baseHeightsRef, normalizedZoom)
       );
-      window.requestAnimationFrame(() => {
-        const scrollSurface = scrollSurfaceRef.current;
-        if (!scrollSurface) {
-          return;
-        }
-        const nextMetrics = createEstimatedPageMetrics(pageCount, (pageNumber) =>
-          estimateHeightFromKnownPage(pageNumber, baseHeightsRef, normalizedZoom)
-        );
-        const nextScrollTop = restoreScrollTopForContinuousSemanticAnchor(
-          nextMetrics,
-          anchor,
-          readingLineOffsetPx,
-          CONTINUOUS_PAGE_GAP_PX
-        );
-        scrollSurface.scrollTop = nextScrollTop;
-        setScrollTop(nextScrollTop);
-      });
+      pendingZoomScrollTopRef.current = restoreScrollTopForContinuousSemanticAnchor(
+        nextMetrics,
+        anchor,
+        readingLineOffsetPx,
+        CONTINUOUS_PAGE_GAP_PX
+      );
+      setDisplayZoom(normalizedZoom);
+      setMetrics(nextMetrics);
       publishState(currentPage, normalizedZoom);
     },
     [currentPage, metrics, pageCount, publishState, readingLineOffsetPx, scrollTop]
   );
   updateZoomRef.current = updateZoom;
 
+  useLayoutEffect(() => {
+    const nextScrollTop = pendingZoomScrollTopRef.current;
+    const scrollSurface = scrollSurfaceRef.current;
+    if (nextScrollTop === null || !scrollSurface) {
+      return;
+    }
+
+    pendingZoomScrollTopRef.current = null;
+    scrollSurface.scrollTop = nextScrollTop;
+    scrollTopRef.current = nextScrollTop;
+    setScrollTop(nextScrollTop);
+    rangeReleaseFrameRef.current = window.requestAnimationFrame(() => {
+      rangeReleaseFrameRef.current = null;
+      rangeReleaseStableFrameRef.current = window.requestAnimationFrame(() => {
+        rangeReleaseStableFrameRef.current = null;
+        setPinnedVirtualRange(null);
+      });
+    });
+  }, [displayZoom, metrics]);
+
   const handlePageMeasured = useCallback((page: CachedRenderedPage, measuredHeight: number) => {
-    baseHeightsRef.current.set(page.pageNumber, page.pageBaseHeight);
     const currentMetric = metricsRef.current[page.pageNumber - 1];
     if (
       currentMetric?.measuredHeight !== null &&
@@ -580,24 +891,89 @@ export default function ContinuousPdfViewer({
     });
   }, []);
 
+  const requestPageGeometryRefresh = useCallback(() => {
+    if (geometryRefreshFrameRef.current !== null) {
+      return;
+    }
+    geometryRefreshFrameRef.current = window.requestAnimationFrame(() => {
+      geometryRefreshFrameRef.current = null;
+      debugAction("continuous-reader.geometry-refresh-requested", {
+        documentId: documentId ?? null
+      });
+      setGeometryRevision((current) => current + 1);
+    });
+  }, [documentId]);
+
   useEffect(() => {
     latestStateRef.current = readerSession?.document.state ?? null;
     setDisplayZoom(initialZoom);
+    setWheelPreviewZoom(null);
+    wheelZoomTargetRef.current = null;
+    pendingZoomScrollTopRef.current = null;
+    setPinnedVirtualRange(null);
+    if (rangeReleaseFrameRef.current !== null) {
+      window.cancelAnimationFrame(rangeReleaseFrameRef.current);
+      rangeReleaseFrameRef.current = null;
+    }
+    if (rangeReleaseStableFrameRef.current !== null) {
+      window.cancelAnimationFrame(rangeReleaseStableFrameRef.current);
+      rangeReleaseStableFrameRef.current = null;
+    }
     setFitModeState(initialFitMode);
     setBookmarksState(initialBookmarks);
     setCurrentPage(initialPage);
     setScrollTop(0);
     initialScrollAppliedRef.current = null;
-    baseWidthsRef.current = new Map();
     baseHeightsRef.current = new Map();
+    setPageGeometries([]);
     pageCacheRef.current.clear();
-    pageCacheRef.current = createPageCache(CONTINUOUS_RENDER_CACHE_SIZE);
     setMetrics(
       createEstimatedPageMetrics(pageCount, (pageNumber) =>
         estimateHeightFromKnownPage(pageNumber, baseHeightsRef, initialZoom)
       )
     );
   }, [documentId, initialFitMode, initialPage, initialZoom, openSessionId, pageCount]);
+
+  useEffect(() => {
+    if (!documentId || !readerSession) {
+      setPageGeometries([]);
+      return;
+    }
+
+    let cancelled = false;
+    void getPdfPageGeometries(documentId, { openSessionId: readerSession.openSessionId })
+      .then((geometries) => {
+        if (cancelled) {
+          return;
+        }
+        const resolvedGeometries = validatePageGeometries(geometries, pageCount);
+        const nextBaseHeights = new Map<number, number>();
+        for (const geometry of resolvedGeometries) {
+          nextBaseHeights.set(geometry.pageNumber, getPageGeometry(geometry, 1).height);
+        }
+        baseHeightsRef.current = nextBaseHeights;
+        setPageGeometries(resolvedGeometries);
+        setMetrics(
+          createEstimatedPageMetrics(pageCount, (pageNumber) =>
+            getPageGeometry(resolvedGeometries[pageNumber - 1], displayZoomRef.current).height
+          )
+        );
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        debugAction("continuous-reader.page-geometry-error", {
+          documentId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        onStatusChange("Unable to load canonical page geometry for Scroll mode.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId, geometryRevision, onStatusChange, pageCount, readerSession?.openSessionId]);
 
   useEffect(() => {
     if (!readerSession || !readerActive) {
@@ -646,6 +1022,8 @@ export default function ContinuousPdfViewer({
     }
     const updateViewport = () => {
       setViewportHeight(scrollSurface.clientHeight);
+      setViewportWidth(scrollSurface.clientWidth);
+      setDevicePixelRatio(window.devicePixelRatio);
     };
     updateViewport();
     const resizeObserver =
@@ -660,10 +1038,20 @@ export default function ContinuousPdfViewer({
 
   useLayoutEffect(() => {
     const scrollSurface = scrollSurfaceRef.current;
+    if (!scrollSurface || pageGeometries.length !== pageCount) {
+      return;
+    }
+
+    centerHorizontalOverflow(scrollSurface);
+  }, [displayZoom, pageCount, pageGeometries, viewportWidth]);
+
+  useLayoutEffect(() => {
+    const scrollSurface = scrollSurfaceRef.current;
     const scrollKey = documentId ? `${documentId}:${initialPage}` : null;
     if (
       !scrollSurface ||
       !scrollKey ||
+      pageGeometries.length !== pageCount ||
       placements.length === 0 ||
       initialScrollAppliedRef.current === scrollKey
     ) {
@@ -675,7 +1063,7 @@ export default function ContinuousPdfViewer({
       scrollSurface.scrollTop = placement.top;
       setScrollTop(placement.top);
     }
-  }, [documentId, initialPage, placements.length]);
+  }, [documentId, initialPage, pageCount, pageGeometries.length, placements.length]);
 
   useEffect(() => {
     const activeOpenSessionId = readerSession?.openSessionId ?? null;
@@ -684,8 +1072,8 @@ export default function ContinuousPdfViewer({
         ? {
             nextPage: () => scrollToPageRef.current(currentPageRef.current + 1),
             previousPage: () => scrollToPageRef.current(currentPageRef.current - 1),
-            zoomIn: () => updateZoomRef.current(scaleZoomByKeyboardDirection(displayZoomRef.current, "in")),
-            zoomOut: () => updateZoomRef.current(scaleZoomByKeyboardDirection(displayZoomRef.current, "out")),
+            zoomIn: () => updateZoomRef.current(stepScrollZoom(displayZoomRef.current, "in")),
+            zoomOut: () => updateZoomRef.current(stepScrollZoom(displayZoomRef.current, "out")),
             getAutoMaximizeZoom: () => null,
             getAutoMaximizeMinDocumentWidth: () => null,
             getFitMode: () => SCROLL_READER_FIT_MODE,
@@ -741,10 +1129,27 @@ export default function ContinuousPdfViewer({
     return () => registerApi(null);
   }, [documentId, readerSession?.openSessionId, registerApi]);
 
+  useEffect(
+    () => () => renderCoordinator.cancelAll("viewer-effect-cleanup"),
+    [renderCoordinator]
+  );
+
   useEffect(() => {
     return () => {
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current);
+      }
+      if (wheelZoomTimerRef.current !== null) {
+        window.clearTimeout(wheelZoomTimerRef.current);
+      }
+      if (geometryRefreshFrameRef.current !== null) {
+        window.cancelAnimationFrame(geometryRefreshFrameRef.current);
+      }
+      if (rangeReleaseFrameRef.current !== null) {
+        window.cancelAnimationFrame(rangeReleaseFrameRef.current);
+      }
+      if (rangeReleaseStableFrameRef.current !== null) {
+        window.cancelAnimationFrame(rangeReleaseStableFrameRef.current);
       }
       pageCacheRef.current.clear();
     };
@@ -773,9 +1178,27 @@ export default function ContinuousPdfViewer({
       }
       event.preventDefault();
       const delta = event.deltaY === 0 ? event.deltaX : event.deltaY;
-      updateZoom(scaleZoomByWheelDelta(displayZoom, delta));
+      const nextZoom = scaleZoomByWheelDelta(
+        wheelZoomTargetRef.current ?? displayZoomRef.current,
+        delta
+      );
+      wheelZoomTargetRef.current = nextZoom;
+      setWheelPreviewZoom(nextZoom);
+      if (wheelZoomTimerRef.current !== null) {
+        window.clearTimeout(wheelZoomTimerRef.current);
+      }
+      wheelZoomTimerRef.current = window.setTimeout(() => {
+        wheelZoomTimerRef.current = null;
+        const committedZoom = wheelZoomTargetRef.current;
+        wheelZoomTargetRef.current = null;
+        if (committedZoom === null) {
+          return;
+        }
+        setWheelPreviewZoom(null);
+        updateZoomRef.current(committedZoom);
+      }, WHEEL_ZOOM_COMMIT_DELAY_MS);
     },
-    [displayZoom, updateZoom]
+    []
   );
 
   if (!readerSession || !document || !documentId) {
@@ -787,6 +1210,9 @@ export default function ContinuousPdfViewer({
   }
 
   const activeOpenSessionId = readerSession.openSessionId;
+  const rasterScale = resolveScrollRasterScale(displayZoom, devicePixelRatio);
+  const transientScale = wheelPreviewZoom === null ? 1 : wheelPreviewZoom / displayZoom;
+  const transientOriginY = scrollTop + readingLineOffsetPx;
 
   return (
     <ContinuousScrollModel
@@ -794,24 +1220,27 @@ export default function ContinuousPdfViewer({
       onScroll={handleScroll}
       scrollSurfaceRef={scrollSurfaceRef}
       viewerDisplayConfig={viewerDisplayConfig}
+      zoomGestureActive={wheelPreviewZoom !== null}
     >
       <div onWheel={handleWheel}>
-        {virtualRange.startPage > 0 ? (
-          <div className="continuous-reader__status" aria-live="polite">
-            Scroll mode loading pages {virtualRange.startPage}-{virtualRange.endPage}
-          </div>
-        ) : null}
-        <ContinuousPageList
+        {pageGeometries.length === pageCount ? <ContinuousPageList
+          coordinator={renderCoordinator}
           documentId={documentId}
-          metrics={metrics}
+          pageGeometries={pageGeometries}
           openSessionId={activeOpenSessionId}
-          baseWidthsRef={baseWidthsRef}
           pageCacheRef={pageCacheRef}
+          placements={placements}
           range={virtualRange}
+          readingLineY={scrollTop + readingLineOffsetPx}
           renderZoom={displayZoom}
+          rasterScale={rasterScale}
+          transientScale={transientScale}
+          transientOriginY={transientOriginY}
+          visibleRange={visibleRange}
           viewerDisplayConfig={viewerDisplayConfig}
+          onIdentityChanged={requestPageGeometryRefresh}
           onPageMeasured={handlePageMeasured}
-        />
+        /> : null}
       </div>
     </ContinuousScrollModel>
   );

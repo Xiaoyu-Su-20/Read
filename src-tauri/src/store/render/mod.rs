@@ -1,6 +1,9 @@
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use mupdf::{Colorspace, Cookie, Device, Document, IRect, Matrix, Pixmap, Rect};
@@ -20,17 +23,15 @@ mod jpeg_windows;
 mod session;
 
 pub use cache::RenderCache;
-#[cfg(test)]
-pub use cache::MAX_RENDER_CACHE_ENTRIES;
 use jpeg_windows::encode_pixmap_as_jpeg;
 pub use session::{
     DisplayListWarmupRequest, NativeOutlineRequest, NativeTextPageRequest, RenderSessionRegistry,
     SessionDisplayListPage,
 };
 
-const RENDERER_VERSION: &str = "mupdf-v5";
+const RENDERER_VERSION: &str = "mupdf-v6";
 const BASE_PDF_RENDER_SCALE: f32 = 1.0;
-const JPEG_QUALITY: u32 = 82;
+const JPEG_QUALITY: u32 = 92;
 const MIN_RENDER_ZOOM: f32 = 0.1;
 const MAX_RENDER_ZOOM: f32 = 5.0;
 
@@ -42,6 +43,11 @@ pub struct PageRenderRequest {
     pub document_path: String,
     pub page_number: u32,
     pub request_sequence: Option<u32>,
+    pub request_id: Option<String>,
+    pub cancellation: Option<Arc<AtomicBool>>,
+    pub expected_normalization_token: Option<String>,
+    pub expected_render_variant: Option<RenderVariant>,
+    pub expected_rotation: Option<i32>,
     pub zoom: f32,
     pub cache_key: String,
     pub normalization: Option<Arc<DocumentNormalizationManifest>>,
@@ -90,6 +96,11 @@ impl PdfRenderStore {
             document_path: document_path.to_string_lossy().to_string(),
             page_number,
             request_sequence: None,
+            request_id: None,
+            cancellation: None,
+            expected_normalization_token: None,
+            expected_render_variant: None,
+            expected_rotation: None,
             zoom,
             cache_key,
             normalization,
@@ -141,6 +152,7 @@ impl PdfRenderStore {
         );
 
         let result = (|| -> AppResult<RenderedPagePayload> {
+            ensure_render_not_cancelled(&request, "before-cache-lookup")?;
             if let Some(cached) = Self::render_cache_lookup(&render_cache, &request)? {
                 process.checkpoint(
                     "cache-hit",
@@ -157,6 +169,7 @@ impl PdfRenderStore {
 
             process.checkpoint("display-list-request-start", json!({}));
             let display_list_page = render_sessions.get_display_list(&request)?;
+            ensure_render_not_cancelled(&request, "after-display-list")?;
             let display_list_source = display_list_page.source.as_str();
             process.checkpoint(
                 "display-list-request-finished",
@@ -202,6 +215,9 @@ impl PdfRenderStore {
                     &request,
                 ) {
                     Ok(rendered) => Some(rendered),
+                    Err(error) if request.expected_render_variant == Some(RenderVariant::Normalized) => {
+                        return Err(error);
+                    }
                     Err(error) => {
                         crate::debug::action(
                             "store.render_pdf_page_blocking:normalization-fallback",
@@ -254,6 +270,7 @@ impl PdfRenderStore {
                     );
                     rendered
                 };
+            ensure_render_not_cancelled(&request, "after-rasterize")?;
             process.checkpoint(
                 "render-finished",
                 json!({
@@ -265,6 +282,7 @@ impl PdfRenderStore {
             );
 
             process.checkpoint("jpeg-encode-start", json!({}));
+            ensure_render_not_cancelled(&request, "before-encode")?;
             let image_bytes = encode_pixmap_as_jpeg(&pixmap, JPEG_QUALITY).map_err(|error| {
                 AppError::Render(format!(
                     "Unable to encode JPEG for page {}: {error}",
@@ -272,6 +290,7 @@ impl PdfRenderStore {
                 ))
             })?;
             process.checkpoint("jpeg-encode-finished", json!({}));
+            ensure_render_not_cancelled(&request, "before-cache-admission")?;
             process.checkpoint(
                 "image-encoded",
                 json!({
@@ -486,6 +505,27 @@ fn non_empty_irect(rect: IRect) -> IRect {
     let width = rect.width().max(1);
     let height = rect.height().max(1);
     IRect::new(rect.x0, rect.y0, rect.x0 + width, rect.y0 + height)
+}
+
+fn ensure_render_not_cancelled(request: &PageRenderRequest, phase: &str) -> AppResult<()> {
+    let cancelled = request
+        .cancellation
+        .as_ref()
+        .is_some_and(|cancellation| cancellation.load(Ordering::Acquire));
+    if !cancelled {
+        return Ok(());
+    }
+    crate::debug::action(
+        "store.render_pdf_page_blocking:cancelled",
+        json!({
+            "documentId": request.document_id.as_str(),
+            "page": request.page_number,
+            "phase": phase,
+            "requestId": request.request_id.as_deref(),
+            "requestSequence": request.request_sequence,
+        }),
+    );
+    Err(AppError::Render("Render request cancelled.".to_string()))
 }
 
 fn render_run_error(

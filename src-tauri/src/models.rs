@@ -188,6 +188,24 @@ pub struct DocumentPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct EffectivePageGeometry {
+    pub page_number: u32,
+    pub base_width: f32,
+    pub base_height: f32,
+    pub rotation: i32,
+    pub normalization_token: Option<String>,
+    pub source: EffectivePageGeometrySource,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EffectivePageGeometrySource {
+    Normalized,
+    Raw,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct RenderedPagePayload {
     pub image_bytes: Vec<u8>,
     pub page_number: u32,

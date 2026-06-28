@@ -22,7 +22,7 @@
   - Persistent while support logging is enabled
   - Max size: `5 MB` per file
   - Rotation count: `5` files
-- Release channel policy: production only for first release
+- Release channel policy: separate `rc` and `stable` updater feeds
 
 ## Still Open
 
@@ -84,27 +84,27 @@
 ## In-App Auto-Update
 
 - Current status:
-  - no in-app auto-update is implemented yet
-  - current update path is manual installer upgrade via `NSIS`
+  - updater service and Settings UI are implemented
+  - automatic checks default on; download, install, and restart remain user-confirmed
 - Plugin wiring:
-  - add `tauri-plugin-updater` to Rust dependencies
-  - register the updater plugin in app startup
-  - add updater configuration to `src-tauri/tauri.conf.json`
+  - `tauri-plugin-updater` and `tauri-plugin-process` are registered
+  - updater artifacts and stable/RC endpoints are configured
 - Release infrastructure:
-  - choose one production update host
-  - publish signed update metadata for each release
-  - publish the matching `NSIS` installer artifact for each release
-  - manage updater signing keys outside the repo
+  - GitHub Releases hosts signed NSIS updater artifacts
+  - GitHub Pages hosts stable and RC manifests
+  - replace the bootstrap public key before RC and configure the matching private key in Actions secrets
 - App UX:
-  - add `Check for updates` command
-  - show available version and release notes when an update exists
-  - support `Download and install`
-  - prompt for restart after successful install
-- First implementation recommendation:
-  - manual update check only
-  - no background polling on launch
-  - production channel only
+  - `Settings → General` exposes automatic and manual checks
+  - available version, release notes, download progress, and recoverable errors are shown
+  - download and restart/install remain explicit user actions
+- First implementation behavior:
+  - automatic check after settings hydration and every 24 hours
+  - manual checks remain available when automatic checks are disabled
+  - no automatic download, install, or restart
 - Verification:
+  - automated updater, migration, Settings UI, frontend, and Rust tests pass
+  - production frontend build and Tauri configuration audit pass
+  - signed end-to-end verification remains blocked until the production public key, Actions secrets, and GitHub Pages source are configured
   - verify newer installer is detected from the running app
   - verify install applies over the existing app identity
   - verify notes, indexes, reader state, settings, and library-root config survive update

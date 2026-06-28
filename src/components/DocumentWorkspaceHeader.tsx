@@ -47,12 +47,8 @@ const DocumentControls = memo(function DocumentControls({
   const hasOpenDocument = pageCount > 0;
   const documentPageLabel = hasOpenDocument ? `${currentPage} / ${pageCount}` : "No document";
   const documentZoomLabel = `${Math.round(zoom * 100)}%`;
-  const autoMaximizeZoom = viewerApi?.getAutoMaximizeZoom() ?? null;
-  const zoomInDisabled =
-    !hasOpenDocument ||
-    (readerViewMode === "page" &&
-      autoMaximizeZoom !== null &&
-      zoom >= autoMaximizeZoom - 0.005);
+  const zoomLocked = readerViewMode === "page";
+  const zoomInDisabled = !hasOpenDocument || zoomLocked;
 
   function handleHeaderPageNavigation(direction: "previous" | "next") {
     debugAction("reader.navigate-header-click", {
@@ -123,7 +119,7 @@ const DocumentControls = memo(function DocumentControls({
             className="reader-workspace__header-button reader-workspace__header-button--compact"
             type="button"
             aria-label="Zoom out"
-            disabled={!hasOpenDocument}
+            disabled={!hasOpenDocument || zoomLocked}
             data-no-window-drag
             onClick={() => viewerApi?.zoomOut()}
           >

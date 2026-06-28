@@ -307,11 +307,35 @@ export function restoreModelSelection(
 
   const focusElement =
     focus.node instanceof HTMLElement ? focus.node : focus.node.parentElement;
-  const focusHost =
-    focusElement?.closest<HTMLElement>(".note-editor__block-content") ?? root;
+  const spansBlocks = selectionSnapshot.anchor.blockId !== selectionSnapshot.focus.blockId;
+  const focusHost = spansBlocks
+    ? root
+    : focusElement?.closest<HTMLElement>(".note-editor__block-content") ?? root;
   focusHost.focus({ preventScroll: true });
   selection.removeAllRanges();
-  if (typeof selection.setBaseAndExtent === "function") {
+  if (spansBlocks) {
+    const anchorBlockIndex = blocks.findIndex(
+      (block) => block.id === selectionSnapshot.anchor.blockId
+    );
+    const focusBlockIndex = blocks.findIndex(
+      (block) => block.id === selectionSnapshot.focus.blockId
+    );
+    const anchorBlock = blocks[anchorBlockIndex];
+    const focusBlock = blocks[focusBlockIndex];
+    const isForward =
+      anchorBlockIndex < focusBlockIndex ||
+      (anchorBlockIndex === focusBlockIndex &&
+        anchorBlock &&
+        focusBlock &&
+        pointToBlockOffset(anchorBlock, selectionSnapshot.anchor) <=
+          pointToBlockOffset(focusBlock, selectionSnapshot.focus));
+    const range = root.ownerDocument.createRange();
+    const start = isForward ? anchor : focus;
+    const end = isForward ? focus : anchor;
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    selection.addRange(range);
+  } else if (typeof selection.setBaseAndExtent === "function") {
     selection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
   } else {
     const range = root.ownerDocument.createRange();

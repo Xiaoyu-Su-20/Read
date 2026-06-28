@@ -9,15 +9,18 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
     process::Command,
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex,
+    },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use debug::process as debug_process;
 use models::{
-    DocumentDeleteState, DocumentPayload, DocumentRecord, DocumentState, FolderRecord,
-    FolderTreeNode, NativeTextPagePayload, NoteDocument, NoteIndexEntry, PdfOutlineItem,
-    RenderedPagePayload, StandaloneNoteSearchHit,
+    DocumentDeleteState, DocumentPayload, DocumentRecord, DocumentState, EffectivePageGeometry,
+    EffectivePageGeometrySource, FolderRecord, FolderTreeNode, NativeTextPagePayload, NoteDocument,
+    NoteIndexEntry, PdfOutlineItem, RenderVariant, RenderedPagePayload, StandaloneNoteSearchHit,
 };
 use normalization::{new_manifest_cache, ManifestCache, NormalizationWorker};
 use serde::{Deserialize, Serialize};
@@ -30,6 +33,7 @@ struct AppState {
     render_cache: Arc<Mutex<RenderCache>>,
     render_sessions: RenderSessionRegistry,
     in_flight_renders: Arc<Mutex<HashMap<String, Arc<InFlightRender>>>>,
+    render_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     active_reader_generation: Arc<Mutex<Option<ActiveReaderGeneration>>>,
     normalization_worker: NormalizationWorker,
     normalization_cache: ManifestCache,
@@ -285,6 +289,54 @@ fn is_active_reader_generation(
         Some(active)
             if active.document_id == document_id && active.generation_id == generation_id
     ))
+}
+
+fn validate_render_identity(request: &store::PageRenderRequest) -> Result<(), String> {
+    let Some(expected_variant) = request.expected_render_variant else {
+        return Ok(());
+    };
+    let normalized_manifest = request.normalization.as_ref().filter(|manifest| {
+        manifest.canonical_frame.is_some()
+            && manifest
+                .pages
+                .get((request.page_number.saturating_sub(1)) as usize)
+                .is_some_and(|entry| entry.page_number == request.page_number)
+    });
+    let actual_variant = if normalized_manifest.is_some() {
+        RenderVariant::Normalized
+    } else {
+        RenderVariant::Raw
+    };
+    let actual_token = normalized_manifest.and_then(|manifest| manifest.cache_token.as_deref());
+    let actual_rotation = 0;
+    let token_matches = match expected_variant {
+        RenderVariant::Raw => request.expected_normalization_token.is_none() && actual_token.is_none(),
+        RenderVariant::Normalized => {
+            request.expected_normalization_token.as_deref() == actual_token
+        }
+    };
+    let rotation_matches = request
+        .expected_rotation
+        .is_none_or(|expected_rotation| expected_rotation == actual_rotation);
+    if expected_variant == actual_variant && token_matches && rotation_matches {
+        return Ok(());
+    }
+
+    let details = json!({
+        "actual": {
+            "normalizationToken": actual_token,
+            "renderVariant": actual_variant,
+            "rotation": actual_rotation,
+        },
+        "code": "RENDER_IDENTITY_CHANGED",
+        "requested": {
+            "normalizationToken": request.expected_normalization_token.as_deref(),
+            "renderVariant": expected_variant,
+            "rotation": request.expected_rotation,
+        }
+    });
+    crate::debug::action("command.render_pdf_page:identity-changed", details.clone());
+    Err(format!("RENDER_IDENTITY_CHANGED:{details}"))
 }
 
 fn run_or_join_in_flight_render(
@@ -1322,8 +1374,14 @@ async fn render_pdf_page(
     page_number: u32,
     zoom: f32,
     open_session_id: Option<String>,
+    request_id: Option<String>,
     request_sequence: Option<u32>,
+    expected_normalization_token: Option<String>,
+    expected_render_variant: Option<RenderVariant>,
+    rotation: Option<i32>,
+    bypass_in_flight_join: Option<bool>,
 ) -> Result<RenderedPagePayload, String> {
+    let bypass_in_flight_join = bypass_in_flight_join.unwrap_or(false);
     let process = debug_process(
         "command.render_pdf_page",
         json!({
@@ -1331,7 +1389,12 @@ async fn render_pdf_page(
             "documentGenerationId": open_session_id,
             "openSessionId": open_session_id,
             "page": page_number,
+            "requestId": request_id,
             "requestSequence": request_sequence,
+            "expectedNormalizationToken": expected_normalization_token,
+            "expectedRenderVariant": expected_render_variant,
+            "rotation": rotation,
+            "bypassInFlightJoin": bypass_in_flight_join,
             "zoom": zoom,
         }),
     );
@@ -1341,19 +1404,31 @@ async fn render_pdf_page(
     let in_flight_renders = state.in_flight_renders.clone();
     let active_reader_generation = state.active_reader_generation.clone();
     let normalization_cache = state.normalization_cache.clone();
+    let render_cancellations = state.render_cancellations.clone();
+    let cancellation = Arc::new(AtomicBool::new(false));
+    if let Some(request_id) = request_id.as_ref() {
+        render_cancellations
+            .lock()
+            .map_err(|_| "Unable to lock render cancellation state.".to_string())?
+            .insert(request_id.clone(), cancellation.clone());
+    }
     let task_document_id = document_id.clone();
     let task_open_session_id = open_session_id.clone();
+    let task_request_id = request_id.clone();
+    let task_cancellation = cancellation.clone();
     let queued_at = Instant::now();
 
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let task_result = tauri::async_runtime::spawn_blocking(move || {
         crate::debug::action(
             "command.render_pdf_page:execution-started",
             json!({
                 "documentId": task_document_id,
                 "documentGenerationId": task_open_session_id,
                 "page": page_number,
+                "requestId": task_request_id,
                 "queuedWaitMs": queued_at.elapsed().as_millis(),
                 "requestSequence": request_sequence,
+                "bypassInFlightJoin": bypass_in_flight_join,
                 "zoom": zoom,
             }),
         );
@@ -1382,6 +1457,12 @@ async fn render_pdf_page(
             .map_err(|error| error.to_string())?;
         request.document_generation_id = task_open_session_id.clone();
         request.request_sequence = request_sequence;
+        request.request_id = task_request_id.clone();
+        request.cancellation = Some(task_cancellation);
+        request.expected_normalization_token = expected_normalization_token.clone();
+        request.expected_render_variant = expected_render_variant;
+        request.expected_rotation = rotation;
+        validate_render_identity(&request)?;
         crate::debug::action(
             "command.render_pdf_page:document-path-resolved",
             json!({
@@ -1389,15 +1470,45 @@ async fn render_pdf_page(
                 "documentId": request.document_id.clone(),
                 "documentGenerationId": request.document_generation_id,
                 "page": request.page_number,
+                "requestId": request.request_id,
                 "requestSequence": request.request_sequence,
                 "zoom": request.zoom,
             }),
         );
 
-        run_or_join_in_flight_render(request, render_cache, render_sessions, in_flight_renders)
+        if bypass_in_flight_join {
+            crate::debug::action(
+                "command.render_pdf_page:bypass-in-flight-join",
+                json!({
+                    "cacheKey": request.cache_key.clone(),
+                    "documentId": request.document_id.clone(),
+                    "documentGenerationId": request.document_generation_id,
+                    "page": request.page_number,
+                    "requestId": request.request_id,
+                    "requestSequence": request.request_sequence,
+                    "zoom": request.zoom,
+                }),
+            );
+            LibraryStore::render_pdf_page_blocking(request, render_cache, render_sessions)
+                .map_err(|error| error.to_string())
+        } else {
+            run_or_join_in_flight_render(request, render_cache, render_sessions, in_flight_renders)
+        }
     })
     .await
-    .map_err(|error| format!("Unable to join blocking render task: {error}"))?;
+    .map_err(|error| format!("Unable to join blocking render task: {error}"));
+
+    if let Some(request_id) = request_id.as_ref() {
+        if let Ok(mut cancellations) = render_cancellations.lock() {
+            let owns_registration = cancellations
+                .get(request_id)
+                .is_some_and(|registered| Arc::ptr_eq(registered, &cancellation));
+            if owns_registration {
+                cancellations.remove(request_id);
+            }
+        }
+    }
+    let result = task_result?;
 
     if let Err(error) = &result {
         process.fail(error, json!({}));
@@ -1406,6 +1517,29 @@ async fn render_pdf_page(
     }
 
     result
+}
+
+#[tauri::command]
+fn cancel_pdf_page_render(state: State<'_, AppState>, request_id: String) -> Result<(), String> {
+    let cancellation = state
+        .render_cancellations
+        .lock()
+        .map_err(|_| "Unable to lock render cancellation state.".to_string())?
+        .get(&request_id)
+        .cloned();
+    if let Some(cancellation) = cancellation {
+        cancellation.store(true, Ordering::Release);
+        crate::debug::action(
+            "command.cancel_pdf_page_render",
+            json!({ "requestId": request_id, "status": "marked" }),
+        );
+    } else {
+        crate::debug::action(
+            "command.cancel_pdf_page_render",
+            json!({ "requestId": request_id, "status": "not-active" }),
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1552,6 +1686,59 @@ async fn get_pdf_native_outline(
     result
 }
 
+#[tauri::command]
+async fn get_pdf_page_geometries(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    document_id: String,
+    open_session_id: Option<String>,
+) -> Result<Vec<EffectivePageGeometry>, String> {
+    let render_sessions = state.render_sessions.clone();
+    let active_reader_generation = state.active_reader_generation.clone();
+    let normalization_cache = state.normalization_cache.clone();
+    let task_document_id = document_id;
+    let task_open_session_id = open_session_id;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        if !is_active_reader_generation(
+            &active_reader_generation,
+            &task_document_id,
+            task_open_session_id.as_deref(),
+        )? {
+            return Err("Stale page geometry request skipped.".to_string());
+        }
+
+        let store = app_store(&app)?;
+        let mut request = store
+            .prepare_native_outline_request(&task_document_id)
+            .map_err(|error| error.to_string())?;
+        request.document_generation_id = task_open_session_id;
+        let mut geometries = render_sessions
+            .get_page_geometries(request)
+            .map_err(|error| error.to_string())?;
+        let normalization = store
+            .prepare_render_request(&task_document_id, 1, 1.0, &normalization_cache)
+            .map_err(|error| error.to_string())?
+            .normalization;
+
+        if let Some(manifest) = normalization {
+            if let Some(frame) = manifest.canonical_frame.as_ref() {
+                for geometry in &mut geometries {
+                    geometry.base_width = frame.width;
+                    geometry.base_height = frame.height;
+                    geometry.rotation = 0;
+                    geometry.normalization_token = manifest.cache_token.clone();
+                    geometry.source = EffectivePageGeometrySource::Normalized;
+                }
+            }
+        }
+
+        Ok(geometries)
+    })
+    .await
+    .map_err(|error| format!("Unable to join page geometry task: {error}"))?
+}
+
 pub fn run() {
     crate::debug::startup(
         "run.enter",
@@ -1576,6 +1763,8 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_page_load(|_webview, payload| {
             let event = match payload.event() {
                 PageLoadEvent::Started => "started",
@@ -1692,6 +1881,7 @@ pub fn run() {
                 render_cache: Arc::new(Mutex::new(RenderCache::default())),
                 render_sessions: RenderSessionRegistry::default(),
                 in_flight_renders: Arc::new(Mutex::new(HashMap::new())),
+                render_cancellations: Arc::new(Mutex::new(HashMap::new())),
                 active_reader_generation: Arc::new(Mutex::new(None)),
                 normalization_worker,
                 normalization_cache,
@@ -1838,10 +2028,11 @@ pub fn run() {
             log_note_debug_events,
             warm_pdf_display_lists,
             get_pdf_native_text_page,
+            get_pdf_page_geometries,
             get_pdf_native_outline,
+            cancel_pdf_page_render,
             render_pdf_page
-        ])
-        ;
+        ]);
 
     builder.run({
             crate::debug::startup(
@@ -1865,8 +2056,9 @@ pub fn run() {
 mod tests {
     use super::{
         default_library_root, load_library_root_config_from_path, move_library_root_contents,
-        save_library_root_config,
+        save_library_root_config, validate_render_identity,
     };
+    use crate::{models::RenderVariant, store::PageRenderRequest};
     use std::fs;
     use tempfile::tempdir;
 
@@ -1908,5 +2100,31 @@ mod tests {
             default_library_root(temp.path()),
             temp.path().join("Readr")
         );
+    }
+
+    #[test]
+    fn render_identity_rejects_stale_normalization_expectations() {
+        let mut request = PageRenderRequest {
+            document_id: "doc".to_string(),
+            document_generation_id: Some("session".to_string()),
+            fingerprint: "fingerprint".to_string(),
+            document_path: "doc.pdf".to_string(),
+            page_number: 1,
+            request_sequence: Some(1),
+            request_id: Some("request".to_string()),
+            cancellation: None,
+            expected_normalization_token: None,
+            expected_render_variant: Some(RenderVariant::Raw),
+            expected_rotation: Some(0),
+            zoom: 1.0,
+            cache_key: "doc:1:1.00".to_string(),
+            normalization: None,
+        };
+
+        validate_render_identity(&request).unwrap();
+        request.expected_render_variant = Some(RenderVariant::Normalized);
+        request.expected_normalization_token = Some("new-token".to_string());
+        let error = validate_render_identity(&request).unwrap_err();
+        assert!(error.starts_with("RENDER_IDENTITY_CHANGED:"));
     }
 }

@@ -4,7 +4,14 @@ import { act, createElement, createRef, type RefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createTextNode, replaceBlockSourceReference, replaceBlockType } from "../../../lib/notes";
+import {
+  createPageLinkNode,
+  createTextNode,
+  createTopicCardNode,
+  normalizeNoteBlocks,
+  replaceBlockSourceReference,
+  replaceBlockType
+} from "../../../lib/notes";
 import type { NoteBlock, NoteDocument, NotePageLinkNode } from "../../../lib/types";
 import { captureModelSelection } from "../dom/noteBlockSelection";
 import * as noteEditorDom from "../dom/noteEditorDom";
@@ -181,6 +188,137 @@ afterEach(() => {
 });
 
 describe("ModelNoteEditor interactions", () => {
+  it("copies PageLinks and Topic cards using their visible plain-text forms", () => {
+    const topic = createTopicCardNode({ id: "topic", text: "Topic", color: "accent" });
+    const pageLink = createPageLinkNode({
+      id: "page-link",
+      text: "(p. 27)",
+      bookPageLabel: "27",
+      documentId: "book-1",
+      pdfPageIndex: 26
+    });
+    expect(topic).toBeTruthy();
+    const { container } = renderEditor(
+      createNote([
+        {
+          id: "a",
+          type: "paragraph",
+          children: [
+            createTextNode("Before "),
+            topic!,
+            createTextNode("and "),
+            pageLink,
+            createTextNode(" after")
+          ]
+        }
+      ])
+    );
+    const body = editorBody(container);
+    const clipboard = new Map<string, string>();
+    setCaret(blockContent(container, 0), 0);
+
+    act(() => {
+      body.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "a",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+    const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(copyEvent, "clipboardData", {
+      value: {
+        setData: (type: string, value: string) => clipboard.set(type, value)
+      }
+    });
+    act(() => {
+      body.dispatchEvent(copyEvent);
+    });
+
+    expect(clipboard.get("text/plain")).toBe("Before [Topic] and (27) after");
+    expect(clipboard.get("application/x-calmreader-note-fragment")).toContain(
+      'data-inline-type="topic-card"'
+    );
+    expect(clipboard.get("application/x-calmreader-note-fragment")).toContain(
+      'data-inline-type="page-link"'
+    );
+  });
+
+  it("selects the complete note across model blocks with Ctrl+A", () => {
+    const blocks: NoteBlock[] = [
+      { id: "a", type: "paragraph", children: [createTextNode("First")] },
+      { id: "b", type: "heading2", children: [createTextNode("Middle")] },
+      { id: "c", type: "paragraph", children: [createTextNode("Last")] }
+    ];
+    const { container } = renderEditor(createNote(blocks));
+    const first = blockContent(container, 0);
+    setCaret(first, 2);
+
+    act(() => {
+      first.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "a",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+
+    const selection = captureModelSelection(editorBody(container), blocks);
+    expect(selection?.anchor.blockId).toBe("a");
+    expect(selection?.focus.blockId).toBe("c");
+    expect(window.getSelection()?.toString()).toContain("Middle");
+  });
+
+  it("undoes and redoes one typed character after the controller normalizes the local update", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello")]
+      }
+    ]);
+    const rendered = renderEditor(note);
+    const content = blockContent(rendered.container, 0);
+
+    setCaret(content, 0);
+    act(() => {
+      dispatchBeforeInput(content, "insertText", "!");
+    });
+    expect(latestBlocks(rendered.onChangeBlocks)[0].children).toEqual([
+      createTextNode("!Hello")
+    ]);
+    const normalizedEcho = normalizeNoteBlocks(latestBlocks(rendered.onChangeBlocks), note.bookId);
+    rerenderEditor(rendered, { ...note, blocks: normalizedEcho });
+
+    act(() => {
+      blockContent(rendered.container, 0).dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "z",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+    expect(blockContent(rendered.container, 0).textContent).toBe("Hello");
+
+    act(() => {
+      blockContent(rendered.container, 0).dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "y",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+    expect(blockContent(rendered.container, 0).textContent).toBe("!Hello");
+  });
+
   it("reloads external block updates for the same note id", () => {
     const note = createNote([
       {

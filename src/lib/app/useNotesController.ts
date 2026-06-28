@@ -9,7 +9,6 @@ import {
 import {
   NOTE_SAVE_DEBOUNCE_MS,
   deriveNoteNavigationItems,
-  normalizeNoteBlocks,
   normalizeNoteDocument,
   noteToPlainText
 } from "../notes";
@@ -34,9 +33,7 @@ type UseNotesControllerArgs = {
 
 type PendingBlocksCommitProfile = NoteBlocksUpdateProfile & {
   controllerReceivedAt: number;
-  normalizeElapsedMs: number;
   updaterElapsedMs: number;
-  normalizedBlockCount: number;
 };
 
 export function useNotesController({
@@ -51,7 +48,9 @@ export function useNotesController({
   const dirtyRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
   const saveInFlightRef = useRef(false);
+  const lastSaveErrorRef = useRef<unknown>(null);
   const pendingFlushRef = useRef(false);
+  const localRevisionRef = useRef(0);
   const activeTargetKeyRef = useRef<string | null>(null);
   const pendingBlocksCommitProfilesRef = useRef<PendingBlocksCommitProfile[]>([]);
 
@@ -83,11 +82,20 @@ export function useNotesController({
       });
 
       saveInFlightRef.current = true;
+      const revisionAtStart = localRevisionRef.current;
       try {
+        lastSaveErrorRef.current = null;
         const savedNote = normalizeNoteDocument(await saveNote(targetNote));
-        if (noteRef.current?.id === savedNote.id) {
-          noteRef.current = savedNote;
-          setNote(savedNote);
+        if (
+          noteRef.current?.id === savedNote.id &&
+          localRevisionRef.current === revisionAtStart
+        ) {
+          const reconciledNote = {
+            ...savedNote,
+            blocks: targetNote.blocks
+          };
+          noteRef.current = reconciledNote;
+          setNote(reconciledNote);
           dirtyRef.current = false;
         }
         if (savedNote.bookId === null) {
@@ -95,6 +103,7 @@ export function useNotesController({
         }
         process.finish();
       } catch (error) {
+        lastSaveErrorRef.current = error;
         process.fail(error);
         setStatusMessage(error instanceof Error ? error.message : "Unable to save note.");
       } finally {
@@ -126,6 +135,26 @@ export function useNotesController({
     [clearScheduledSave, persistNote]
   );
 
+  const flushForRestart = useCallback(
+    async (reason: string) => {
+      clearScheduledSave();
+      while (saveInFlightRef.current) {
+        await new Promise((resolve) => window.setTimeout(resolve, 20));
+      }
+
+      while (noteRef.current && dirtyRef.current) {
+        await persistNote(noteRef.current, reason);
+        while (saveInFlightRef.current) {
+          await new Promise((resolve) => window.setTimeout(resolve, 20));
+        }
+        if (lastSaveErrorRef.current) {
+          throw lastSaveErrorRef.current;
+        }
+      }
+    },
+    [clearScheduledSave, persistNote]
+  );
+
   const scheduleSave = useCallback(() => {
     clearScheduledSave();
     saveTimerRef.current = window.setTimeout(() => {
@@ -135,6 +164,7 @@ export function useNotesController({
 
   const replaceNote = useCallback((nextNote: NoteDocument) => {
     const normalized = normalizeNoteDocument(nextNote);
+    localRevisionRef.current = 0;
     noteRef.current = normalized;
     setNote(normalized);
   }, []);
@@ -158,7 +188,6 @@ export function useNotesController({
       updateId: pendingProfile.id,
       source: pendingProfile.source,
       blockCount: pendingProfile.blockCount,
-      normalizedBlockCount: pendingProfile.normalizedBlockCount,
       editorToControllerMs: Math.round(
         pendingProfile.controllerReceivedAt - pendingProfile.startedAt
       ),
@@ -166,7 +195,6 @@ export function useNotesController({
         performance.now() - pendingProfile.controllerReceivedAt
       ),
       totalElapsedMs: Math.round(performance.now() - pendingProfile.startedAt),
-      normalizeElapsedMs: Math.round(pendingProfile.normalizeElapsedMs),
       updaterElapsedMs: Math.round(pendingProfile.updaterElapsedMs)
     });
   }, [note?.blocks, note?.id]);
@@ -184,6 +212,7 @@ export function useNotesController({
     dirtyRef.current = false;
     pendingFlushRef.current = false;
     pendingBlocksCommitProfilesRef.current = [];
+    localRevisionRef.current = 0;
     activeTargetKeyRef.current = targetKey;
 
     if (!target) {
@@ -281,6 +310,7 @@ export function useNotesController({
           ...current,
           title
         };
+        localRevisionRef.current += 1;
         noteRef.current = nextNote;
         dirtyRef.current = true;
         scheduleSave();
@@ -309,13 +339,11 @@ export function useNotesController({
           return current;
         }
         const updaterStartedAt = performance.now();
-        const normalizeStartedAt = performance.now();
-        const normalizedBlocks = normalizeNoteBlocks(blocks, current.bookId);
-        const normalizeElapsedMs = performance.now() - normalizeStartedAt;
         const nextNote = {
           ...current,
-          blocks: normalizedBlocks
+          blocks
         };
+        localRevisionRef.current += 1;
         noteRef.current = nextNote;
         dirtyRef.current = true;
         scheduleSave();
@@ -324,20 +352,16 @@ export function useNotesController({
           pendingBlocksCommitProfilesRef.current.push({
             ...updateProfile,
             controllerReceivedAt,
-            normalizeElapsedMs,
-            updaterElapsedMs,
-            normalizedBlockCount: normalizedBlocks.length
+            updaterElapsedMs
           });
           debugLocalAction("notes.performance.blocks-propagation-updated", {
             noteId: current.id,
             updateId: updateProfile.id,
             source: updateProfile.source,
             blockCount: updateProfile.blockCount,
-            normalizedBlockCount: normalizedBlocks.length,
             editorToControllerMs: Math.round(
               controllerReceivedAt - updateProfile.startedAt
             ),
-            normalizeElapsedMs: Math.round(normalizeElapsedMs),
             updaterElapsedMs: Math.round(updaterElapsedMs)
           });
         }
@@ -368,6 +392,7 @@ export function useNotesController({
     updateTitle,
     updateBlocks,
     flushNow,
+    flushForRestart,
     copyAllText
   };
 }

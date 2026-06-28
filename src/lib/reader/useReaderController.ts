@@ -57,6 +57,7 @@ import {
   scaleZoomByKeyboardDirection,
   scaleZoomByWheelDelta
 } from "./zoom";
+import { registerRestartPreflightTask } from "../app/restartPreflight";
 
 const RENDER_CACHE_SIZE = 20;
 const PRELOAD_DELAY_MS = 0;
@@ -338,6 +339,7 @@ export function useReaderController({
   const dirtyStateRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
   const saveInFlightRef = useRef(false);
+  const lastSaveErrorRef = useRef<unknown>(null);
   const preloadTimerRef = useRef<number | null>(null);
   const zoomCommitTimerRef = useRef<number | null>(null);
   const rapidTurnWheelFinalizeTimerRef = useRef<number | null>(null);
@@ -1099,6 +1101,7 @@ export function useReaderController({
 
     saveInFlightRef.current = true;
     try {
+      lastSaveErrorRef.current = null;
       await saveDocumentState(activeDocument.document.id, state);
       if (
         currentDocumentRef.current?.document.id === activeDocument.document.id &&
@@ -1116,6 +1119,7 @@ export function useReaderController({
       });
       process.finish();
     } catch (error) {
+      lastSaveErrorRef.current = error;
       process.fail(error);
       onStatusChange(
         error instanceof Error ? error.message : String(error || "Unable to save reader state.")
@@ -1160,6 +1164,26 @@ export function useReaderController({
     }
 
     void persistReaderStateSnapshot(activeDocument, state, reason);
+  }
+
+  async function flushReaderStateForRestart(reason: string) {
+    clearScheduledSave();
+    while (saveInFlightRef.current) {
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    }
+
+    const activeDocument = currentDocumentRef.current;
+    const state = readerStateRef.current;
+    if (activeDocument && state && activeDocument.document.id === state.documentId) {
+      const signature = stateSignature(state);
+      if (dirtyStateRef.current || signature !== lastPersistedSignatureRef.current) {
+        await persistReaderStateSnapshot(activeDocument, state, reason);
+      }
+    }
+
+    if (lastSaveErrorRef.current) {
+      throw lastSaveErrorRef.current;
+    }
   }
 
   function scheduleReaderStateSave(reason: string, delayMs: number) {
@@ -1368,6 +1392,11 @@ export function useReaderController({
 
   finalizeRapidTurnListenerRef.current = finalizeRapidTurn;
   flushReaderStateListenerRef.current = flushReaderState;
+
+  useEffect(() => {
+    const taskId = `reader-state:${openSessionId ?? "inactive"}`;
+    return registerRestartPreflightTask(taskId, flushReaderStateForRestart);
+  }, [openSessionId]);
 
   useEffect(() => {
     const nextDocumentId = document?.document.id ?? null;

@@ -1,3 +1,7 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use tempfile::tempdir;
 
 use crate::{
@@ -10,7 +14,7 @@ use crate::{
 };
 
 use super::{
-    super::{LibraryStore, DEFAULT_COLLECTION_ID, MAX_RENDER_CACHE_ENTRIES},
+    super::{LibraryStore, RenderCache, DEFAULT_COLLECTION_ID},
     support::{
         create_render_cache, create_render_sessions, create_render_sessions_with_budget,
         write_valid_pdf, write_valid_pdf_pages,
@@ -283,10 +287,10 @@ fn open_document_reports_lightweight_page_count() {
 }
 
 #[test]
-fn render_cache_evicts_oldest_entries_beyond_the_limit() {
-    let render_cache = create_render_cache();
+fn render_cache_evicts_oldest_entries_beyond_the_byte_budget() {
+    let mut cache = RenderCache::with_byte_budget(8);
 
-    for page_number in 1..=(MAX_RENDER_CACHE_ENTRIES as u32 + 1) {
+    for page_number in 1..=3 {
         let request = super::super::PageRenderRequest {
             document_id: "doc".to_string(),
             document_generation_id: None,
@@ -294,12 +298,16 @@ fn render_cache_evicts_oldest_entries_beyond_the_limit() {
             document_path: "doc.pdf".to_string(),
             page_number,
             request_sequence: None,
+            request_id: None,
+            cancellation: None,
+            expected_normalization_token: None,
+            expected_render_variant: None,
+            expected_rotation: None,
             zoom: 1.0,
             cache_key: format!("doc:{page_number}:1.00"),
             normalization: None,
         };
 
-        let mut cache = render_cache.lock().unwrap();
         cache.insert(
             &request,
             600,
@@ -317,12 +325,93 @@ fn render_cache_evicts_oldest_entries_beyond_the_limit() {
         );
     }
 
-    let cache_keys = {
-        let cache = render_cache.lock().unwrap();
-        cache.cache_keys()
+    let cache_keys = cache.cache_keys();
+
+    assert_eq!(cache_keys.len(), 2);
+    assert_eq!(cache.resident_bytes(), 8);
+    assert!(!cache_keys.contains(&"doc:1:1.00".to_string()));
+    assert!(cache_keys.contains(&"doc:3:1.00".to_string()));
+}
+
+#[test]
+fn cancelled_render_stops_before_cache_lookup() {
+    let cancellation = Arc::new(AtomicBool::new(false));
+    cancellation.store(true, Ordering::Release);
+    let request = super::super::PageRenderRequest {
+        document_id: "doc".to_string(),
+        document_generation_id: Some("session".to_string()),
+        fingerprint: "fingerprint".to_string(),
+        document_path: "missing.pdf".to_string(),
+        page_number: 1,
+        request_sequence: Some(1),
+        request_id: Some("request-1".to_string()),
+        cancellation: Some(cancellation),
+        expected_normalization_token: None,
+        expected_render_variant: None,
+        expected_rotation: None,
+        zoom: 1.0,
+        cache_key: "doc:1:1.00".to_string(),
+        normalization: None,
     };
 
-    assert_eq!(cache_keys.len(), MAX_RENDER_CACHE_ENTRIES);
-    assert!(!cache_keys.contains(&"doc:1:1.00".to_string()));
-    assert!(cache_keys.contains(&format!("doc:{}:1.00", MAX_RENDER_CACHE_ENTRIES + 1)));
+    let error = LibraryStore::render_pdf_page_blocking(
+        request,
+        create_render_cache(),
+        create_render_sessions(),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("cancelled"));
+}
+
+#[test]
+fn fresh_same_key_render_succeeds_after_cancelled_independent_request() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("cancelled-then-fresh.pdf");
+    write_valid_pdf(&source, "Fresh request must render");
+
+    let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let manifest_cache = Arc::new(Mutex::new(Default::default()));
+    let render_cache = create_render_cache();
+    let render_sessions = create_render_sessions();
+
+    let mut cancelled_request = store
+        .prepare_render_request(&record.id, 1, 1.0, &manifest_cache)
+        .unwrap();
+    let cache_key = cancelled_request.cache_key.clone();
+    let cancellation = Arc::new(AtomicBool::new(true));
+    cancelled_request.request_id = Some("request-a".to_string());
+    cancelled_request.cancellation = Some(cancellation);
+
+    let cancelled = LibraryStore::render_pdf_page_blocking(
+        cancelled_request,
+        render_cache.clone(),
+        render_sessions.clone(),
+    )
+    .unwrap_err();
+    assert!(cancelled.to_string().contains("cancelled"));
+
+    let mut fresh_request = store
+        .prepare_render_request(&record.id, 1, 1.0, &manifest_cache)
+        .unwrap();
+    fresh_request.request_id = Some("request-b".to_string());
+    assert_eq!(fresh_request.cache_key, cache_key);
+
+    let rendered = LibraryStore::render_pdf_page_blocking(
+        fresh_request,
+        render_cache.clone(),
+        render_sessions,
+    )
+    .unwrap();
+
+    assert_eq!(rendered.cache_key, cache_key);
+    assert!(!rendered.image_bytes.is_empty());
+    assert!(render_cache
+        .lock()
+        .unwrap()
+        .cache_keys()
+        .contains(&cache_key));
 }

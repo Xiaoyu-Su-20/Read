@@ -1,0 +1,139 @@
+name: Release Readr
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-2025
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+      VITE_UPDATER_CONFIGURED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Configure LLVM for MuPDF bindings
+        shell: pwsh
+        run: |
+          $llvmBin = Join-Path $env:ProgramFiles 'LLVM\bin'
+          if (-not (Test-Path (Join-Path $llvmBin 'libclang.dll'))) {
+            choco install llvm --yes --no-progress
+          }
+          if (-not (Test-Path (Join-Path $llvmBin 'libclang.dll'))) {
+            throw "libclang.dll was not found in $llvmBin"
+          }
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Validate release version
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"$').Matches[0].Groups[1].Value
+          $tag = '${{ github.ref_name }}'
+          if ($tag -ne "v$packageVersion") { throw "Tag $tag does not match package version $packageVersion" }
+          if ($tauriVersion -ne $packageVersion) { throw "Tauri version $tauriVersion does not match package version $packageVersion" }
+          if ($cargoVersion -ne $packageVersion) { throw "Cargo version $cargoVersion does not match package version $packageVersion" }
+      - name: Test frontend
+        run: npm run test
+      - name: Test Rust backend
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Validate release credentials
+        shell: pwsh
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw "TAURI_SIGNING_PRIVATE_KEY is required" }
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { throw "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required" }
+          if (-not $env:TAURI_UPDATER_PUBLIC_KEY) { throw "TAURI_UPDATER_PUBLIC_KEY repository variable is required" }
+      - name: Inject updater public key
+        shell: pwsh
+        run: |
+          $path = 'src-tauri/tauri.conf.json'
+          $config = Get-Content $path -Raw | ConvertFrom-Json
+          $config.plugins.updater.pubkey = $env:TAURI_UPDATER_PUBLIC_KEY.Trim()
+          $config | ConvertTo-Json -Depth 100 | Set-Content $path
+      - name: Build signed installer and updater
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($version -like '*-rc.*') {
+            npm run tauri:build:rc
+          } else {
+            npm run tauri:build
+          }
+      - name: Collect release assets and manifests
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = '${{ github.ref_name }}'
+          if ($tag -ne "v$version") { throw "Tag $tag does not match package version $version" }
+          $bundle = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.nsis.zip' | Select-Object -First 1
+          if (-not $bundle) { throw 'Updater bundle was not produced' }
+          $signaturePath = "$($bundle.FullName).sig"
+          if (-not (Test-Path $signaturePath)) { throw 'Updater signature was not produced' }
+          New-Item -ItemType Directory -Force release-assets, update-site/updates/stable, update-site/updates/rc | Out-Null
+          Copy-Item $bundle.FullName release-assets/
+          Copy-Item $signaturePath release-assets/
+          Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' | Copy-Item -Destination release-assets/
+          $assetName = [Uri]::EscapeDataString($bundle.Name)
+          $platform = [ordered]@{
+            url = "https://github.com/Xiaoyu-Su-20/Read/releases/download/$tag/$assetName"
+            signature = (Get-Content $signaturePath -Raw).Trim()
+          }
+          $manifest = [ordered]@{
+            version = $version
+            notes = "Readr $version"
+            pub_date = (Get-Date).ToUniversalTime().ToString('o')
+            platforms = [ordered]@{
+              "windows-x86_64" = $platform
+            }
+          } | ConvertTo-Json -Depth 10
+          $parsedManifest = $manifest | ConvertFrom-Json
+          $windowsManifest = $parsedManifest.platforms.'windows-x86_64'
+          if (-not $windowsManifest.url -or -not $windowsManifest.signature) {
+            throw 'Static updater manifest is missing windows-x86_64 URL or signature'
+          }
+          if ($version -like '*-rc.*') {
+            Set-Content update-site/updates/rc/latest.json $manifest
+          } else {
+            Set-Content update-site/updates/stable/latest.json $manifest
+            Set-Content update-site/updates/rc/latest.json $manifest
+          }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-rc.') }}
+          make_latest: ${{ contains(github.ref_name, '-rc.') && 'false' || 'true' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: updater-site
+          path: update-site
+
+  publish-update-feed:
+    needs: windows-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: updater-site
+          path: update-site
+      - uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: update-site
+          keep_files: true

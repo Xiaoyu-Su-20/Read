@@ -15,10 +15,23 @@ import {
 } from "./settingsRegistry";
 
 describe("settingsRegistry", () => {
+  it("migrates version 14 settings with automatic updates enabled by default", () => {
+    const previous = createDefaultAppSettingsPayload().settings;
+    const { automaticUpdates: _automaticUpdates, ...versionFourteenSettings } = previous;
+
+    expect(
+      migrateAppSettingsPayload({
+        version: 14,
+        settings: versionFourteenSettings
+      }).settings.automaticUpdates
+    ).toBe(true);
+  });
+
   it("creates the default payload with built-in-theme-backed settings", () => {
     expect(createDefaultAppSettingsPayload()).toEqual({
       version: APP_SETTINGS_VERSION,
       settings: {
+        automaticUpdates: true,
         readerPaneSplitRatio: 0.42,
         readerPreferences: {
           fullscreenMode: false,
@@ -28,7 +41,8 @@ describe("settingsRegistry", () => {
           autoHidePageResizer: true
         },
         activeThemeId: "builtin-midnight",
-        customThemes: []
+        customThemes: expect.any(Array),
+        ignoredSpellcheckWords: []
       }
     });
   });
@@ -72,6 +86,7 @@ describe("settingsRegistry", () => {
     ).toEqual({
       version: APP_SETTINGS_VERSION,
       settings: {
+        automaticUpdates: true,
         readerPaneSplitRatio: 0.52,
         readerPreferences: {
           fullscreenMode: true,
@@ -81,7 +96,7 @@ describe("settingsRegistry", () => {
           autoHidePageResizer: true
         },
         activeThemeId: "custom-migrated",
-        customThemes: [
+        customThemes: expect.arrayContaining([
           {
             id: "custom-migrated",
             name: "Migrated Theme",
@@ -99,7 +114,8 @@ describe("settingsRegistry", () => {
               surfaceTone: "dark"
             }
           }
-        ]
+        ]),
+        ignoredSpellcheckWords: []
       }
     });
   });
@@ -143,6 +159,7 @@ describe("settingsRegistry", () => {
     ).toEqual({
       version: APP_SETTINGS_VERSION,
       settings: {
+        automaticUpdates: true,
         readerPaneSplitRatio: 0.48,
         readerPreferences: {
           fullscreenMode: false,
@@ -152,7 +169,7 @@ describe("settingsRegistry", () => {
           autoHidePageResizer: true
         },
         activeThemeId: "custom-1",
-        customThemes: [
+        customThemes: expect.arrayContaining([
           {
             id: "custom-1",
             name: "Night Ink",
@@ -170,7 +187,8 @@ describe("settingsRegistry", () => {
               surfaceTone: "dark"
             }
           }
-        ]
+        ]),
+        ignoredSpellcheckWords: []
       }
     });
   });
@@ -213,6 +231,7 @@ describe("settingsRegistry", () => {
     ).toEqual({
       version: APP_SETTINGS_VERSION,
       settings: {
+        automaticUpdates: true,
         readerPaneSplitRatio: 0.48,
         readerPreferences: {
           fullscreenMode: false,
@@ -222,7 +241,7 @@ describe("settingsRegistry", () => {
           autoHidePageResizer: true
         },
         activeThemeId: "custom-1",
-        customThemes: [
+        customThemes: expect.arrayContaining([
           {
             id: "custom-1",
             name: "Night Ink",
@@ -240,7 +259,8 @@ describe("settingsRegistry", () => {
               surfaceTone: "dark"
             }
           }
-        ]
+        ]),
+        ignoredSpellcheckWords: []
       }
     });
   });
@@ -305,6 +325,7 @@ describe("settingsRegistry", () => {
         ]
       })
     ).toEqual({
+      automaticUpdates: true,
       readerPaneSplitRatio: 0.42,
       readerPreferences: {
         fullscreenMode: false,
@@ -332,7 +353,8 @@ describe("settingsRegistry", () => {
             surfaceTone: "dark"
           }
         }
-      ]
+      ],
+      ignoredSpellcheckWords: []
     });
   });
 
@@ -434,16 +456,17 @@ describe("settingsRegistry", () => {
   });
 
   it("creates, duplicates, saves, and deletes custom themes while protecting built-ins", () => {
-    const created = createNewCustomTheme(createDefaultAppSettingsPayload().settings);
-    expect(created.customThemes).toHaveLength(1);
-    expect(created.activeThemeId).toBe(created.customThemes[0].id);
+    const defaults = createDefaultAppSettingsPayload().settings;
+    const created = createNewCustomTheme(defaults);
+    expect(created.customThemes).toHaveLength(defaults.customThemes.length + 1);
+    expect(created.customThemes.some((theme) => theme.id === created.activeThemeId)).toBe(true);
 
     const duplicated = duplicateTheme(created, "builtin-sepia");
-    expect(duplicated.customThemes).toHaveLength(2);
-    expect(duplicated.activeThemeId).toBe(duplicated.customThemes[1].id);
+    expect(duplicated.customThemes).toHaveLength(defaults.customThemes.length + 2);
 
-    const customThemeId = duplicated.customThemes[1].id;
-    const themeDraft = createThemeDraft(duplicated.customThemes[1]);
+    const customThemeId = duplicated.activeThemeId;
+    const duplicatedTheme = duplicated.customThemes.find((theme) => theme.id === customThemeId)!;
+    const themeDraft = createThemeDraft(duplicatedTheme);
     themeDraft.name = "Sepia Copy";
     themeDraft.source.documentPaper = "#f0d8b2";
 
@@ -459,7 +482,7 @@ describe("settingsRegistry", () => {
     expect(deleteCustomTheme(saved, "builtin-midnight")).toEqual(saved);
 
     const deleted = deleteCustomTheme(saved, customThemeId);
-    expect(deleted.customThemes).toHaveLength(1);
+    expect(deleted.customThemes).toHaveLength(defaults.customThemes.length + 1);
     expect(deleted.activeThemeId).toBe("builtin-midnight");
   });
 });

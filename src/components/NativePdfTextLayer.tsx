@@ -384,6 +384,11 @@ function focusReaderSurface(layer: HTMLDivElement) {
   });
 }
 
+function closestNoteEditorRoot(node: Node | null) {
+  const element = node instanceof Element ? node : node?.parentElement;
+  return element?.closest<HTMLElement>("[data-note-editor-root]") ?? null;
+}
+
 function nativeTextLogFields(fields: Record<string, unknown>) {
   return {
     logOrigin: "native-text-layer",
@@ -518,12 +523,32 @@ const NativePdfTextLayer = memo(function NativePdfTextLayer({
       if (!currentTextLayer || !selectedRange(currentSelection)) {
         return;
       }
+      const domSelection = window.getSelection();
+      const notesOwnCopy = Boolean(
+        closestNoteEditorRoot(event.target as Node | null) ||
+          closestNoteEditorRoot(document.activeElement) ||
+          closestNoteEditorRoot(domSelection?.anchorNode ?? null) ||
+          closestNoteEditorRoot(domSelection?.focusNode ?? null)
+      );
+      if (notesOwnCopy) {
+        return;
+      }
+      const readerSurface = layerRef.current?.closest<HTMLElement>(".reader-scroll-surface");
+      const pdfOwnsCopy = Boolean(
+        readerSurface &&
+          ((event.target instanceof Node && readerSurface.contains(event.target)) ||
+            (document.activeElement && readerSurface.contains(document.activeElement)))
+      );
+      if (!pdfOwnsCopy) {
+        return;
+      }
       const selectedText = normalizeNativeSelectionText(currentTextLayer, currentSelection);
       if (!selectedText) {
         return;
       }
-      event.clipboardData?.setData("text/plain", selectedText);
       event.preventDefault();
+      event.clipboardData?.clearData();
+      event.clipboardData?.setData("text/plain", selectedText);
       debugAction(
         "frontend.native-text.selection-copy",
         nativeTextLogFields({

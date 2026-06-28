@@ -48,7 +48,9 @@ vi.mock("../lib/reader/useReaderController", () => ({
 
 const mockRenderedPage: CachedRenderedPage = {
   documentId: "doc-1",
-  imageBytes: [1, 2, 3],
+  documentGenerationId: "session-1",
+  encodedByteSize: 3,
+  estimatedResidentBytes: 3_840_003,
   imageUrl: "/page-1.png",
   pageNumber: 1,
   width: 800,
@@ -61,6 +63,7 @@ const mockRenderedPage: CachedRenderedPage = {
   renderVariant: "raw",
   normalizationToken: null,
   renderZoom: 1,
+  rotation: 0,
   textLayerTransform: {
     sourceWidth: 800,
     sourceHeight: 1200,

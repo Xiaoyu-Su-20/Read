@@ -113,6 +113,15 @@ export type DocumentPayload = {
   pageCount: number;
 };
 
+export type EffectivePageGeometry = {
+  pageNumber: number;
+  baseWidth: number;
+  baseHeight: number;
+  rotation: number;
+  normalizationToken: string | null;
+  source: "normalized" | "raw";
+};
+
 export type ReaderSession = {
   document: DocumentPayload;
   documentId: string;
