@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  windows-release:
+  build-signed:
     runs-on: windows-2025
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -74,13 +74,30 @@ jobs:
           } else {
             npm run tauri:build
           }
+      - name: Upload signed build checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-nsis-${{ github.run_id }}
+          path: src-tauri/target/release/bundle/nsis/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  publish-release:
+    needs: build-signed
+    runs-on: windows-2025
+    steps:
+      - name: Download signed build checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-nsis-${{ github.run_id }}
+          path: signed-nsis
       - name: Collect release assets and manifests
         shell: pwsh
         run: |
-          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $version = '${{ github.ref_name }}'.TrimStart('v')
           $tag = '${{ github.ref_name }}'
-          if ($tag -ne "v$version") { throw "Tag $tag does not match package version $version" }
-          $bundle = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
+          $bundle = Get-ChildItem signed-nsis -Filter '*-setup.exe' | Select-Object -First 1
           if (-not $bundle) { throw 'Signed NSIS installer was not produced' }
           $signaturePath = "$($bundle.FullName).sig"
           if (-not (Test-Path $signaturePath)) { throw 'Updater signature was not produced' }
@@ -111,25 +128,30 @@ jobs:
             Set-Content update-site/updates/stable/latest.json $manifest
             Set-Content update-site/updates/rc/latest.json $manifest
           }
-      - uses: softprops/action-gh-release@v2
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
           fail_on_unmatched_files: true
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-rc.') }}
           make_latest: ${{ contains(github.ref_name, '-rc.') && 'false' || 'true' }}
-      - uses: actions/upload-artifact@v4
+      - name: Upload update-feed checkpoint
+        uses: actions/upload-artifact@v4
         with:
-          name: updater-site
+          name: updater-site-${{ github.run_id }}
           path: update-site
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
 
   publish-update-feed:
-    needs: windows-release
+    needs: publish-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: updater-site
+          name: updater-site-${{ github.run_id }}
           path: update-site
       - uses: peaceiris/actions-gh-pages@v4
         with:
