@@ -38,16 +38,14 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
+      - name: Verify synchronized versions
+        run: npm run version:check
       - name: Validate release version
         shell: pwsh
         run: |
           $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"$').Matches[0].Groups[1].Value
           $tag = '${{ github.ref_name }}'
           if ($tag -ne "v$packageVersion") { throw "Tag $tag does not match package version $packageVersion" }
-          if ($tauriVersion -ne $packageVersion) { throw "Tauri version $tauriVersion does not match package version $packageVersion" }
-          if ($cargoVersion -ne $packageVersion) { throw "Cargo version $cargoVersion does not match package version $packageVersion" }
       - name: Test frontend
         run: npm run test
       - name: Test Rust backend

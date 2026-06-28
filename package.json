@@ -1,7 +1,7 @@
 {
   "name": "readr",
   "private": true,
-  "version": "0.9.0-rc.1",
+  "version": "0.9.0-rc.2",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 1420",
@@ -12,7 +12,10 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:build:rc": "tauri build --config src-tauri/tauri.rc.conf.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "version": "npm run version:sync",
+    "version:check": "node scripts/sync-version.mjs --check",
+    "version:sync": "node scripts/sync-version.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
