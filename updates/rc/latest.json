@@ -1,11 +1,11 @@
 {
-  "version": "0.9.0-rc.1",
-  "notes": "Readr 0.9.0-rc.1",
-  "pub_date": "2026-06-28T17:40:28.7288476Z",
+  "version": "0.9.0-rc.2",
+  "notes": "Readr 0.9.0-rc.2",
+  "pub_date": "2026-06-28T19:05:09.8001464Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/Xiaoyu-Su-20/Read/releases/download/v0.9.0-rc.1/Readr_0.9.0-rc.1_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRYmdCK2ROVXF6TEpBeXhzeWtHTmNINlZQc1ZzWngycGJ0b21xUXJTOWtENUMrcWo4eTZhNzhvVllTUzFDM2hhWGVwZXhNZzZlSXpwZlk0em1aL1F3eUthRmRJM1d6MFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgyNjY4Mjc0CWZpbGU6UmVhZHJfMC45LjAtcmMuMV94NjQtc2V0dXAuZXhlCkFDY3E1UkdVTEU0T01PM2pJaFVxbWY4b01wUVRzMDVYZTVHYWtLMGdFMkx3cVJwSUdDZTZRNFNMeGdENkZtQlM5aHRIT3oxamd4K3ZxaXliam83WUJ3PT0K"
+      "url": "https://github.com/Xiaoyu-Su-20/Read/releases/download/v0.9.0-rc.2/Readr_0.9.0-rc.2_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRYmdCK2ROVXF6TExGcEppT3hCenZhaTd4K2c2ZWxWd0dhZjJGdHRWVUpGUEk5bWoyTlFjUW8wS1VaS1BHK1BCeHBvZDZHVHFqWjlvRzNXd3VVQVNONVE0MmUwN2NJQ1E4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgyNjczNDAwCWZpbGU6UmVhZHJfMC45LjAtcmMuMl94NjQtc2V0dXAuZXhlClpNUkx5VmgwOFZQRkFrMnpueFZsZ0dwQTlXWUdBSGpIVnpsL0JaQ2lhOHRJUXBwVGdGNzdXVVVJQ1VReE5RVFNHeUloR0lqRitvZFJXNDZsUVBKYkN3PT0K"
     }
   }
 }
