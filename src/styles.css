@@ -1587,6 +1587,10 @@ button {
   transform: translateY(-0.08rem);
 }
 
+.book-row__drag-handle {
+  color: var(--collection-row-icon);
+}
+
 .collection-row__drag-handle:active,
 .book-row__drag-handle:active {
   cursor: grabbing;
@@ -2053,7 +2057,7 @@ button {
 }
 
 .book-row__drag-handle--disabled {
-  opacity: 0.34;
+  opacity: 1;
   cursor: default;
 }
 

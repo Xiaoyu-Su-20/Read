@@ -1,6 +1,6 @@
 [package]
 name = "readr"
-version = "0.1.0"
+version = "0.9.0-rc.2"
 description = "A calm, command-first PDF reader."
 authors = ["OpenAI Codex"]
 edition = "2021"
