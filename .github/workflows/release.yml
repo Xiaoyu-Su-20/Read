@@ -80,14 +80,13 @@ jobs:
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $tag = '${{ github.ref_name }}'
           if ($tag -ne "v$version") { throw "Tag $tag does not match package version $version" }
-          $bundle = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.nsis.zip' | Select-Object -First 1
-          if (-not $bundle) { throw 'Updater bundle was not produced' }
+          $bundle = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $bundle) { throw 'Signed NSIS installer was not produced' }
           $signaturePath = "$($bundle.FullName).sig"
           if (-not (Test-Path $signaturePath)) { throw 'Updater signature was not produced' }
           New-Item -ItemType Directory -Force release-assets, update-site/updates/stable, update-site/updates/rc | Out-Null
           Copy-Item $bundle.FullName release-assets/
           Copy-Item $signaturePath release-assets/
-          Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' | Copy-Item -Destination release-assets/
           $assetName = [Uri]::EscapeDataString($bundle.Name)
           $platform = [ordered]@{
             url = "https://github.com/Xiaoyu-Su-20/Read/releases/download/$tag/$assetName"
