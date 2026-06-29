@@ -413,6 +413,117 @@ describe("ModelNoteEditor interactions", () => {
     ]);
   });
 
+  it("continues collapsed-caret formatting across separate text inputs", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    let content = blockContent(container, 0);
+
+    setCaret(content, 5);
+    act(() => {
+      content.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "b",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+    act(() => {
+      dispatchBeforeInput(content, "insertText", "!");
+    });
+    content = blockContent(container, 0);
+    act(() => {
+      dispatchBeforeInput(content, "insertText", "?");
+    });
+
+    expect(latestBlocks(onChangeBlocks)[0].children).toEqual([
+      createTextNode("Hello"),
+      createTextNode("!?", { bold: true })
+    ]);
+  });
+
+  it("preserves newly typed bold text through a later edit in the same paragraph", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello")]
+      }
+    ]);
+    const rendered = renderEditor(note);
+    let content = blockContent(rendered.container, 0);
+
+    setCaret(content, 5);
+    act(() => {
+      content.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "b",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+      dispatchBeforeInput(content, "insertText", "!");
+    });
+
+    const formattedEcho = normalizeNoteBlocks(latestBlocks(rendered.onChangeBlocks), note.bookId);
+    rerenderEditor(rendered, { ...note, blocks: formattedEcho });
+    content = blockContent(rendered.container, 0);
+    setCaret(content, 0);
+    act(() => {
+      dispatchBeforeInput(content, "insertText", "?");
+    });
+
+    expect(latestBlocks(rendered.onChangeBlocks)[0].children).toEqual([
+      createTextNode("?Hello"),
+      createTextNode("!", { bold: true })
+    ]);
+  });
+
+  it("preserves a newly formatted range through a later edit in the same paragraph", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello world")]
+      }
+    ]);
+    const rendered = renderEditor(note);
+    let content = blockContent(rendered.container, 0);
+
+    setSelection(content, 6, 11);
+    act(() => {
+      content.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "i",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    });
+
+    const formattedEcho = normalizeNoteBlocks(latestBlocks(rendered.onChangeBlocks), note.bookId);
+    rerenderEditor(rendered, { ...note, blocks: formattedEcho });
+    content = blockContent(rendered.container, 0);
+    setCaret(content, 0);
+    act(() => {
+      dispatchBeforeInput(content, "insertText", "?");
+    });
+
+    expect(latestBlocks(rendered.onChangeBlocks)[0].children).toEqual([
+      createTextNode("?Hello "),
+      createTextNode("world", { italic: true })
+    ]);
+  });
+
   it("regenerates inline HTML only for the changed block during typing", () => {
     const renderHtmlSpy = vi.spyOn(noteEditorDom, "renderNoteInlineNodesHtml");
     const note = createNote([
