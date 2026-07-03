@@ -1,0 +1,119 @@
+name: Republish Existing Signed Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, for example v0.9.0-rc.4
+        required: true
+        type: string
+      source_run_id:
+        description: Release workflow run ID containing the signed-nsis artifact
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  republish:
+    runs-on: windows-2025
+    steps:
+      - name: Verify requested tag exists
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ($env:TAG -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "Invalid release tag: $env:TAG"
+          }
+          gh api "repos/$env:REPOSITORY/git/ref/tags/$env:TAG" | Out-Null
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-nsis-${{ inputs.source_run_id }}
+          path: signed-nsis
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.source_run_id }}
+      - name: Validate tag and collect release assets
+        id: collect
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          $tag = $env:TAG
+          $version = $tag.TrimStart('v')
+          $bundle = Get-ChildItem signed-nsis -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $bundle) { throw 'Signed NSIS installer was not found in the source artifact' }
+          $signaturePath = "$($bundle.FullName).sig"
+          if (-not (Test-Path $signaturePath)) { throw 'Updater signature was not found in the source artifact' }
+          if ($bundle.Name -notlike "*$version*") {
+            throw "Artifact $($bundle.Name) does not match requested version $version"
+          }
+          New-Item -ItemType Directory -Force release-assets, update-site/updates/stable, update-site/updates/rc | Out-Null
+          Copy-Item $bundle.FullName release-assets/
+          Copy-Item $signaturePath release-assets/
+          $assetName = [Uri]::EscapeDataString($bundle.Name)
+          $manifest = [ordered]@{
+            version = $version
+            notes = "Readr $version"
+            pub_date = (Get-Date).ToUniversalTime().ToString('o')
+            platforms = [ordered]@{
+              'windows-x86_64' = [ordered]@{
+                url = "https://github.com/Xiaoyu-Su-20/Read/releases/download/$tag/$assetName"
+                signature = (Get-Content $signaturePath -Raw).Trim()
+              }
+            }
+          } | ConvertTo-Json -Depth 10
+          if ($version -like '*-rc.*') {
+            Set-Content update-site/updates/rc/latest.json $manifest
+          } else {
+            Set-Content update-site/updates/stable/latest.json $manifest
+            Set-Content update-site/updates/rc/latest.json $manifest
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Republish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ contains(inputs.tag, '-rc.') }}
+          make_latest: ${{ contains(inputs.tag, '-rc.') && 'false' || 'true' }}
+      - name: Upload recovered update feed
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-updater-site-${{ github.run_id }}
+          path: update-site
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-update-feed:
+    needs: republish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: recovered-updater-site-${{ github.run_id }}
+          path: update-site
+      - uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: update-site
+          keep_files: true
+
+  verify:
+    needs: publish-update-feed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify republished updater feed
+        run: node scripts/verify-update-feed.mjs "${TAG#v}"
+        env:
+          TAG: ${{ inputs.tag }}

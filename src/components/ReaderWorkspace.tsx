@@ -5,6 +5,7 @@ import DocumentWorkspaceHeader from "./DocumentWorkspaceHeader";
 import NotesViewport from "./NotesViewport";
 import PaneResizeHandle from "./PaneResizeHandle";
 import ReaderViewport from "./ReaderViewport";
+import WorkspaceHeaderTools from "./WorkspaceHeaderTools";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import type { ViewTransition } from "../lib/workspaceView";
 import { useReaderPaneLayoutController } from "../lib/reader/useReaderPaneLayoutController";
@@ -24,6 +25,7 @@ import type {
 import type { UnifiedSearchController } from "../search/controller/UnifiedSearchController";
 
 type ReaderWorkspaceProps = {
+  layoutMode: "reader" | "book";
   activeViewTransition: ViewTransition | null;
   readerSession: ReaderSession | null;
   readerActive: boolean;
@@ -110,6 +112,7 @@ const DeferredNotesViewport = memo(function DeferredNotesViewport(
 });
 
 export default function ReaderWorkspace({
+  layoutMode,
   activeViewTransition,
   readerSession,
   readerActive,
@@ -164,6 +167,7 @@ export default function ReaderWorkspace({
   autoHidePaneResizeHandle,
   onChangeReaderPaneSplitRatio
 }: ReaderWorkspaceProps) {
+  const bookOnly = layoutMode === "book";
   const document = readerSession?.document ?? null;
   const bookmarks = readerState?.bookmarks ?? [];
   const autoMaximizeMinDocumentWidth =
@@ -179,7 +183,7 @@ export default function ReaderWorkspace({
 
   return (
     <div
-      className={`reader-workspace${showHeaders ? "" : " reader-workspace--immersive"}`}
+      className={`reader-workspace${bookOnly ? " reader-workspace--book-only" : ""}${showHeaders ? "" : " reader-workspace--immersive"}`}
     >
       {showHeaders ? (
         <DocumentWorkspaceHeader
@@ -195,26 +199,44 @@ export default function ReaderWorkspace({
           searchFocusRequest={searchFocusRequest}
           onSearchOpenDocument={onSearchOpenDocument}
           onSearchGoToPage={onSearchGoToPage}
-          onSearchOpenNoteResult={onSearchOpenNoteResult}
-          headerActionsContainerId="reader-workspace-notes-header-tools"
+          onSearchOpenNoteResult={bookOnly ? null : onSearchOpenNoteResult}
+          headerActionsContainerId={
+            bookOnly ? "book-workspace-header-tools" : "reader-workspace-notes-header-tools"
+          }
+          rightSlot={
+            bookOnly ? (
+              <WorkspaceHeaderTools
+                commandPaletteOpen={commandPaletteOpen}
+                registerCommandPaletteAnchor={registerCommandPaletteAnchor}
+                onToggleCommandPalette={onToggleCommandPalette}
+                fullscreen={fullscreen}
+                onToggleFullscreen={onToggleFullscreen}
+              />
+            ) : undefined
+          }
         />
       ) : null}
 
       <div
-        ref={containerRef}
-        className="reader-workspace__body"
-        style={workspaceStyle}
+        ref={bookOnly ? undefined : containerRef}
+        className={`reader-workspace__body${bookOnly ? " reader-workspace__body--book-only" : ""}`}
+        style={bookOnly ? undefined : workspaceStyle}
       >
-        <div className="reader-workspace__splitter">
-          <PaneResizeHandle
-            active={isDragging}
-            autoHide={autoHidePaneResizeHandle}
-            hidden={isStackedLayout || hidePaneResizeHandle}
-            separatorProps={separatorProps}
-          />
-        </div>
+        {!bookOnly ? (
+          <div className="reader-workspace__splitter">
+            <PaneResizeHandle
+              active={isDragging}
+              autoHide={autoHidePaneResizeHandle}
+              hidden={isStackedLayout || hidePaneResizeHandle}
+              separatorProps={separatorProps}
+            />
+          </div>
+        ) : null}
 
-        <div className="reader-workspace__document">
+        <div
+          key="persistent-document-pane"
+          className={`reader-workspace__document${bookOnly ? " reader-workspace__document--only" : ""}`}
+        >
           <ReaderViewport
             activeViewTransition={activeViewTransition}
             readerSession={readerSession}
@@ -230,37 +252,39 @@ export default function ReaderWorkspace({
             suspendAutoFitDuringPaneResize={isDragging && readerViewMode === "page"}
           />
         </div>
-        <div className="reader-workspace__notes">
-          <DeferredNotesViewport
-            note={note}
-            loading={notesLoading}
-            ignoredSpellcheckWords={ignoredSpellcheckWords}
-            capabilityMode="document"
-            fullscreen={fullscreen}
-            onToggleFullscreen={onToggleFullscreen}
-            navigationOpen={navigationOpen}
-            onNavigationOpenChange={onNavigationOpenChange}
-            navigationOpenRequest={navigationOpenRequest}
-            navigationItems={noteNavigationItems}
-            onChangeTitle={onChangeNoteTitle}
-            onChangeBlocks={onChangeNoteBlocks}
-            onToggleIgnoredSpellcheckWord={onToggleIgnoredSpellcheckWord}
-            onFlush={onFlushNote}
-            onCopyAllText={onCopyAllNoteText}
-            onGoToPage={onGoToNotePage}
-            documentId={document?.document.id ?? null}
-            outlineItems={outlineItems}
-            bookmarks={bookmarks}
-            onNavigateToTarget={onNavigateToTarget}
-            onSetBookmarks={onSetBookmarks}
-            currentPage={currentReaderPage}
-            revealRequest={noteRevealRequest}
-            headerActionsContainerId="reader-workspace-notes-header-tools"
-            commandPaletteOpen={commandPaletteOpen}
-            onToggleCommandPalette={onToggleCommandPalette}
-            registerCommandPaletteAnchor={registerCommandPaletteAnchor}
-          />
-        </div>
+        {!bookOnly ? (
+          <div className="reader-workspace__notes">
+            <DeferredNotesViewport
+              note={note}
+              loading={notesLoading}
+              ignoredSpellcheckWords={ignoredSpellcheckWords}
+              capabilityMode="document"
+              fullscreen={fullscreen}
+              onToggleFullscreen={onToggleFullscreen}
+              navigationOpen={navigationOpen}
+              onNavigationOpenChange={onNavigationOpenChange}
+              navigationOpenRequest={navigationOpenRequest}
+              navigationItems={noteNavigationItems}
+              onChangeTitle={onChangeNoteTitle}
+              onChangeBlocks={onChangeNoteBlocks}
+              onToggleIgnoredSpellcheckWord={onToggleIgnoredSpellcheckWord}
+              onFlush={onFlushNote}
+              onCopyAllText={onCopyAllNoteText}
+              onGoToPage={onGoToNotePage}
+              documentId={document?.document.id ?? null}
+              outlineItems={outlineItems}
+              bookmarks={bookmarks}
+              onNavigateToTarget={onNavigateToTarget}
+              onSetBookmarks={onSetBookmarks}
+              currentPage={currentReaderPage}
+              revealRequest={noteRevealRequest}
+              headerActionsContainerId="reader-workspace-notes-header-tools"
+              commandPaletteOpen={commandPaletteOpen}
+              onToggleCommandPalette={onToggleCommandPalette}
+              registerCommandPaletteAnchor={registerCommandPaletteAnchor}
+            />
+          </div>
+        ) : null}
       </div>
       {showFullscreenHint ? (
         <div className="reader-workspace__fullscreen-hint">Press Esc to exit fullscreen</div>
