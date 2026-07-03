@@ -44,13 +44,14 @@ type ReaderWorkspaceProps = {
   noteRevealRequest: NoteRevealRequest | null;
   outlineItems: OutlineItem[];
   readerState: DocumentState | null;
+  initialReaderPage: number | null;
   onNavigateToTarget: (target: PdfNavigationTarget) => void;
   onSetBookmarks: (bookmarks: DocumentState["bookmarks"]) => void;
-  onSnapshotChange: (snapshot: ViewerSnapshot) => void;
+  onSnapshotChange: (mode: ReaderViewMode, snapshot: ViewerSnapshot) => void;
   onOutlineChange: (items: OutlineItem[]) => void;
   onStatusChange: (message: string) => void;
-  onStateChange: (state: DocumentState | null) => void;
-  registerApi: (api: ViewerApi | null) => void;
+  onStateChange: (mode: ReaderViewMode, state: DocumentState | null) => void;
+  registerApi: (mode: ReaderViewMode, api: ViewerApi | null) => void;
   viewerDisplayConfig: ViewerDisplayConfig;
   documentHeaderTitle: string;
   documentHeaderCurrentPage: number;
@@ -131,6 +132,7 @@ export default function ReaderWorkspace({
   noteRevealRequest,
   outlineItems,
   readerState,
+  initialReaderPage,
   onNavigateToTarget,
   onSetBookmarks,
   onSnapshotChange,
@@ -240,6 +242,8 @@ export default function ReaderWorkspace({
           <ReaderViewport
             activeViewTransition={activeViewTransition}
             readerSession={readerSession}
+            readerState={readerState}
+            initialReaderPage={initialReaderPage}
             readerActive={readerActive}
             pendingReaderOpenSessionId={pendingReaderOpenSessionId}
             onSnapshotChange={onSnapshotChange}

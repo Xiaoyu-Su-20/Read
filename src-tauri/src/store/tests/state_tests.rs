@@ -9,6 +9,48 @@ use super::{
 use crate::models::DocumentState;
 
 #[test]
+fn migrates_legacy_zoom_to_scroll_zoom_on_load() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("state-legacy.pdf");
+    write_sample_pdf(&source, "state-legacy");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let state_path = app_dir
+        .join("document-states")
+        .join(format!("{}.json", record.id));
+    fs::write(
+        &state_path,
+        serde_json::json!({
+            "version": 1,
+            "documentId": record.id.clone(),
+            "fingerprint": record.fingerprint.clone(),
+            "lastOpenedAt": null,
+            "lastPage": 9,
+            "zoom": 1.45,
+            "bookmarks": [],
+            "preferences": { "fitMode": "auto-maximize" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let reopened = store.open_document(&record.id).unwrap();
+    let migrated_raw = fs::read_to_string(state_path).unwrap();
+    let migrated_json: serde_json::Value = serde_json::from_str(&migrated_raw).unwrap();
+
+    assert_eq!(reopened.state.version, 2);
+    assert_eq!(reopened.state.last_page, 9);
+    assert!((reopened.state.scroll_zoom - 1.45).abs() < f32::EPSILON);
+    assert!((migrated_json["scrollZoom"].as_f64().unwrap() - 1.45).abs() < 0.0001);
+    assert!(migrated_json.get("zoom").is_none());
+    assert!(migrated_json.get("preferences").is_none());
+}
+
+#[test]
 fn rejects_state_for_wrong_document_id() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("state.pdf");
@@ -52,7 +94,7 @@ fn save_document_state_does_not_require_library_rescan() {
 
     let state = DocumentState {
         last_page: 37,
-        zoom: 1.4,
+        scroll_zoom: 1.4,
         ..DocumentState::new(record.id.clone(), record.fingerprint.clone())
     };
 
@@ -67,7 +109,7 @@ fn save_document_state_does_not_require_library_rescan() {
         serde_json::from_str(&fs::read_to_string(state_path).unwrap()).unwrap();
 
     assert_eq!(persisted.last_page, 37);
-    assert!((persisted.zoom - 1.4).abs() < f32::EPSILON);
+    assert!((persisted.scroll_zoom - 1.4).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -91,7 +133,7 @@ fn save_document_state_does_not_rewrite_library_index() {
             &record.id,
             DocumentState {
                 last_page: 12,
-                zoom: 1.25,
+                scroll_zoom: 1.25,
                 ..DocumentState::new(record.id.clone(), record.fingerprint.clone())
             },
         )

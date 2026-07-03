@@ -100,16 +100,13 @@ const documentPayload: DocumentPayload = {
     availability: "available"
   },
   state: {
-    version: 1,
+    version: 2,
     documentId: "doc-1",
     fingerprint: "fingerprint-1",
     lastOpenedAt: "2026-06-14T00:00:00Z",
     lastPage: 1,
-    zoom: 1,
-    bookmarks: [],
-    preferences: {
-      fitMode: "width"
-    }
+    scrollZoom: 1,
+    bookmarks: []
   },
   filePath: "D:/Read/example.pdf",
   pageCount: 12
@@ -119,7 +116,7 @@ const readerSession: ReaderSession = {
   document: documentPayload,
   documentId: documentPayload.document.id,
   page: documentPayload.state.lastPage,
-  zoom: documentPayload.state.zoom,
+  scrollZoom: documentPayload.state.scrollZoom,
   openSessionId: "open-test",
   clickStartedAtMs: 0,
   source: "collection"
@@ -174,7 +171,9 @@ async function renderViewer(
 
   return renderToStaticMarkup(
     createElement(PdfViewer, {
-      readerSession,
+        readerSession,
+        readerState: documentPayload.state,
+        initialPage: documentPayload.state.lastPage,
       readerActive: true,
       pendingReaderOpenSessionId: null,
       onSnapshotChange: vi.fn(),

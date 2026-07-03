@@ -52,10 +52,6 @@ export type ReaderFitMode = "free" | "auto-maximize" | "width";
 
 export type ReaderViewMode = "page" | "scroll";
 
-export type ReaderPreferences = {
-  fitMode: ReaderFitMode;
-};
-
 export type PdfNavigationFit = "xyz" | "fit" | "fitH" | "fitV" | "fitR" | "unknown";
 
 export type PdfNavigationTarget = {
@@ -101,9 +97,8 @@ export type DocumentState = {
   fingerprint: string;
   lastOpenedAt: string | null;
   lastPage: number;
-  zoom: number;
+  scrollZoom: number;
   bookmarks: Bookmark[];
-  preferences: ReaderPreferences;
 };
 
 export type DocumentPayload = {
@@ -126,7 +121,7 @@ export type ReaderSession = {
   document: DocumentPayload;
   documentId: string;
   page: number;
-  zoom: number;
+  scrollZoom: number;
   openSessionId: string;
   clickStartedAtMs: number;
   source:
@@ -379,7 +374,10 @@ export type ViewerApi = {
   getAutoMaximizeMinDocumentWidth: () => number | null;
   getFitMode: () => ReaderFitMode;
   setFitMode: (fitMode: ReaderFitMode) => void;
-  goToPage: (page: number) => void;
+    goToPage: (
+      page: number,
+      options?: { alignment?: "page" | "reading-line" | "top" }
+    ) => void;
   navigateToTarget: (target: PdfNavigationTarget) => void;
   searchPort: import("../search/model/SearchRequest").PdfSearchPort;
   jumpToOutline: (item: OutlineItem) => void;
@@ -387,6 +385,12 @@ export type ViewerApi = {
   getPageCount: () => number;
   getReaderState: () => DocumentState | null;
   setBookmarks: (bookmarks: Bookmark[]) => void;
+  };
+
+export type ReaderLocationHandoff = {
+  documentId: string;
+  pageNumber: number;
+  sourceMode: ReaderViewMode;
 };
 
 export type NoteRevealRequest = {

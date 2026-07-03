@@ -65,20 +65,6 @@ pub struct Bookmark {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ReaderPreferences {
-    pub fit_mode: String,
-}
-
-impl Default for ReaderPreferences {
-    fn default() -> Self {
-        Self {
-            fit_mode: "auto-maximize".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct PdfNavigationTarget {
     pub document_id: String,
     pub page_index: u32,
@@ -157,22 +143,25 @@ pub struct DocumentState {
     pub fingerprint: String,
     pub last_opened_at: Option<String>,
     pub last_page: u32,
-    pub zoom: f32,
+    #[serde(default = "default_scroll_zoom", alias = "zoom")]
+    pub scroll_zoom: f32,
     pub bookmarks: Vec<Bookmark>,
-    pub preferences: ReaderPreferences,
+}
+
+fn default_scroll_zoom() -> f32 {
+    1.0
 }
 
 impl DocumentState {
     pub fn new(document_id: String, fingerprint: String) -> Self {
         Self {
-            version: 1,
+            version: 2,
             document_id,
             fingerprint,
             last_opened_at: None,
             last_page: 1,
-            zoom: 1.0,
+            scroll_zoom: default_scroll_zoom(),
             bookmarks: Vec::new(),
-            preferences: ReaderPreferences::default(),
         }
     }
 }

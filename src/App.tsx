@@ -42,7 +42,13 @@ import { usePaletteController } from "./lib/app/usePaletteController";
 import { useWorkspaceController } from "./lib/app/useWorkspaceController";
 import { debugAction, debugLocalAction, reportFrontendError, traceEvent } from "./lib/debugLog";
 import { collectDocuments } from "./lib/tree";
-import type { ReaderViewMode } from "./lib/types";
+import type {
+  DocumentState,
+  ReaderViewMode,
+  ViewerApi,
+  ViewerSnapshot
+} from "./lib/types";
+import { ReaderModeHandoffCoordinator } from "./lib/reader/ReaderModeHandoffCoordinator";
 import { toViewEventName, type ViewTransition, type WorkspaceView } from "./lib/workspaceView";
 
 function startupTrace(step: string, fields: Record<string, unknown> = {}) {
@@ -179,6 +185,9 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteAnchorElement, setPaletteAnchorElement] = useState<HTMLButtonElement | null>(null);
   const [readerViewMode, setReaderViewMode] = useState<ReaderViewMode>("page");
+  const readerViewModeRef = useRef<ReaderViewMode>(readerViewMode);
+  const readerModeHandoffRef = useRef(new ReaderModeHandoffCoordinator());
+  const activeReaderApiModeRef = useRef<ReaderViewMode | null>(null);
   const [fullscreenState, setFullscreenState] = useState<FullscreenState>("windowed");
   const [showFullscreenHint, setShowFullscreenHint] = useState(false);
   const fullscreenTransitionRef = useRef(false);
@@ -307,6 +316,115 @@ export default function App() {
     currentViewRef.current = workspace.workspaceMode;
     activeDocumentIdRef.current = workspace.activeDocumentId;
   }, [workspace.activeDocumentId, workspace.workspaceMode]);
+
+  readerViewModeRef.current = readerViewMode;
+  activeDocumentIdRef.current = workspace.activeDocumentId;
+  readerModeHandoffRef.current.resetForDocument(workspace.activeDocumentId);
+
+  const handleReaderViewModeChange = useCallback(
+    (nextMode: ReaderViewMode) => {
+      const sourceMode = readerViewModeRef.current;
+      if (sourceMode === nextMode) {
+        return;
+      }
+      const documentId = workspace.activeDocumentId;
+      if (!documentId) {
+        setReaderViewMode(nextMode);
+        return;
+      }
+      const pageNumber = readerModeHandoffRef.current.preferredPage(
+        documentId,
+        workspace.viewerApiRef.current?.getCurrentPage() ??
+          workspace.viewerSnapshot.currentPage ??
+          workspace.readerState?.lastPage ??
+          1
+      );
+      const handoff = readerModeHandoffRef.current.capture(
+        documentId,
+        pageNumber,
+        sourceMode,
+        nextMode
+      );
+      debugAction("reader.view-mode-handoff-captured", {
+        documentId,
+        pageNumber,
+        sourceMode,
+        targetMode: nextMode,
+        token: handoff.token
+      });
+      activeReaderApiModeRef.current = null;
+      workspace.registerViewerApi(null);
+      setReaderViewMode(nextMode);
+    },
+    [workspace.activeDocumentId, workspace.readerState?.lastPage, workspace.registerViewerApi, workspace.viewerApiRef, workspace.viewerSnapshot.currentPage]
+  );
+
+  const handleReaderApiRegistration = useCallback(
+    (mode: ReaderViewMode, api: ViewerApi | null) => {
+      if (mode !== readerViewModeRef.current) {
+        return;
+      }
+      if (!api) {
+        if (activeReaderApiModeRef.current === mode) {
+          activeReaderApiModeRef.current = null;
+          workspace.registerViewerApi(null);
+        }
+        return;
+      }
+
+      activeReaderApiModeRef.current = mode;
+      workspace.registerViewerApi(api);
+      const handoff = readerModeHandoffRef.current.apply(
+        mode,
+        activeDocumentIdRef.current,
+        api
+      );
+      if (handoff) {
+        debugAction("reader.view-mode-handoff-applied", {
+          documentId: handoff.documentId,
+          pageNumber: handoff.pageNumber,
+          sourceMode: handoff.sourceMode,
+          targetMode: mode,
+          token: handoff.token
+        });
+      }
+    },
+    [workspace.registerViewerApi]
+  );
+
+  const handleReaderSnapshotChange = useCallback(
+    (mode: ReaderViewMode, snapshot: ViewerSnapshot) => {
+      if (
+        mode !== readerViewModeRef.current ||
+        !readerModeHandoffRef.current.shouldPublishSnapshot(
+          mode,
+          activeDocumentIdRef.current,
+          snapshot
+        )
+      ) {
+        return;
+      }
+      workspace.handleViewerSnapshotChange(snapshot);
+    },
+    [workspace.handleViewerSnapshotChange]
+  );
+
+  const handleReaderStateChange = useCallback(
+    (mode: ReaderViewMode, state: DocumentState | null) => {
+      if (
+        mode !== readerViewModeRef.current ||
+        !readerModeHandoffRef.current.shouldPublishState(
+          mode,
+          activeDocumentIdRef.current,
+          state
+        )
+      ) {
+        return;
+      }
+      workspace.handleViewerStateChange(state);
+    },
+    [workspace.handleViewerStateChange]
+  );
 
   useEffect(() => {
     if (
@@ -1636,24 +1754,34 @@ export default function App() {
                 noteRevealRequest={noteRevealRequest}
                 outlineItems={workspace.outlineItems}
                 readerState={workspace.readerState}
+                initialReaderPage={
+                  workspace.activeDocumentId
+                    ? readerModeHandoffRef.current.preferredPage(
+                        workspace.activeDocumentId,
+                        workspace.readerState?.lastPage ??
+                          workspace.viewerSnapshot.currentPage ??
+                          1
+                      )
+                    : null
+                }
                 onNavigateToTarget={(target) => {
                   workspace.viewerApiRef.current?.navigateToTarget(target);
                 }}
                 onSetBookmarks={(bookmarks) => {
                   workspace.viewerApiRef.current?.setBookmarks(bookmarks);
                 }}
-                onSnapshotChange={workspace.handleViewerSnapshotChange}
+                onSnapshotChange={handleReaderSnapshotChange}
                 onOutlineChange={workspace.handleViewerOutlineChange}
-                onStateChange={workspace.handleViewerStateChange}
+                onStateChange={handleReaderStateChange}
                 onStatusChange={workspace.handleViewerStatusChange}
-                registerApi={workspace.registerViewerApi}
+                registerApi={handleReaderApiRegistration}
                 viewerDisplayConfig={viewerDisplayConfig}
                 documentHeaderTitle={workspace.activeDocument?.document.title ?? "Reader"}
                 documentHeaderCurrentPage={workspace.viewerSnapshot.currentPage}
                 documentHeaderPageCount={workspace.viewerSnapshot.pageCount}
                 documentHeaderZoom={workspace.viewerSnapshot.zoom}
                 readerViewMode={readerViewMode}
-                onReaderViewModeChange={setReaderViewMode}
+                onReaderViewModeChange={handleReaderViewModeChange}
                 viewerApi={workspace.viewerApi}
                 onHeaderMouseDown={handleTopbarMouseDown}
                 searchController={searchController}

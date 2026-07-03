@@ -19,8 +19,16 @@ impl DocumentStateStore {
         let state_path = paths.state_path(&document.id);
         if state_path.exists() {
             let mut state = self.read_state_file(&state_path)?;
+            let requires_migration = state.version < 2 || state.scroll_zoom <= 0.0;
             state.document_id = document.id.clone();
             state.fingerprint = document.fingerprint.clone();
+            state.version = 2;
+            if state.scroll_zoom <= 0.0 {
+                state.scroll_zoom = 1.0;
+            }
+            if requires_migration {
+                self.write_state(paths, &state)?;
+            }
             return Ok(state);
         }
 
@@ -37,6 +45,10 @@ impl DocumentStateStore {
     ) -> AppResult<()> {
         state.document_id = document.id.clone();
         state.fingerprint = document.fingerprint.clone();
+        state.version = 2;
+        if state.scroll_zoom <= 0.0 {
+            state.scroll_zoom = 1.0;
+        }
         self.write_state(paths, &state)
     }
 
@@ -52,9 +64,10 @@ impl DocumentStateStore {
         let mut state = selected;
         state.document_id = document.id.clone();
         state.fingerprint = document.fingerprint.clone();
+        state.version = 2;
         state.last_page = state.last_page.max(1);
-        if state.zoom <= 0.0 {
-            state.zoom = 1.0;
+        if state.scroll_zoom <= 0.0 {
+            state.scroll_zoom = 1.0;
         }
         state
     }

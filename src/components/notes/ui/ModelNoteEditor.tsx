@@ -112,6 +112,25 @@ function escapeCssIdentifier(value: string) {
   return value.replace(/["\\]/g, "\\$&");
 }
 
+function ensureFocusBlockVisible(
+  root: HTMLElement,
+  selection: NoteModelSelection
+) {
+  const block = findBlockElement(root, selection.focus.blockId);
+  const scrollSurface = block?.closest<HTMLElement>(".notes-pane__scroll-surface");
+  if (!block || !scrollSurface) {
+    return;
+  }
+
+  const blockRect = block.getBoundingClientRect();
+  const scrollRect = scrollSurface.getBoundingClientRect();
+  if (blockRect.bottom > scrollRect.bottom) {
+    scrollSurface.scrollTop += blockRect.bottom - scrollRect.bottom;
+  } else if (blockRect.top < scrollRect.top) {
+    scrollSurface.scrollTop += blockRect.top - scrollRect.top;
+  }
+}
+
 type NoteEditorProps = {
   note: NoteDocument | null;
   loading: boolean;
@@ -311,6 +330,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     const pendingPageLinkPointRef = useRef<NoteModelPoint | null>(null);
     const pendingTopicSelectionRef = useRef<NoteModelSelection | null>(null);
     const pendingSelectionRestoreRef = useRef<NoteModelSelection | null>(null);
+    const pendingCaretVisibilityRef = useRef(false);
     const pendingTextMarksRef = useRef<PendingTextMarks | null>(null);
     const compositionSessionRef = useRef<CompositionSession | null>(null);
     const historyRef = useRef<NoteModelHistoryState | null>(initialRuntime.history);
@@ -635,7 +655,11 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       }
     }
 
-    function applyModelEdit(edit: NoteModelEdit, mergeKey: NoteHistoryMergeKey | null) {
+    function applyModelEdit(
+      edit: NoteModelEdit,
+      mergeKey: NoteHistoryMergeKey | null,
+      ensureCaretVisible = false
+    ) {
       clearTokenSelection();
       updateSelectedBlock(null);
       clearPendingTextMarks();
@@ -649,6 +673,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       setCurrentBlocks(nextState.blocks);
       historyRef.current = nextState.history;
       pendingSelectionRestoreRef.current = nextState.pendingSelectionRestore;
+      pendingCaretVisibilityRef.current = ensureCaretVisible;
       setRenderedBlocks(nextState.blocks);
       if (nextState.changed) {
         const updateProfile = markNoteBlocksUpdate(nextState.blocks, {
@@ -782,7 +807,11 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       ) {
         const selection = currentSelection();
         if (selection) {
-          applyModelEdit(splitBlockAtSelection(blocksRef.current, selection), null);
+          applyModelEdit(
+            splitBlockAtSelection(blocksRef.current, selection),
+            null,
+            true
+          );
         }
         return true;
       }
@@ -1246,10 +1275,6 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           pendingSelection,
           blocksByIdRef.current
         );
-        if (!SHOULD_VERIFY_SELECTION_RESTORE && restored) {
-          pendingSelectionRestoreRef.current = null;
-          return;
-        }
         const actualSelection =
           restored && SHOULD_VERIFY_SELECTION_RESTORE
             ? captureModelSelection(
@@ -1258,12 +1283,17 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
                 blocksByIdRef.current
               )
             : null;
-        if (
-          actualSelection &&
-          actualSelection.focus.blockId === pendingSelection.focus.blockId &&
-          actualSelection.anchor.blockId === pendingSelection.anchor.blockId
-        ) {
+        const selectionRestored =
+          restored &&
+          (!SHOULD_VERIFY_SELECTION_RESTORE ||
+            (actualSelection?.focus.blockId === pendingSelection.focus.blockId &&
+              actualSelection.anchor.blockId === pendingSelection.anchor.blockId));
+        if (selectionRestored) {
           pendingSelectionRestoreRef.current = null;
+          if (pendingCaretVisibilityRef.current) {
+            ensureFocusBlockVisible(bodyRef.current, pendingSelection);
+          }
+          pendingCaretVisibilityRef.current = false;
         }
       }
     }, [renderTick, renderedBlocks]);

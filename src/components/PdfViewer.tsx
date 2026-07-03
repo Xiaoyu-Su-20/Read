@@ -19,6 +19,8 @@ import RapidTurnOverlay from "./RapidTurnOverlay";
 
 type PdfViewerProps = {
   readerSession: ReaderSession | null;
+  readerState: DocumentState | null;
+  initialPage: number | null;
   readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
@@ -41,6 +43,8 @@ const READER_SCROLLBAR_OVERFLOW_EPSILON_PX = 2;
 
 const PdfViewer = memo(function PdfViewer({
   readerSession,
+  readerState,
+  initialPage,
   readerActive,
   pendingReaderOpenSessionId,
   onSnapshotChange,
@@ -112,6 +116,8 @@ const PdfViewer = memo(function PdfViewer({
     reportAutoMaximizeZoom
   } = useReaderController({
     readerSession,
+    initialReaderState: readerState,
+    initialPage,
     readerActive,
     pendingReaderOpenSessionId,
     onOutlineChange,

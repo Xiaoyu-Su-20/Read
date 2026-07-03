@@ -183,7 +183,52 @@ function latestBlocks(onChangeBlocks: OnChangeBlocksSpy) {
   return blocks!;
 }
 
+function rect(top: number, bottom: number): DOMRect {
+  return {
+    x: 0,
+    y: top,
+    width: 100,
+    height: bottom - top,
+    top,
+    right: 100,
+    bottom,
+    left: 0,
+    toJSON: () => ({})
+  } as DOMRect;
+}
+
+function placeEditorInScrollSurface(
+  container: HTMLDivElement,
+  scrollTop: number,
+  blockTop: number
+) {
+  const surface = document.createElement("div");
+  surface.className = "notes-pane__scroll-surface";
+  document.body.insertBefore(surface, container);
+  surface.appendChild(container);
+  surface.scrollTop = scrollTop;
+  const initialScrollTop = scrollTop;
+
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this === surface) {
+      return rect(0, 100);
+    }
+    if (this.hasAttribute("data-block-id")) {
+      const blocks = Array.from(container.querySelectorAll("[data-block-id]"));
+      const index = blocks.indexOf(this);
+      const top = blockTop + index * 24 - (surface.scrollTop - initialScrollTop);
+      return rect(top, top + 24);
+    }
+    return rect(0, 0);
+  });
+
+  return surface;
+}
+
 afterEach(() => {
+  vi.restoreAllMocks();
   document.body.innerHTML = "";
 });
 
@@ -596,6 +641,54 @@ describe("ModelNoteEditor interactions", () => {
     expect(blocks).toHaveLength(2);
     expect(blocks[0].children).toEqual([createTextNode("Hello")]);
     expect(blocks[1].children).toEqual([createTextNode(" world")]);
+  });
+
+  it("minimally advances the notes viewport when Enter creates a block below it", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("At the viewport edge")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    const surface = placeEditorInScrollSurface(container, 40, 76);
+    const content = blockContent(container, 0);
+
+    setCaret(content, "At the viewport edge".length);
+    act(() => {
+      dispatchBeforeInput(content, "insertParagraph");
+    });
+
+    const blocks = latestBlocks(onChangeBlocks);
+    const selection = captureModelSelection(editorBody(container), blocks);
+    const newBlock = container.querySelectorAll<HTMLElement>("[data-block-id]")[1];
+    expect(blocks).toHaveLength(2);
+    expect(selection?.focus.blockId).toBe(blocks[1].id);
+    expect(newBlock.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      surface.getBoundingClientRect().bottom
+    );
+    expect(surface.scrollTop).toBe(64);
+  });
+
+  it("does not move the notes viewport when the block created by Enter is visible", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Already visible")]
+      }
+    ]);
+    const { container } = renderEditor(note);
+    const surface = placeEditorInScrollSurface(container, 25, 30);
+    const content = blockContent(container, 0);
+
+    setCaret(content, "Already visible".length);
+    act(() => {
+      dispatchBeforeInput(content, "insertParagraph");
+    });
+
+    expect(surface.scrollTop).toBe(25);
   });
 
   it("treats insertLineBreak the same as insertParagraph", () => {

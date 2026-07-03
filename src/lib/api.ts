@@ -231,10 +231,28 @@ export function getPdfNativeOutline(documentId: string, options?: { openSessionI
   });
 }
 
-export function saveDocumentState(documentId: string, readerState: DocumentState) {
+export function activateDocumentStateWriter(
+  documentId: string,
+  openSessionId: string,
+  writerGeneration: number
+) {
+  return invokeLogged<void>("activate_document_state_writer", {
+    documentId,
+    openSessionId,
+    writerGeneration
+  });
+}
+
+export function saveDocumentState(
+  documentId: string,
+  readerState: DocumentState,
+  options: { openSessionId: string; writerGeneration: number }
+) {
   return invokeLogged<void>("save_document_state", {
     documentId,
-    readerState
+    readerState,
+    openSessionId: options.openSessionId,
+    writerGeneration: options.writerGeneration
   });
 }
 

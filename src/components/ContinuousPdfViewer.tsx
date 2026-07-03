@@ -16,7 +16,13 @@ import {
 
 import NativePdfTextLayer from "./NativePdfTextLayer";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
-import { getPdfNativeOutline, getPdfNativeTextPage, getPdfPageGeometries, saveDocumentState } from "../lib/api";
+import {
+  activateDocumentStateWriter,
+  getPdfNativeOutline,
+  getPdfNativeTextPage,
+  getPdfPageGeometries,
+  saveDocumentState
+} from "../lib/api";
 import { dedupeBookmarks } from "../lib/commands";
 import { debugAction } from "../lib/debugLog";
 import {
@@ -46,6 +52,11 @@ import {
   snapScrollZoom,
   stepScrollZoom
 } from "../lib/reader/zoom";
+import {
+  createDocumentStateWriterGeneration,
+  isStaleDocumentStateWriterError
+} from "../lib/reader/documentStateWriter";
+import { updateScrollReaderState } from "../lib/reader/documentReaderState";
 import type {
   Bookmark,
   DocumentState,
@@ -61,6 +72,8 @@ import type {
 
 type ContinuousPdfViewerProps = {
   readerSession: ReaderSession | null;
+  readerState: DocumentState | null;
+  initialPage: number | null;
   readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
@@ -87,21 +100,21 @@ function clampPage(page: number, pageCount: number) {
 
 function makeDocumentState(
   readerSession: ReaderSession,
+  currentState: DocumentState,
   page: number,
-  zoom: number,
-  fitMode: ReaderFitMode,
+  scrollZoom: number,
+  _fitMode: ReaderFitMode,
   bookmarks: Bookmark[]
 ): DocumentState {
-  return {
-    ...readerSession.document.state,
-    lastOpenedAt: new Date().toISOString(),
-    lastPage: clampPage(page, readerSession.document.pageCount),
-    zoom,
-    bookmarks: dedupeBookmarks(bookmarks),
-    preferences: {
-      fitMode
-    }
-  };
+  return updateScrollReaderState(
+    {
+      ...currentState,
+      lastOpenedAt: new Date().toISOString()
+    },
+    clampPage(page, readerSession.document.pageCount),
+    scrollZoom,
+    dedupeBookmarks(bookmarks)
+  );
 }
 
 function appearanceStyle(viewerDisplayConfig: ViewerDisplayConfig) {
@@ -624,6 +637,8 @@ const ContinuousPage = memo(function ContinuousPage({
 
 export default function ContinuousPdfViewer({
   readerSession,
+  readerState,
+  initialPage: initialPageOverride,
   readerActive,
   onSnapshotChange,
   onOutlineChange,
@@ -636,10 +651,58 @@ export default function ContinuousPdfViewer({
   const documentId = document?.document.id ?? null;
   const pageCount = document?.pageCount ?? 0;
   const openSessionId = readerSession?.openSessionId ?? null;
-  const initialZoom = snapScrollZoom(readerSession?.zoom ?? readerSession?.document.state.zoom ?? 1);
+  const writerLeaseRef = useRef<{
+    active: boolean;
+    generation: number;
+    openSessionId: string | null;
+    ready: Promise<void>;
+  }>({
+    active: false,
+    generation: createDocumentStateWriterGeneration(),
+    openSessionId,
+    ready: Promise.resolve()
+  });
+  if (writerLeaseRef.current.openSessionId !== openSessionId) {
+    writerLeaseRef.current.active = false;
+    writerLeaseRef.current = {
+      active: false,
+      generation: createDocumentStateWriterGeneration(),
+      openSessionId,
+      ready: Promise.resolve()
+    };
+  }
+  const initialReaderStateRef = useRef<{
+    openSessionId: string | null;
+    state: DocumentState | null;
+  }>({ openSessionId, state: readerState ?? readerSession?.document.state ?? null });
+  if (initialReaderStateRef.current.openSessionId !== openSessionId) {
+    initialReaderStateRef.current = {
+      openSessionId,
+      state: readerState ?? readerSession?.document.state ?? null
+    };
+  }
+  const sourceReaderState = initialReaderStateRef.current.state;
+  const initialPageSeedRef = useRef<{
+    openSessionId: string | null;
+    page: number | null;
+  }>({ openSessionId, page: initialPageOverride });
+  if (initialPageSeedRef.current.openSessionId !== openSessionId) {
+    initialPageSeedRef.current = { openSessionId, page: initialPageOverride };
+  }
+  const initialZoom = snapScrollZoom(
+    sourceReaderState?.scrollZoom ?? readerSession?.scrollZoom ?? 1
+  );
   const initialFitMode = SCROLL_READER_FIT_MODE;
-  const initialBookmarks = readerSession?.document.state.bookmarks ?? [];
-  const initialPage = readerSession ? clampPage(readerSession.page || readerSession.document.state.lastPage, pageCount) : 1;
+  const initialBookmarks = sourceReaderState?.bookmarks ?? [];
+  const initialPage = readerSession
+    ? clampPage(
+        initialPageSeedRef.current.page ??
+          sourceReaderState?.lastPage ??
+          readerSession.page ??
+          readerSession.document.state.lastPage,
+        pageCount
+      )
+    : 1;
   const scrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const pageCacheRef = useRef(createPageCache({ maxBytes: CONTINUOUS_RENDER_CACHE_BYTES }));
   const renderCoordinatorRef = useRef<ScrollRenderCoordinator | null>(null);
@@ -655,8 +718,12 @@ export default function ContinuousPdfViewer({
   const pendingZoomScrollTopRef = useRef<number | null>(null);
   const rangeReleaseFrameRef = useRef<number | null>(null);
   const rangeReleaseStableFrameRef = useRef<number | null>(null);
-  const latestStateRef = useRef<DocumentState | null>(readerSession?.document.state ?? null);
+  const latestStateRef = useRef<DocumentState | null>(sourceReaderState);
   const initialScrollAppliedRef = useRef<string | null>(null);
+  const pendingPageNavigationRef = useRef<{
+    align: "top" | "reading-line";
+    page: number;
+  } | null>(null);
   const [displayZoom, setDisplayZoom] = useState(() => initialZoom);
   const [wheelPreviewZoom, setWheelPreviewZoom] = useState<number | null>(null);
   const [fitMode, setFitModeState] = useState<ReaderFitMode>(() => initialFitMode);
@@ -668,6 +735,7 @@ export default function ContinuousPdfViewer({
     typeof window === "undefined" ? 1 : window.devicePixelRatio
   );
   const [currentPage, setCurrentPage] = useState(initialPage);
+  const [initialLocationApplied, setInitialLocationApplied] = useState(false);
   const [pageGeometries, setPageGeometries] = useState<EffectivePageGeometry[]>([]);
   const [geometryRevision, setGeometryRevision] = useState(0);
   const [pinnedVirtualRange, setPinnedVirtualRange] = useState<{
@@ -736,12 +804,35 @@ export default function ContinuousPdfViewer({
 
   const readingLineOffsetPx = Math.max(Math.min(viewportHeight * 0.28, 220), 48);
 
+  useEffect(() => {
+    if (!documentId || !openSessionId) {
+      return;
+    }
+    const lease = writerLeaseRef.current;
+    lease.active = true;
+    lease.ready = activateDocumentStateWriter(
+      documentId,
+      openSessionId,
+      lease.generation
+    );
+    return () => {
+      lease.active = false;
+    };
+  }, [documentId, openSessionId]);
+
   const publishState = useCallback(
     (nextPage: number, nextZoom = displayZoom, nextFitMode = fitMode, nextBookmarks = bookmarks) => {
       if (!readerSession) {
         return;
       }
-      const nextState = makeDocumentState(readerSession, nextPage, nextZoom, nextFitMode, nextBookmarks);
+      const nextState = makeDocumentState(
+        readerSession,
+        latestStateRef.current ?? sourceReaderState ?? readerSession.document.state,
+        nextPage,
+        nextZoom,
+        nextFitMode,
+        nextBookmarks
+      );
       latestStateRef.current = nextState;
       onStateChange(nextState);
       onSnapshotChange({
@@ -754,39 +845,71 @@ export default function ContinuousPdfViewer({
         window.clearTimeout(saveTimerRef.current);
       }
       saveTimerRef.current = window.setTimeout(() => {
-        void saveDocumentState(readerSession.documentId, nextState).catch((error) => {
-          debugAction("continuous-reader.state-save-error", {
-            documentId: readerSession.documentId,
-            error: error instanceof Error ? error.message : String(error)
+        const lease = writerLeaseRef.current;
+        void lease.ready.then(() => {
+          if (!lease.active || lease !== writerLeaseRef.current || !openSessionId) {
+            return;
+          }
+          return saveDocumentState(readerSession.documentId, nextState, {
+            openSessionId,
+            writerGeneration: lease.generation
           });
+        }).catch((error) => {
+          if (isStaleDocumentStateWriterError(error)) {
+            lease.active = false;
+            return;
+          }
+          if (lease.active) {
+            debugAction("continuous-reader.state-save-error", {
+              documentId: readerSession.documentId,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
         });
       }, READER_STATE_SAVE_DEBOUNCE_MS);
     },
-    [bookmarks, displayZoom, fitMode, onSnapshotChange, onStateChange, readerSession]
+    [bookmarks, displayZoom, fitMode, onSnapshotChange, onStateChange, openSessionId, readerSession, sourceReaderState]
   );
   publishStateRef.current = publishState;
 
   const scrollToPage = useCallback(
     (page: number, options?: { align?: "top" | "reading-line" }) => {
+      const clampedPage = clampPage(page, pageCount);
+      const align = options?.align ?? "top";
+      pendingPageNavigationRef.current = { align, page: clampedPage };
       const scrollSurface = scrollSurfaceRef.current;
-      if (!scrollSurface) {
+      if (!scrollSurface || pageGeometries.length !== pageCount) {
         return;
       }
-      const clampedPage = clampPage(page, pageCount);
       const placement = placements.find((candidate) => candidate.pageNumber === clampedPage);
       if (!placement) {
         return;
       }
       const nextScrollTop =
-        options?.align === "reading-line"
+        align === "reading-line"
           ? Math.max(placement.top - readingLineOffsetPx, 0)
           : placement.top;
+      pendingPageNavigationRef.current = null;
+      if (documentId && openSessionId) {
+        initialScrollAppliedRef.current = `${documentId}:${openSessionId}`;
+      }
       scrollSurface.scrollTop = nextScrollTop;
+      scrollTopRef.current = nextScrollTop;
+      currentPageRef.current = clampedPage;
       setScrollTop(nextScrollTop);
       setCurrentPage(clampedPage);
+      setInitialLocationApplied(true);
       publishState(clampedPage);
     },
-    [pageCount, placements, publishState, readingLineOffsetPx]
+    [
+      documentId,
+      openSessionId,
+      pageCount,
+      pageGeometries.length,
+      placements,
+      publishState,
+      readingLineOffsetPx
+    ]
   );
   scrollToPageRef.current = scrollToPage;
 
@@ -905,7 +1028,7 @@ export default function ContinuousPdfViewer({
   }, [documentId]);
 
   useEffect(() => {
-    latestStateRef.current = readerSession?.document.state ?? null;
+    latestStateRef.current = sourceReaderState;
     setDisplayZoom(initialZoom);
     setWheelPreviewZoom(null);
     wheelZoomTargetRef.current = null;
@@ -922,8 +1045,10 @@ export default function ContinuousPdfViewer({
     setFitModeState(initialFitMode);
     setBookmarksState(initialBookmarks);
     setCurrentPage(initialPage);
+    setInitialLocationApplied(false);
     setScrollTop(0);
     initialScrollAppliedRef.current = null;
+    pendingPageNavigationRef.current = null;
     baseHeightsRef.current = new Map();
     setPageGeometries([]);
     pageCacheRef.current.clear();
@@ -976,7 +1101,7 @@ export default function ContinuousPdfViewer({
   }, [documentId, geometryRevision, onStatusChange, pageCount, readerSession?.openSessionId]);
 
   useEffect(() => {
-    if (!readerSession || !readerActive) {
+    if (!readerSession || !readerActive || !initialLocationApplied) {
       return;
     }
     onSnapshotChange({
@@ -984,7 +1109,7 @@ export default function ContinuousPdfViewer({
       pageCount,
       zoom: displayZoom
     });
-  }, [currentPage, displayZoom, onSnapshotChange, pageCount, readerActive, readerSession]);
+  }, [currentPage, displayZoom, initialLocationApplied, onSnapshotChange, pageCount, readerActive, readerSession]);
 
   useEffect(() => {
     if (!documentId || !readerSession) {
@@ -1046,8 +1171,18 @@ export default function ContinuousPdfViewer({
   }, [displayZoom, pageCount, pageGeometries, viewportWidth]);
 
   useLayoutEffect(() => {
+    const pendingNavigation = pendingPageNavigationRef.current;
+    if (!pendingNavigation || pageGeometries.length !== pageCount) {
+      return;
+    }
+    scrollToPageRef.current(pendingNavigation.page, {
+      align: pendingNavigation.align
+    });
+  }, [pageCount, pageGeometries.length, placements.length]);
+
+  useLayoutEffect(() => {
     const scrollSurface = scrollSurfaceRef.current;
-    const scrollKey = documentId ? `${documentId}:${initialPage}` : null;
+    const scrollKey = documentId && openSessionId ? `${documentId}:${openSessionId}` : null;
     if (
       !scrollSurface ||
       !scrollKey ||
@@ -1061,9 +1196,13 @@ export default function ContinuousPdfViewer({
     if (placement) {
       initialScrollAppliedRef.current = scrollKey;
       scrollSurface.scrollTop = placement.top;
+      scrollTopRef.current = placement.top;
+      currentPageRef.current = initialPage;
       setScrollTop(placement.top);
+      setCurrentPage(initialPage);
+      setInitialLocationApplied(true);
     }
-  }, [documentId, initialPage, pageCount, pageGeometries.length, placements.length]);
+  }, [documentId, initialPage, openSessionId, pageCount, pageGeometries.length, placements.length]);
 
   useEffect(() => {
     const activeOpenSessionId = readerSession?.openSessionId ?? null;
@@ -1085,7 +1224,10 @@ export default function ContinuousPdfViewer({
                 SCROLL_READER_FIT_MODE
               );
             },
-            goToPage: (page) => scrollToPageRef.current(page),
+            goToPage: (page, options) =>
+              scrollToPageRef.current(page, {
+                align: options?.alignment === "reading-line" ? "reading-line" : "top"
+              }),
             navigateToTarget: (target: PdfNavigationTarget) => {
               scrollToPageRef.current(target.pageIndex + 1);
             },
@@ -1160,15 +1302,21 @@ export default function ContinuousPdfViewer({
       const nextScrollTop = event.currentTarget.scrollTop;
       setScrollTop(nextScrollTop);
       const nextPage = clampPage(
-        resolveContinuousActivePage(metrics, nextScrollTop, readingLineOffsetPx, CONTINUOUS_PAGE_GAP_PX),
-        pageCount || 1
+        resolveContinuousActivePage(
+          metricsRef.current,
+          nextScrollTop,
+          readingLineOffsetPx,
+          CONTINUOUS_PAGE_GAP_PX
+        ),
+        pageCountRef.current || 1
       );
-      if (nextPage !== currentPage) {
+      if (nextPage !== currentPageRef.current) {
+        currentPageRef.current = nextPage;
         setCurrentPage(nextPage);
-        publishState(nextPage);
+        publishStateRef.current(nextPage);
       }
     },
-    [currentPage, metrics, pageCount, publishState, readingLineOffsetPx]
+    [readingLineOffsetPx]
   );
 
   const handleWheel = useCallback(

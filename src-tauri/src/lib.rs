@@ -49,6 +49,7 @@ struct MirroredDebugEvent {
 struct ActiveReaderGeneration {
     document_id: String,
     generation_id: String,
+    state_writer_generation: u64,
 }
 
 struct InFlightRender {
@@ -268,8 +269,46 @@ fn set_active_reader_generation(
     *guard = Some(ActiveReaderGeneration {
         document_id: document_id.to_string(),
         generation_id: generation_id.to_string(),
+        state_writer_generation: 0,
     });
     Ok(())
+}
+
+fn activate_reader_state_writer(
+    active_reader_generation: &Arc<Mutex<Option<ActiveReaderGeneration>>>,
+    document_id: &str,
+    generation_id: &str,
+    writer_generation: u64,
+) -> Result<(), String> {
+    let mut guard = active_reader_generation
+        .lock()
+        .map_err(|_| "Unable to lock active reader generation.".to_string())?;
+    let active = guard
+        .as_mut()
+        .ok_or_else(|| "No active reader generation.".to_string())?;
+    if active.document_id != document_id || active.generation_id != generation_id {
+        return Err("Stale document state writer activation skipped.".to_string());
+    }
+    if writer_generation < active.state_writer_generation {
+        return Err("Older document state writer activation skipped.".to_string());
+    }
+    active.state_writer_generation = writer_generation;
+    Ok(())
+}
+
+fn is_active_reader_state_writer(
+    active: Option<&ActiveReaderGeneration>,
+    document_id: &str,
+    generation_id: &str,
+    writer_generation: u64,
+) -> bool {
+    matches!(
+        active,
+        Some(active)
+            if active.document_id == document_id
+                && active.generation_id == generation_id
+                && active.state_writer_generation == writer_generation
+    )
 }
 
 fn is_active_reader_generation(
@@ -981,20 +1020,51 @@ fn open_document(
 }
 
 #[tauri::command]
+fn activate_document_state_writer(
+    state: State<'_, AppState>,
+    document_id: String,
+    open_session_id: String,
+    writer_generation: u64,
+) -> Result<(), String> {
+    activate_reader_state_writer(
+        &state.active_reader_generation,
+        &document_id,
+        &open_session_id,
+        writer_generation,
+    )
+}
+
+#[tauri::command]
 fn save_document_state(
     app: AppHandle,
     state: State<'_, AppState>,
     document_id: String,
     reader_state: DocumentState,
+    open_session_id: String,
+    writer_generation: u64,
 ) -> Result<(), String> {
+    let active_reader_generation = state.active_reader_generation.clone();
     run_logged_command(
         "save_document_state",
         json!({
             "documentId": document_id,
             "page": reader_state.last_page,
-            "zoom": reader_state.zoom,
+            "scrollZoom": reader_state.scroll_zoom,
+            "writerGeneration": writer_generation,
         }),
         || {
+            let active_guard = active_reader_generation
+                .lock()
+                .map_err(|_| "Unable to lock active reader generation.".to_string())?;
+            let writer_is_active = is_active_reader_state_writer(
+                active_guard.as_ref(),
+                &document_id,
+                &open_session_id,
+                writer_generation,
+            );
+            if !writer_is_active {
+                return Err("Stale document state save skipped.".to_string());
+            }
             with_store(&app, state, |store| {
                 store
                     .save_document_state(&document_id, reader_state)
@@ -2006,6 +2076,7 @@ pub fn run() {
             delete_folder,
             remove_from_library,
             open_document,
+            activate_document_state_writer,
             save_document_state,
             get_or_create_note_for_book,
             list_standalone_notes,
@@ -2055,11 +2126,15 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_library_root, load_library_root_config_from_path, move_library_root_contents,
-        save_library_root_config, validate_render_identity,
+        activate_reader_state_writer, default_library_root, is_active_reader_state_writer,
+        load_library_root_config_from_path, move_library_root_contents, save_library_root_config,
+        set_active_reader_generation, validate_render_identity,
     };
     use crate::{models::RenderVariant, store::PageRenderRequest};
-    use std::fs;
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -2126,5 +2201,30 @@ mod tests {
         request.expected_normalization_token = Some("new-token".to_string());
         let error = validate_render_identity(&request).unwrap_err();
         assert!(error.starts_with("RENDER_IDENTITY_CHANGED:"));
+    }
+
+    #[test]
+    fn newer_state_writer_generation_invalidates_older_saves() {
+        let active = Arc::new(Mutex::new(None));
+        set_active_reader_generation(&active, "doc", "session").unwrap();
+        activate_reader_state_writer(&active, "doc", "session", 10).unwrap();
+        activate_reader_state_writer(&active, "doc", "session", 11).unwrap();
+
+        let guard = active.lock().unwrap();
+        assert!(!is_active_reader_state_writer(
+            guard.as_ref(),
+            "doc",
+            "session",
+            10
+        ));
+        assert!(is_active_reader_state_writer(
+            guard.as_ref(),
+            "doc",
+            "session",
+            11
+        ));
+        drop(guard);
+
+        assert!(activate_reader_state_writer(&active, "doc", "session", 9).is_err());
     }
 }

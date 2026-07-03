@@ -333,7 +333,7 @@ impl LibraryStore {
             json!({
                 "documentId": document_id,
                 "page": state.last_page,
-                "zoom": state.zoom,
+                "scrollZoom": state.scroll_zoom,
             }),
         );
 

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import {
+  activateDocumentStateWriter,
   getPdfNativeOutline,
   getPdfNativeTextPage,
   saveDocumentState,
@@ -58,6 +59,11 @@ import {
   scaleZoomByWheelDelta
 } from "./zoom";
 import { registerRestartPreflightTask } from "../app/restartPreflight";
+import {
+  createDocumentStateWriterGeneration,
+  isStaleDocumentStateWriterError
+} from "./documentStateWriter";
+import { updatePageReaderState } from "./documentReaderState";
 
 const RENDER_CACHE_SIZE = 20;
 const PRELOAD_DELAY_MS = 0;
@@ -79,6 +85,8 @@ const PAGE_READER_FIT_MODE: ReaderFitMode = "auto-maximize";
 
 type UseReaderControllerArgs = {
   readerSession: ReaderSession | null;
+  initialReaderState: DocumentState | null;
+  initialPage: number | null;
   readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
   onOutlineChange: (items: OutlineItem[]) => void;
@@ -255,10 +263,7 @@ function clampDiscreteWheelDelta(delta: number) {
 function normalizeDocumentState(state: DocumentState): DocumentState {
   return {
     ...state,
-    bookmarks: dedupeBookmarks(state.bookmarks ?? []),
-    preferences: {
-      fitMode: PAGE_READER_FIT_MODE
-    }
+    bookmarks: dedupeBookmarks(state.bookmarks ?? [])
   };
 }
 
@@ -269,14 +274,15 @@ function stateSignature(state: DocumentState) {
     documentId: normalizedState.documentId,
     fingerprint: normalizedState.fingerprint,
     lastPage: normalizedState.lastPage,
-    zoom: normalizedState.zoom,
-    bookmarks: normalizedState.bookmarks,
-    preferences: normalizedState.preferences
+    scrollZoom: normalizedState.scrollZoom,
+    bookmarks: normalizedState.bookmarks
   });
 }
 
 export function useReaderController({
   readerSession,
+  initialReaderState,
+  initialPage,
   readerActive,
   pendingReaderOpenSessionId,
   onOutlineChange,
@@ -289,6 +295,34 @@ export function useReaderController({
   const document = readerSession?.document ?? null;
   const openSessionId = readerSession?.openSessionId ?? null;
   const readerSessionKey = makeReaderSessionKey(readerSession);
+  const writerLeaseRef = useRef<{
+    active: boolean;
+    generation: number;
+    openSessionId: string | null;
+    ready: Promise<void>;
+  }>({
+    active: false,
+    generation: createDocumentStateWriterGeneration(),
+    openSessionId,
+    ready: Promise.resolve()
+  });
+  if (writerLeaseRef.current.openSessionId !== openSessionId) {
+    writerLeaseRef.current.active = false;
+    writerLeaseRef.current = {
+      active: false,
+      generation: createDocumentStateWriterGeneration(),
+      openSessionId,
+      ready: Promise.resolve()
+    };
+  }
+  const initialReaderStateRef = useRef<{
+    initialPage: number | null;
+    readerSessionKey: string | null;
+    state: DocumentState | null;
+  }>({ initialPage, readerSessionKey, state: initialReaderState });
+  if (initialReaderStateRef.current.readerSessionKey !== readerSessionKey) {
+    initialReaderStateRef.current = { initialPage, readerSessionKey, state: initialReaderState };
+  }
   const [pageCount, setPageCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [targetPage, setTargetPage] = useState(1);
@@ -415,7 +449,7 @@ export function useReaderController({
       source: readerSession?.source ?? "unknown",
       staleRequestCount: 0,
       summaryLogged: false,
-      zoom: readerSession?.zoom ?? null
+      zoom: null
     };
   }
 
@@ -950,26 +984,8 @@ export function useReaderController({
     }
   }
 
-  function setReaderFitMode(_nextFitMode: ReaderFitMode, reason: string) {
-    const normalizedFitMode = PAGE_READER_FIT_MODE;
-    setReaderState((current) => {
-      if (!current || current.preferences.fitMode === normalizedFitMode) {
-        return current;
-      }
-
-      const nextState = {
-        ...current,
-        preferences: {
-          ...current.preferences,
-          fitMode: normalizedFitMode
-        }
-      };
-
-      readerStateRef.current = nextState;
-      markReaderStateDirty(nextState, reason);
-      onStateChange(nextState);
-      return nextState;
-    });
+  function setReaderFitMode(_nextFitMode: ReaderFitMode, _reason: string) {
+    // Page mode is always auto-maximized; fit is presentation state only.
   }
 
   function resolveZoomForFitMode(nextZoom: number, fitMode: ReaderFitMode) {
@@ -998,9 +1014,6 @@ export function useReaderController({
 
     const resolvedFitMode = options?.fitMode ?? PAGE_READER_FIT_MODE;
     const normalizedZoom = resolveZoomForFitMode(nextZoom, resolvedFitMode);
-    if (readerStateRef.current?.preferences.fitMode !== PAGE_READER_FIT_MODE) {
-      setReaderFitMode(PAGE_READER_FIT_MODE, `${reason}:fit-mode`);
-    }
     setDisplayZoom(normalizedZoom);
 
     if (options?.commitImmediately) {
@@ -1092,17 +1105,26 @@ export function useReaderController({
     reason: string
   ) {
     const signature = stateSignature(state);
+    const lease = writerLeaseRef.current;
     const process = startDebugProcess("reader-state.save", {
       documentId: activeDocument.document.id,
       page: state.lastPage,
       reason,
-      zoom: state.zoom
+      scrollZoom: state.scrollZoom
     });
 
     saveInFlightRef.current = true;
     try {
       lastSaveErrorRef.current = null;
-      await saveDocumentState(activeDocument.document.id, state);
+      await lease.ready;
+      if (!lease.active || lease !== writerLeaseRef.current || !lease.openSessionId) {
+        process.finish({ skipped: "inactive-writer" });
+        return;
+      }
+      await saveDocumentState(activeDocument.document.id, state, {
+        openSessionId: lease.openSessionId,
+        writerGeneration: lease.generation
+      });
       if (
         currentDocumentRef.current?.document.id === activeDocument.document.id &&
         readerStateRef.current &&
@@ -1115,10 +1137,16 @@ export function useReaderController({
         documentId: activeDocument.document.id,
         page: state.lastPage,
         reason,
-        zoom: state.zoom
+        scrollZoom: state.scrollZoom
       });
       process.finish();
     } catch (error) {
+      if (isStaleDocumentStateWriterError(error)) {
+        lease.active = false;
+        dirtyStateRef.current = false;
+        process.finish();
+        return;
+      }
       lastSaveErrorRef.current = error;
       process.fail(error);
       onStatusChange(
@@ -1132,6 +1160,7 @@ export function useReaderController({
       if (
         latestDocument &&
         latestState &&
+        writerLeaseRef.current.active &&
         latestDocument.document.id === latestState.documentId &&
         stateSignature(latestState) !== lastPersistedSignatureRef.current
       ) {
@@ -1199,7 +1228,7 @@ export function useReaderController({
       documentId: activeDocument.document.id,
       page: state.lastPage,
       reason,
-      zoom: state.zoom
+      scrollZoom: state.scrollZoom
     });
     saveTimerRef.current = window.setTimeout(() => {
       flushReaderState(`debounced:${reason}`);
@@ -1221,7 +1250,7 @@ export function useReaderController({
       isDirty,
       page: nextState.lastPage,
       reason,
-      zoom: nextState.zoom
+      scrollZoom: nextState.scrollZoom
     });
 
     if (isDirty) {
@@ -1394,6 +1423,24 @@ export function useReaderController({
   flushReaderStateListenerRef.current = flushReaderState;
 
   useEffect(() => {
+    const documentId = document?.document.id ?? null;
+    if (!documentId || !openSessionId) {
+      return;
+    }
+    const lease = writerLeaseRef.current;
+    lease.active = true;
+    lease.ready = activateDocumentStateWriter(
+      documentId,
+      openSessionId,
+      lease.generation
+    );
+    return () => {
+      lease.active = false;
+      clearScheduledSave();
+    };
+  }, [document?.document.id, openSessionId]);
+
+  useEffect(() => {
     const taskId = `reader-state:${openSessionId ?? "inactive"}`;
     return registerRestartPreflightTask(taskId, flushReaderStateForRestart);
   }, [openSessionId]);
@@ -1417,15 +1464,7 @@ export function useReaderController({
     }
 
     const previousDocument = currentDocumentRef.current;
-    const previousState = readerStateRef.current;
-    if (
-      previousDocument &&
-      previousState &&
-      dirtyStateRef.current &&
-      previousDocument.document.id === previousState.documentId
-    ) {
-      void persistReaderStateSnapshot(previousDocument, previousState, "document-switch");
-    }
+    clearScheduledSave();
 
     const previousRuntimeSession = runtimeSessionRef.current;
     const previousDocumentId = previousDocument?.document.id ?? null;
@@ -1521,8 +1560,15 @@ export function useReaderController({
 
     setLoadingDocument(true);
     const nextPageCount = Math.max(document.pageCount, 1);
-    const nextPage = clampPage(readerSession?.page ?? document.state.lastPage, nextPageCount);
-    const nextZoom = clampZoom(readerSession?.zoom ?? document.state.zoom ?? 1);
+    const sourceReaderState = initialReaderStateRef.current.state ?? document.state;
+    const nextPage = clampPage(
+      initialReaderStateRef.current.initialPage ??
+        sourceReaderState.lastPage ??
+        readerSession?.page ??
+        document.state.lastPage,
+      nextPageCount
+    );
+    const nextZoom = 1;
     latestForegroundRequestIdRef.current = 0;
     setPageCount(nextPageCount);
     setCurrentPage(nextPage);
@@ -1547,15 +1593,12 @@ export function useReaderController({
       zoom: nextZoom
     });
     const rawNextState = {
-      ...document.state,
-      lastPage: nextPage,
-      zoom: nextZoom,
-      preferences: document.state.preferences ?? { fitMode: "auto-maximize" }
+      ...sourceReaderState,
+      lastPage: nextPage
     };
     const nextState = normalizeDocumentState(rawNextState);
     const stateWasNormalized =
-      JSON.stringify(rawNextState.bookmarks ?? []) !== JSON.stringify(nextState.bookmarks) ||
-      JSON.stringify(rawNextState.preferences ?? null) !== JSON.stringify(nextState.preferences);
+      JSON.stringify(rawNextState.bookmarks ?? []) !== JSON.stringify(nextState.bookmarks);
     clearScheduledSave();
     dirtyStateRef.current = false;
     lastPersistedSignatureRef.current = stateSignature(nextState);
@@ -1657,7 +1700,7 @@ export function useReaderController({
       window.removeEventListener("beforeunload", flushOnBeforeUnload);
       clearZoomCommitTimer();
       finalizeRapidTurnListenerRef.current("controller-unmount");
-      flushReaderStateListenerRef.current("controller-unmount");
+      clearScheduledSave();
     };
   }, []);
 
@@ -1674,20 +1717,16 @@ export function useReaderController({
       if (!current) {
         return current;
       }
-      if (current.lastPage === targetPage && Math.abs(current.zoom - committedZoom) < 0.001) {
+      if (current.lastPage === targetPage) {
         return current;
       }
-      const nextState = {
-        ...current,
-        lastPage: targetPage,
-        zoom: committedZoom
-      };
+      const nextState = updatePageReaderState(current, targetPage);
       readerStateRef.current = nextState;
       markReaderStateDirty(nextState, "navigation");
       onStateChange(nextState);
       return nextState;
     });
-  }, [committedZoom, onStateChange, targetPage]);
+  }, [onStateChange, targetPage]);
 
   useEffect(() => {
     if (!document || !displayedPage) {

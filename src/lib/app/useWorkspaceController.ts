@@ -334,7 +334,7 @@ export function useWorkspaceController() {
             document: payload,
             documentId: payload.document.id,
             page: payload.state.lastPage,
-            zoom: payload.state.zoom,
+            scrollZoom: payload.state.scrollZoom,
             openSessionId: openSession.openSessionId,
             clickStartedAtMs: openSession.clickStartedAtMs,
             source: openSession.source
@@ -394,7 +394,7 @@ export function useWorkspaceController() {
                   document: payload,
                   documentId: payload.document.id,
                   page: payload.state.lastPage,
-                  zoom: payload.state.zoom,
+                  scrollZoom: payload.state.scrollZoom,
                   source: currentSession.source
                 }
               : null
