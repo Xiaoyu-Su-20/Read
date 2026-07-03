@@ -5,14 +5,26 @@ import { fileURLToPath } from "node:url";
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-function executable(command) {
-  return process.platform === "win32" && command === "npm" ? "npm.cmd" : command;
+function invocation(command, args) {
+  if (process.platform === "win32" && command === "npm") {
+    const npmCli = process.env.npm_execpath;
+    if (!npmCli) {
+      throw new Error("npm_execpath is unavailable; run release commands through npm run.");
+    }
+    return {
+      executable: process.execPath,
+      args: [npmCli, ...args]
+    };
+  }
+
+  return { executable: command, args };
 }
 
 export function run(command, args, options = {}) {
   const label = [command, ...args].join(" ");
+  const resolved = invocation(command, args);
   console.log(`\n> ${label}`);
-  execFileSync(executable(command), args, {
+  execFileSync(resolved.executable, resolved.args, {
     cwd: root,
     stdio: "inherit",
     ...options
@@ -20,14 +32,16 @@ export function run(command, args, options = {}) {
 }
 
 export function capture(command, args) {
-  return execFileSync(executable(command), args, {
+  const resolved = invocation(command, args);
+  return execFileSync(resolved.executable, resolved.args, {
     cwd: root,
     encoding: "utf8"
   }).trim();
 }
 
 export function succeeds(command, args) {
-  return spawnSync(executable(command), args, {
+  const resolved = invocation(command, args);
+  return spawnSync(resolved.executable, resolved.args, {
     cwd: root,
     stdio: "ignore"
   }).status === 0;
