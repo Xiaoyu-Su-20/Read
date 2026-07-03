@@ -389,6 +389,27 @@ function closestNoteEditorRoot(node: Node | null) {
   return element?.closest<HTMLElement>("[data-note-editor-root]") ?? null;
 }
 
+export function nativePdfSelectionOwnsCopy({
+  activeElement,
+  eventTarget,
+  readerSurface
+}: {
+  activeElement: Element | null;
+  eventTarget: EventTarget | null;
+  readerSurface: HTMLElement | null;
+}) {
+  const targetNode = eventTarget instanceof Node ? eventTarget : null;
+  if (closestNoteEditorRoot(targetNode)) {
+    return false;
+  }
+
+  return Boolean(
+    readerSurface &&
+      ((targetNode && readerSurface.contains(targetNode)) ||
+        (activeElement && readerSurface.contains(activeElement)))
+  );
+}
+
 function nativeTextLogFields(fields: Record<string, unknown>) {
   return {
     logOrigin: "native-text-layer",
@@ -523,23 +544,14 @@ const NativePdfTextLayer = memo(function NativePdfTextLayer({
       if (!currentTextLayer || !selectedRange(currentSelection)) {
         return;
       }
-      const domSelection = window.getSelection();
-      const notesOwnCopy = Boolean(
-        closestNoteEditorRoot(event.target as Node | null) ||
-          closestNoteEditorRoot(document.activeElement) ||
-          closestNoteEditorRoot(domSelection?.anchorNode ?? null) ||
-          closestNoteEditorRoot(domSelection?.focusNode ?? null)
-      );
-      if (notesOwnCopy) {
-        return;
-      }
       const readerSurface = layerRef.current?.closest<HTMLElement>(".reader-scroll-surface");
-      const pdfOwnsCopy = Boolean(
-        readerSurface &&
-          ((event.target instanceof Node && readerSurface.contains(event.target)) ||
-            (document.activeElement && readerSurface.contains(document.activeElement)))
-      );
-      if (!pdfOwnsCopy) {
+      if (
+        !nativePdfSelectionOwnsCopy({
+          activeElement: document.activeElement,
+          eventTarget: event.target,
+          readerSurface: readerSurface ?? null
+        })
+      ) {
         return;
       }
       const selectedText = normalizeNativeSelectionText(currentTextLayer, currentSelection);

@@ -1,4 +1,4 @@
-import { isValidElement, type ReactElement } from "react";
+import { createElement, isValidElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -11,7 +11,16 @@ vi.mock("./NotesViewport", () => ({
 }));
 
 vi.mock("./ReaderViewport", () => ({
-  default: () => null
+  default: ({
+    activeViewTransition
+  }: {
+    activeViewTransition: import("../lib/workspaceView").ViewTransition | null;
+  }) =>
+    createElement("div", {
+      "data-testid": "reader-viewport",
+      "data-from-view": activeViewTransition?.fromView ?? "",
+      "data-to-view": activeViewTransition?.toView ?? ""
+    })
 }));
 
 vi.mock("./PaneResizeHandle", () => ({
@@ -107,6 +116,7 @@ function makeViewerApi(overrides?: Partial<ViewerApi>): ViewerApi {
 
 function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[0]>) {
   return ReaderWorkspace({
+    layoutMode: "reader",
     activeViewTransition: null,
     readerSession,
     readerActive: true,
@@ -284,5 +294,34 @@ describe("ReaderWorkspace document header", () => {
     expect(viewerApi.zoomIn).toHaveBeenCalledTimes(1);
     expect(viewerApi.setFitMode).not.toHaveBeenCalled();
     expect(onReaderViewModeChange).toHaveBeenCalledWith("scroll");
+  });
+
+  it("uses the persistent document pane for the full-width book layout", () => {
+    const markup = renderWorkspaceMarkup({ layoutMode: "book" });
+
+    expect(markup).toContain("reader-workspace--book-only");
+    expect(markup).toContain("reader-workspace__body reader-workspace__body--book-only");
+    expect(markup).toContain("reader-workspace__document reader-workspace__document--only");
+    expect(markup).toContain('data-testid="reader-viewport"');
+    expect(markup).not.toContain('class="reader-workspace__notes"');
+    expect(markup).not.toContain("reader-workspace__splitter");
+    expect(markup).toContain('aria-label="Open command palette"');
+    expect(markup).toContain('aria-label="Enter fullscreen"');
+  });
+
+  it("forwards book transitions through the same reader viewport", () => {
+    const markup = renderWorkspaceMarkup({
+      layoutMode: "book",
+      activeViewTransition: {
+        clickStartedAtMs: 10,
+        fromView: "reader",
+        source: "sidebar",
+        toView: "book",
+        viewTransitionId: "view-book-1"
+      }
+    });
+
+    expect(markup).toContain('data-from-view="reader"');
+    expect(markup).toContain('data-to-view="book"');
   });
 });

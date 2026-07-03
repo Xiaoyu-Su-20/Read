@@ -66,7 +66,6 @@ const LazyCommandPalette = lazy(() => import("./components/CommandPalette"));
 const LazyNotesWorkspace = lazy(() => import("./components/NotesWorkspace"));
 const LazyOutlineOverlay = lazy(() => import("./components/OutlineOverlay"));
 const LazyReaderWorkspace = lazy(() => import("./components/ReaderWorkspace"));
-const LazyBookWorkspace = lazy(() => import("./components/BookWorkspace"));
 
 type FullscreenState =
   | "windowed"
@@ -246,8 +245,8 @@ export default function App() {
       fullscreenState === "exiting");
   const shouldRenderReaderWorkspace =
     workspace.workspaceMode === "reader" ||
+    workspace.workspaceMode === "book" ||
     (workspace.workspaceMode === "collection" && workspace.activeReaderSession !== null);
-  const shouldRenderBookWorkspace = workspace.workspaceMode === "book";
   const shouldRenderCollectionWorkspace = workspace.workspaceMode === "collection";
   const shouldRenderNotesWorkspace = workspace.workspaceMode === "notes";
   const shouldStackWorkspacePanels =
@@ -1604,15 +1603,24 @@ export default function App() {
         {shouldRenderReaderWorkspace ? (
           <div
             className={`workspace__panel workspace__panel--reader${
-              workspace.workspaceMode === "reader" ? " workspace__panel--active" : " workspace__panel--hidden"
+              workspace.workspaceMode === "book" ? " workspace__panel--book" : ""
+            }${
+              workspace.workspaceMode === "reader" || workspace.workspaceMode === "book"
+                ? " workspace__panel--active"
+                : " workspace__panel--hidden"
             }`}
-            aria-hidden={workspace.workspaceMode !== "reader"}
+            aria-hidden={
+              workspace.workspaceMode !== "reader" && workspace.workspaceMode !== "book"
+            }
           >
             <Suspense fallback={null}>
               <LazyReaderWorkspace
+                layoutMode={workspace.workspaceMode === "book" ? "book" : "reader"}
                 activeViewTransition={activeViewTransitionRef.current}
                 readerSession={workspace.activeReaderSession}
-                readerActive={workspace.workspaceMode === "reader"}
+                readerActive={
+                  workspace.workspaceMode === "reader" || workspace.workspaceMode === "book"
+                }
                 pendingReaderOpenSessionId={workspace.pendingReaderOpenSessionId}
                 note={notes.note}
                 notesLoading={notes.loading}
@@ -1671,49 +1679,6 @@ export default function App() {
                 onChangeReaderPaneSplitRatio={(nextRatio) => {
                   setSetting("readerPaneSplitRatio", nextRatio);
                 }}
-              />
-            </Suspense>
-          </div>
-        ) : null}
-        {shouldRenderBookWorkspace ? (
-          <div
-            className={`workspace__panel workspace__panel--book${
-              workspace.workspaceMode === "book" ? " workspace__panel--active" : " workspace__panel--hidden"
-            }`}
-            aria-hidden={workspace.workspaceMode !== "book"}
-          >
-            <Suspense fallback={null}>
-              <LazyBookWorkspace
-                activeViewTransition={activeViewTransitionRef.current}
-                readerSession={workspace.activeReaderSession}
-                readerActive={workspace.workspaceMode === "book"}
-                pendingReaderOpenSessionId={workspace.pendingReaderOpenSessionId}
-                readerState={workspace.readerState}
-                onSnapshotChange={workspace.handleViewerSnapshotChange}
-                onOutlineChange={workspace.handleViewerOutlineChange}
-                onStateChange={workspace.handleViewerStateChange}
-                onStatusChange={workspace.handleViewerStatusChange}
-                registerApi={workspace.registerViewerApi}
-                viewerDisplayConfig={viewerDisplayConfig}
-                documentHeaderTitle={workspace.activeDocument?.document.title ?? "Book"}
-                documentHeaderCurrentPage={workspace.viewerSnapshot.currentPage}
-                documentHeaderPageCount={workspace.viewerSnapshot.pageCount}
-                documentHeaderZoom={workspace.viewerSnapshot.zoom}
-                readerViewMode={readerViewMode}
-                onReaderViewModeChange={setReaderViewMode}
-                viewerApi={workspace.viewerApi}
-                onHeaderMouseDown={handleTopbarMouseDown}
-                searchController={searchController}
-                searchFocusRequest={searchFocusRequest}
-                commandPaletteOpen={palette.paletteOpen}
-                onToggleCommandPalette={toggleWorkspaceCommandPalette}
-                registerCommandPaletteAnchor={setPaletteAnchorElement}
-                onSearchOpenDocument={openSearchResultDocument}
-                onSearchGoToPage={workspace.goToReaderPage}
-                showHeaders={!readerFullscreenActive}
-                showFullscreenHint={showFullscreenHint}
-                fullscreen={readerFullscreenActive}
-                onToggleFullscreen={toggleFullscreen}
               />
             </Suspense>
           </div>

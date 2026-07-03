@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   build-signed:
@@ -156,3 +157,47 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: update-site
           keep_files: true
+
+  verify-update-feed:
+    needs: publish-update-feed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify published manifest and updater asset
+        run: node scripts/verify-update-feed.mjs "${GITHUB_REF_NAME#v}"
+
+  open-main-sync-pr:
+    needs: verify-update-feed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or reuse release-to-main pull request
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          version="${VERSION#v}"
+          base_version="${version%%-*}"
+          head_branch="release-$base_version"
+          existing="$(gh pr list --repo "$REPOSITORY" --base main --head "$head_branch" --state open --json url --jq '.[0].url // empty')"
+          if [ -n "$existing" ]; then
+            echo "Release sync PR already exists: $existing"
+            exit 0
+          fi
+          comparison="$(gh api "repos/$REPOSITORY/compare/main...$head_branch")"
+          ahead_by="$(jq -r '.ahead_by' <<<"$comparison")"
+          if [ "$ahead_by" = "0" ]; then
+            echo "$head_branch is already synchronized with main."
+            exit 0
+          fi
+          gh pr create \
+            --repo "$REPOSITORY" \
+            --base main \
+            --head "$head_branch" \
+            --title "Sync $head_branch into main after $version" \
+            --body "Automated post-release sync after the verified $version updater publication."

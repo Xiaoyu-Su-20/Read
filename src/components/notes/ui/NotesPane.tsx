@@ -1175,7 +1175,8 @@ const NotesPane = memo(function NotesPane({
             return;
           }
         }
-
+      }}
+      onKeyDown={(event) => {
         event.stopPropagation();
       }}
       onPointerDownCapture={(event) => {

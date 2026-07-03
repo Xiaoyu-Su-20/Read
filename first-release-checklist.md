@@ -136,6 +136,11 @@
 
 ## Release Preflight
 
+- Use the guarded release flow documented in `RELEASING.md`:
+  - `npm run release:prepare:rc`
+  - review the local release commit and tag
+  - `npm run release:publish`
+- Confirm the release workflow verifies the published updater feed and opens or reuses the release-to-main PR
 - Run frontend tests
 - Run critical Rust tests
 - Run production build
