@@ -169,9 +169,36 @@ type AtomicInlineSelection = {
 type CompositionSession = {
   blockId: string;
   host: HTMLElement | null;
+  hostTextAtStart: string;
   marks: PendingTextMarks | null;
   selection: NoteModelSelection;
 };
+
+function inferCompositionTextFromHost(before: string, after: string) {
+  if (before === after) {
+    return "";
+  }
+
+  let prefixLength = 0;
+  const maxPrefixLength = Math.min(before.length, after.length);
+  while (
+    prefixLength < maxPrefixLength &&
+    before[prefixLength] === after[prefixLength]
+  ) {
+    prefixLength += 1;
+  }
+
+  let suffixLength = 0;
+  while (
+    suffixLength < before.length - prefixLength &&
+    suffixLength < after.length - prefixLength &&
+    before[before.length - suffixLength - 1] === after[after.length - suffixLength - 1]
+  ) {
+    suffixLength += 1;
+  }
+
+  return after.slice(prefixLength, after.length - suffixLength);
+}
 
 const NoteBlockView = memo(function NoteBlockView({
   block
@@ -333,6 +360,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     const pendingCaretVisibilityRef = useRef(false);
     const pendingTextMarksRef = useRef<PendingTextMarks | null>(null);
     const compositionSessionRef = useRef<CompositionSession | null>(null);
+    const isComposingRef = useRef(false);
+    const queuedCompositionReloadRef = useRef<NoteDocument | null>(null);
     const historyRef = useRef<NoteModelHistoryState | null>(initialRuntime.history);
     const applyingHistoryRef = useRef(false);
     const beforeInputHandlerRef = useRef<(event: InputEvent) => boolean>(() => false);
@@ -695,7 +724,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     }
 
     function updateHistorySelectionFromDom() {
-      if (!historyRef.current || applyingHistoryRef.current) {
+      if (!historyRef.current || applyingHistoryRef.current || isComposingRef.current) {
         return;
       }
       historyRef.current = replaceNoteEditorSelection({
@@ -1233,6 +1262,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         pendingTopicSelectionRef.current = null;
         clearPendingTextMarks();
         compositionSessionRef.current = null;
+        isComposingRef.current = false;
+        queuedCompositionReloadRef.current = null;
         return;
       }
       const sameNote = appliedNoteIdRef.current === note.id;
@@ -1244,6 +1275,14 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             noteBlocksContentEqual(note.blocks, lastDispatchedBlocksRef.current)));
       if (isLocalEcho) {
         lastDispatchedBlocksRef.current = note.blocks;
+        return;
+      }
+      if (sameNote && isComposingRef.current) {
+        queuedCompositionReloadRef.current = note;
+        debugLocalAction("notes.interaction.composition-reload-queued", {
+          noteId: note.id,
+          blockCount: note.blocks.length
+        });
         return;
       }
       const runtime = createNoteEditorRuntimeState(note.blocks, note.bookId, null);
@@ -1258,6 +1297,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       pendingTopicSelectionRef.current = null;
       clearPendingTextMarks();
       compositionSessionRef.current = null;
+      isComposingRef.current = false;
+      queuedCompositionReloadRef.current = null;
     }, [note]);
 
     useClientLayoutEffect(() => {
@@ -1267,6 +1308,9 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       updateSelectedBlock(selectedBlockIdRef.current);
       updateSelectedPageLink(selectedPageLinkIdRef.current);
       updateSelectedTopic(selectedTopicIdRef.current);
+      if (isComposingRef.current) {
+        return;
+      }
       const pendingSelection = pendingSelectionRestoreRef.current;
       if (pendingSelection) {
         const restored = restoreModelSelection(
@@ -1305,7 +1349,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         selectionChangeFrameRef.current = null;
         const root = bodyRef.current;
         const history = historyRef.current;
-        if (!root || !history || applyingHistoryRef.current) {
+        if (!root || !history || applyingHistoryRef.current || isComposingRef.current) {
           return;
         }
         const selection = root.ownerDocument.defaultView?.getSelection();
@@ -1724,28 +1768,78 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
                 ".note-editor__block-content"
               ) ??
               null;
+            isComposingRef.current = true;
+            queuedCompositionReloadRef.current = null;
             compositionSessionRef.current = {
               blockId,
               host,
+              hostTextAtStart: host?.textContent ?? "",
               marks: effectiveTextMarks(selection) ?? null,
               selection
             };
+            logInteraction("compositionstart", {
+              blockId,
+              hostConnected: host ? bodyRef.current?.contains(host) ?? false : false,
+              hostTextLength: host?.textContent?.length ?? null
+            });
+          }}
+          onCompositionUpdate={(event) => {
+            const session = compositionSessionRef.current;
+            logInteraction("compositionupdate", {
+              blockId: session?.blockId ?? null,
+              dataLength: event.data.length,
+              hostConnected: session?.host
+                ? bodyRef.current?.contains(session.host) ?? false
+                : false,
+              hostTextLength: session?.host?.textContent?.length ?? null
+            });
           }}
           onCompositionEnd={(event) => {
             const session = compositionSessionRef.current;
             compositionSessionRef.current = null;
+            isComposingRef.current = false;
             if (!session) {
               return;
             }
+            const hostConnected = session.host
+              ? bodyRef.current?.contains(session.host) ?? false
+              : false;
+            const hostText = session.host?.textContent ?? "";
+            const inferredText =
+              event.data.length > 0
+                ? event.data
+                : inferCompositionTextFromHost(session.hostTextAtStart, hostText);
+            const queuedReload = queuedCompositionReloadRef.current;
+            queuedCompositionReloadRef.current = null;
+            logInteraction("compositionend", {
+              blockId: session.blockId,
+              dataLength: event.data.length,
+              inferredTextLength: inferredText.length,
+              hostConnected,
+              hostTextLength: session.host?.textContent?.length ?? null,
+              queuedReload: Boolean(queuedReload)
+            });
             if (
               !blocksRef.current.some((block) => block.id === session.blockId) ||
-              (session.host && !bodyRef.current?.contains(session.host))
+              (session.host && !hostConnected)
             ) {
+              if (queuedReload) {
+                debugLocalAction("notes.interaction.composition-queued-reload-discarded", {
+                  reason: "composition-host-detached",
+                  noteId: queuedReload.id
+                });
+              }
               rerenderFromModel(session.selection);
               return;
             }
-            const text = event.data ?? "";
+            const text = inferredText;
             if (text.length > 0 || !isCollapsedModelSelection(session.selection)) {
+              if (queuedReload) {
+                debugLocalAction("notes.interaction.composition-queued-reload-discarded", {
+                  reason: "composition-committed-local-edit",
+                  noteId: queuedReload.id
+                });
+              }
               applyModelEdit(
                 insertTextAtSelection(
                   blocksRef.current,
@@ -1755,6 +1849,28 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
                 ),
                 "typing"
               );
+              return;
+            }
+            if (queuedReload) {
+              const runtime = createNoteEditorRuntimeState(
+                queuedReload.blocks,
+                queuedReload.bookId,
+                null
+              );
+              setCurrentBlocks(runtime.blocks);
+              setRenderedBlocks(runtime.blocks);
+              historyRef.current = runtime.history;
+              appliedNoteIdRef.current = queuedReload.id;
+              lastDispatchedBlocksRef.current = null;
+              clearTokenSelection();
+              updateSelectedBlock(null);
+              pendingPageLinkPointRef.current = null;
+              pendingTopicSelectionRef.current = null;
+              clearPendingTextMarks();
+              debugLocalAction("notes.interaction.composition-queued-reload-applied", {
+                noteId: queuedReload.id,
+                blockCount: queuedReload.blocks.length
+              });
               return;
             }
             rerenderFromModel(session.selection);

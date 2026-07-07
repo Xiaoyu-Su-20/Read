@@ -160,6 +160,25 @@ fn save_note_updates_note_file_and_index_metadata() {
 }
 
 #[test]
+fn save_note_truncates_multibyte_excerpt_without_panicking() {
+    let temp = tempdir().unwrap();
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let body = "世".repeat(200);
+
+    let saved = store.save_note(standalone_note("IME", &body)).unwrap();
+    let index = store.notes.load_notes_index(&store.paths).unwrap();
+    let entry = index
+        .notes
+        .iter()
+        .find(|entry| entry.id == saved.id)
+        .unwrap();
+
+    assert!(entry.excerpt.ends_with("..."));
+    assert_eq!(entry.excerpt.trim_end_matches("...").chars().count(), 160);
+}
+
+#[test]
 fn save_note_supports_standalone_notes() {
     let temp = tempdir().unwrap();
     let app_dir = temp.path().join("app");

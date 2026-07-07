@@ -167,7 +167,11 @@ function dispatchInput(target: HTMLElement, inputType: string, data: string | nu
   target.dispatchEvent(event);
 }
 
-function dispatchComposition(target: HTMLElement, type: "compositionstart" | "compositionend", data = "") {
+function dispatchComposition(
+  target: HTMLElement,
+  type: "compositionstart" | "compositionupdate" | "compositionend",
+  data = ""
+) {
   const event = new CompositionEvent(type, {
     bubbles: true,
     cancelable: true,
@@ -915,6 +919,70 @@ describe("ModelNoteEditor interactions", () => {
     });
 
     expect(latestBlocks(onChangeBlocks)[0].children).toEqual([createTextNode("Hello世")]);
+  });
+
+  it("recovers composition text from the host when compositionend data is empty", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    const content = blockContent(container, 0);
+
+    setCaret(content, 5);
+    act(() => {
+      dispatchComposition(content, "compositionstart", "");
+    });
+    act(() => {
+      content.textContent = "Hello!";
+      dispatchComposition(content, "compositionupdate", "!");
+      dispatchInput(content, "insertCompositionText", "!");
+    });
+    act(() => {
+      dispatchComposition(content, "compositionend", "");
+    });
+
+    expect(latestBlocks(onChangeBlocks)[0].children).toEqual([createTextNode("Hello!")]);
+  });
+
+  it("does not replace the active composition host during same-note refreshes", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello")]
+      }
+    ]);
+    const rendered = renderEditor(note);
+    const content = blockContent(rendered.container, 0);
+
+    setCaret(content, 5);
+    act(() => {
+      dispatchComposition(content, "compositionstart", "");
+    });
+
+    const refreshedNote = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("External refresh")]
+      }
+    ]);
+    rerenderEditor(rendered, refreshedNote);
+
+    expect(blockContent(rendered.container, 0)).toBe(content);
+
+    act(() => {
+      content.textContent = "Hello!";
+      dispatchComposition(content, "compositionend", "!");
+    });
+
+    expect(latestBlocks(rendered.onChangeBlocks)[0].children).toEqual([
+      createTextNode("Hello!")
+    ]);
   });
 
   it("opens a heading source-reference icon like a normal page link", () => {
