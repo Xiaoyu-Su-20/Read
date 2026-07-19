@@ -14,6 +14,7 @@ import type {
   FolderTreeNode,
   NativeTextPagePayload,
   EffectivePageGeometry,
+  ImportOwnedPdfsResult,
   PdfOutlineItem,
   StandaloneNoteSearchHit
 } from "./types";
@@ -87,6 +88,27 @@ export function importPdf(sourcePath: string, destinationFolderId?: string) {
     sourcePath,
     destinationFolderId
   });
+}
+
+export function importOwnedPdfs(
+  sourcePaths: string[],
+  destinationFolderId: string,
+  options?: { cleanupOwnedSources?: boolean }
+) {
+  return runDebugProcess(
+    "tauri.invoke.import_owned_pdfs",
+    {
+      cleanupOwnedSources: options?.cleanupOwnedSources ?? false,
+      destinationFolderId,
+      sourceCount: sourcePaths.length
+    },
+    () =>
+      invoke<ImportOwnedPdfsResult>("import_owned_pdfs", {
+        cleanupOwnedSources: options?.cleanupOwnedSources ?? false,
+        sourcePaths,
+        destinationFolderId
+      })
+  );
 }
 
 export function moveDocument(documentId: string, destinationFolderId: string) {

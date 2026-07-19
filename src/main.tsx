@@ -56,7 +56,11 @@ async function bootstrap() {
   startupTrace("after-create-root");
 
   const appImportStartedAt = performance.now();
-  const { default: App } = await import("./App");
+  const appModule =
+    import.meta.env.VITE_READR_APP === "mobile" || import.meta.env.MODE === "mobile"
+      ? await import("./mobile/AppMobile")
+      : await import("./App");
+  const App = appModule.default;
   startupTrace("app-module-imported", {
     durationMs: Math.round(performance.now() - appImportStartedAt)
   });

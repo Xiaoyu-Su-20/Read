@@ -32,6 +32,54 @@ fn imports_pdf_without_creating_sidecar_files() {
 
     assert!(imported_path.exists());
     assert!(!sidecar_path.exists());
+    assert!(fs::read_dir(imported_path.parent().unwrap())
+        .unwrap()
+        .all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".readr-import-")));
+}
+
+#[test]
+fn discards_only_app_owned_import_sources() {
+    let temp = tempdir().unwrap();
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+
+    let owned_source = app_dir.join("picker-copy.pdf");
+    fs::create_dir_all(&app_dir).unwrap();
+    write_sample_pdf(&owned_source, "owned");
+
+    let external_source = temp.path().join("external.pdf");
+    write_sample_pdf(&external_source, "external");
+
+    assert!(store.discard_owned_import_source(&owned_source).unwrap());
+    assert!(!owned_source.exists());
+
+    assert!(!store.discard_owned_import_source(&external_source).unwrap());
+    assert!(external_source.exists());
+}
+
+#[test]
+fn does_not_discard_managed_library_pdf_as_import_source() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("managed.pdf");
+    write_sample_pdf(&source, "managed");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let managed_path = temp
+        .path()
+        .join("Reader")
+        .join(DEFAULT_COLLECTION_ID)
+        .join(&record.file_name);
+
+    assert!(!store.discard_owned_import_source(&managed_path).unwrap());
+    assert!(managed_path.exists());
 }
 
 #[test]

@@ -184,7 +184,25 @@ impl LibraryStore {
             .paths
             .unique_pdf_path(&destination_folder_path, file_name);
 
-        fs::copy(source_path, &destination_path)?;
+        let temporary_path = destination_folder_path.join(format!(
+            ".readr-import-{}.tmp",
+            Uuid::new_v4()
+        ));
+        fs::copy(source_path, &temporary_path)?;
+        let copied_fingerprint = self.catalog.hash_file(&temporary_path)?;
+        if copied_fingerprint != source_fingerprint {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(AppError::InvalidInput(
+                "Imported PDF changed while it was being copied.".to_string(),
+            ));
+        }
+        match fs::rename(&temporary_path, &destination_path) {
+            Ok(()) => {}
+            Err(error) => {
+                let _ = fs::remove_file(&temporary_path);
+                return Err(error.into());
+            }
+        }
         let relative_path = self.paths.relative_to_root(&root, &destination_path)?;
         let (file_size_bytes, file_modified_ms) =
             self.catalog.file_metadata_signature(&destination_path)?;
@@ -222,6 +240,26 @@ impl LibraryStore {
             .push(document.id.clone());
         self.catalog.save_index(&self.paths, &index)?;
         Ok(document)
+    }
+
+    pub fn discard_owned_import_source(&self, source_path: &Path) -> AppResult<bool> {
+        if !source_path.exists() || !source_path.is_file() {
+            return Ok(false);
+        }
+
+        let source = fs::canonicalize(source_path)?;
+        let app_dir = fs::canonicalize(&self.paths.app_dir)?;
+        let library_dir = fs::canonicalize(self.paths.library_root_path()).ok();
+        if !source.starts_with(&app_dir)
+            || library_dir
+                .as_ref()
+                .is_some_and(|library_dir| source.starts_with(library_dir))
+        {
+            return Ok(false);
+        }
+
+        fs::remove_file(source)?;
+        Ok(true)
     }
 
     pub fn move_document(

@@ -19,8 +19,9 @@ use std::{
 use debug::process as debug_process;
 use models::{
     DocumentDeleteState, DocumentPayload, DocumentRecord, DocumentState, EffectivePageGeometry,
-    EffectivePageGeometrySource, FolderRecord, FolderTreeNode, NativeTextPagePayload, NoteDocument,
-    NoteIndexEntry, PdfOutlineItem, RenderVariant, RenderedPagePayload, StandaloneNoteSearchHit,
+    EffectivePageGeometrySource, FolderRecord, FolderTreeNode, ImportOwnedPdfFailure,
+    ImportOwnedPdfsResult, NativeTextPagePayload, NoteDocument, NoteIndexEntry, PdfOutlineItem,
+    RenderVariant, RenderedPagePayload, StandaloneNoteSearchHit,
 };
 use normalization::{new_manifest_cache, ManifestCache, NormalizationWorker};
 use serde::{Deserialize, Serialize};
@@ -667,6 +668,75 @@ fn import_pdf(
                 }
             }
             Ok(result.0)
+        },
+    )
+}
+
+#[tauri::command]
+fn import_owned_pdfs(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source_paths: Vec<String>,
+    destination_folder_id: String,
+    cleanup_owned_sources: bool,
+) -> Result<ImportOwnedPdfsResult, String> {
+    run_logged_command(
+        "import_owned_pdfs",
+        json!({
+            "cleanupOwnedSources": cleanup_owned_sources,
+            "destinationFolderId": destination_folder_id,
+            "sourceCount": source_paths.len(),
+        }),
+        || {
+            let worker = state.normalization_worker.clone();
+            let mut imported = Vec::new();
+            let mut failed = Vec::new();
+            let mut jobs = Vec::new();
+
+            for source_path in source_paths {
+                let import_result = with_store(&app, state.clone(), |store| {
+                    let record = store
+                        .import_pdf(
+                            PathBuf::from(&source_path).as_path(),
+                            Some(destination_folder_id.as_str()),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let job = store.prepare_normalization_job(&record.id).ok();
+                    Ok((record, job))
+                });
+
+                match import_result {
+                    Ok((record, job)) => {
+                        if cleanup_owned_sources {
+                            let source = PathBuf::from(&source_path);
+                            let _ = with_store(&app, state.clone(), |store| {
+                                store
+                                    .discard_owned_import_source(&source)
+                                    .map_err(|error| error.to_string())
+                            });
+                        }
+                        if let Some(job) = job {
+                            jobs.push(job);
+                        }
+                        imported.push(record);
+                    }
+                    Err(message) => failed.push(ImportOwnedPdfFailure {
+                        source_path,
+                        message,
+                    }),
+                }
+            }
+
+            for job in jobs {
+                if let Err(error) = worker.schedule(job) {
+                    crate::debug::action(
+                        "normalization.schedule-error",
+                        json!({"error": error.to_string()}),
+                    );
+                }
+            }
+
+            Ok(ImportOwnedPdfsResult { imported, failed })
         },
     )
 }
@@ -1993,6 +2063,7 @@ pub fn run() {
             get_library_root,
             set_library_root,
             import_pdf,
+            import_owned_pdfs,
             list_library,
             rescan_library,
             create_folder,

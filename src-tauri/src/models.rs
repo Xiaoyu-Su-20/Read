@@ -48,6 +48,20 @@ pub struct DocumentRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ImportOwnedPdfFailure {
+    pub source_path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportOwnedPdfsResult {
+    pub imported: Vec<DocumentRecord>,
+    pub failed: Vec<ImportOwnedPdfFailure>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DocumentDeleteState {
     pub can_delete: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

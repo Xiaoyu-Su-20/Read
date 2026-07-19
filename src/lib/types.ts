@@ -16,9 +16,21 @@ export type DocumentRecord = {
   folderId: string;
   relativePath: string;
   fingerprint: string;
+  fileSizeBytes?: number;
+  fileModifiedMs?: number;
   importedAt: string;
   lastOpenedAt: string | null;
   availability: DocumentAvailability;
+};
+
+export type ImportOwnedPdfFailure = {
+  sourcePath: string;
+  message: string;
+};
+
+export type ImportOwnedPdfsResult = {
+  imported: DocumentRecord[];
+  failed: ImportOwnedPdfFailure[];
 };
 
 export type DocumentDeleteState = {
