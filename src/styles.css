@@ -3313,8 +3313,12 @@ body.reader-pane-resizing .notes-pane img {
 }
 
 .notes-popover--navigation {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   width: 25rem;
   min-width: 25rem;
+  max-height: min(34rem, calc(100vh - var(--topbar-height) - 2rem));
+  overflow: hidden;
   padding: 1rem 0.9rem 1.05rem;
   border-radius: 1rem;
   background: color-mix(in srgb, var(--overlay-surface-strong) 94%, var(--theme-chrome));
@@ -3768,7 +3772,22 @@ body.reader-pane-resizing .notes-pane img {
 .notes-navigation {
   display: grid;
   gap: 0.55rem;
+  min-height: 0;
   margin-top: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.25rem;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--overlay-border) 86%, transparent) transparent;
+}
+
+.notes-navigation::-webkit-scrollbar {
+  width: 0.45rem;
+}
+
+.notes-navigation::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--overlay-border) 86%, transparent);
 }
 
 .notes-navigation__chapter {
