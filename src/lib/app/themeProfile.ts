@@ -675,19 +675,19 @@ export const builtinThemeDefinitions: ThemeDefinition[] = [
 export const editablePresetThemeDefinitions: ThemeDefinition[] = [
   {
     id: "preset-forest",
-    name: "Forest",
+    name: "Linen",
     kind: "custom",
     source: {
-      chrome: "#1f2b20",
-      uiText: "#c7d3bf",
-      documentPaper: "#1d271d",
-      documentInk: "#c7d3bf",
-      accent: "#9ba86d",
-      interactive: "#7fa26f",
+      chrome: "#e4ddcf",
+      uiText: "#3d362c",
+      documentPaper: "#f2ebdc",
+      documentInk: "#2f2a23",
+      accent: "#92734a",
+      interactive: "#76694c",
       danger: "#b56a5d"
     },
     document: {
-      surfaceTone: "dark"
+      surfaceTone: "light"
     }
   },
   {
@@ -709,15 +709,15 @@ export const editablePresetThemeDefinitions: ThemeDefinition[] = [
   },
   {
     id: "preset-ocean",
-    name: "Ocean",
+    name: "Paper",
     kind: "custom",
     source: {
-      chrome: "#536884",
-      uiText: "#dbe4f2",
-      documentPaper: "#e6ecf5",
-      documentInk: "#465b79",
-      accent: "#86a6ce",
-      interactive: "#89a9d8",
+      chrome: "#dcd2bf",
+      uiText: "#40362a",
+      documentPaper: "#ebe1d0",
+      documentInk: "#342b21",
+      accent: "#967047",
+      interactive: "#78694e",
       danger: "#c17468"
     },
     document: {
@@ -726,15 +726,15 @@ export const editablePresetThemeDefinitions: ThemeDefinition[] = [
   },
   {
     id: "preset-clay",
-    name: "Clay",
+    name: "Oat",
     kind: "custom",
     source: {
-      chrome: "#c97147",
-      uiText: "#f6dbc6",
-      documentPaper: "#f5d4c0",
-      documentInk: "#934d2f",
-      accent: "#f0b18a",
-      interactive: "#de9468",
+      chrome: "#d3c8b7",
+      uiText: "#41382d",
+      documentPaper: "#e3dac8",
+      documentInk: "#352d23",
+      accent: "#896d4d",
+      interactive: "#70644c",
       danger: "#b85b4e"
     },
     document: {

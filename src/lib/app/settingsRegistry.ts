@@ -170,6 +170,40 @@ function createDefaultEditablePresetThemes(): ThemeDefinition[] {
 
 const previousEditablePresetThemeSnapshots: ThemeDefinition[] = [
   {
+    id: "preset-forest",
+    name: "Forest",
+    kind: "custom",
+    source: {
+      chrome: "#1f2b20",
+      uiText: "#c7d3bf",
+      documentPaper: "#1d271d",
+      documentInk: "#c7d3bf",
+      accent: "#9ba86d",
+      interactive: "#7fa26f",
+      danger: "#b56a5d"
+    },
+    document: {
+      surfaceTone: "dark"
+    }
+  },
+  {
+    id: "preset-forest",
+    name: "Linen",
+    kind: "custom",
+    source: {
+      chrome: "#ede7db",
+      uiText: "#3b352b",
+      documentPaper: "#faf6ed",
+      documentInk: "#2d2923",
+      accent: "#9a7a4d",
+      interactive: "#7d704f",
+      danger: "#b56a5d"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
     id: "preset-stone",
     name: "Parchment",
     kind: "custom",
@@ -181,6 +215,74 @@ const previousEditablePresetThemeSnapshots: ThemeDefinition[] = [
       accent: "#8c7657",
       interactive: "#6f86b3",
       danger: "#b56658"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
+    id: "preset-ocean",
+    name: "Ocean",
+    kind: "custom",
+    source: {
+      chrome: "#536884",
+      uiText: "#dbe4f2",
+      documentPaper: "#e6ecf5",
+      documentInk: "#465b79",
+      accent: "#86a6ce",
+      interactive: "#89a9d8",
+      danger: "#c17468"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
+    id: "preset-ocean",
+    name: "Paper",
+    kind: "custom",
+    source: {
+      chrome: "#e7dfd0",
+      uiText: "#3c3327",
+      documentPaper: "#f4eddf",
+      documentInk: "#322a20",
+      accent: "#a17445",
+      interactive: "#806f50",
+      danger: "#c17468"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
+    id: "preset-clay",
+    name: "Clay",
+    kind: "custom",
+    source: {
+      chrome: "#c97147",
+      uiText: "#f6dbc6",
+      documentPaper: "#f5d4c0",
+      documentInk: "#934d2f",
+      accent: "#f0b18a",
+      interactive: "#de9468",
+      danger: "#b85b4e"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
+    id: "preset-clay",
+    name: "Oat",
+    kind: "custom",
+    source: {
+      chrome: "#ded6c7",
+      uiText: "#40372c",
+      documentPaper: "#eee7d8",
+      documentInk: "#332c23",
+      accent: "#8f7250",
+      interactive: "#75694f",
+      danger: "#b85b4e"
     },
     document: {
       surfaceTone: "light"
@@ -210,9 +312,12 @@ function syncEditablePresetThemes(
   const latestPresetById = new Map(
     editablePresetThemeDefinitions.map((themeDefinition) => [themeDefinition.id, themeDefinition] as const)
   );
-  const previousPresetById = new Map(
-    previousEditablePresetThemeSnapshots.map((themeDefinition) => [themeDefinition.id, themeDefinition] as const)
-  );
+  const previousPresetsById = new Map<string, ThemeDefinition[]>();
+  for (const themeDefinition of previousEditablePresetThemeSnapshots) {
+    const snapshots = previousPresetsById.get(themeDefinition.id) ?? [];
+    snapshots.push(themeDefinition);
+    previousPresetsById.set(themeDefinition.id, snapshots);
+  }
 
   return customThemes.map((themeDefinition) => {
     const latestPreset = latestPresetById.get(themeDefinition.id);
@@ -220,8 +325,8 @@ function syncEditablePresetThemes(
       return cloneThemeDefinition(themeDefinition);
     }
 
-    const previousPreset = previousPresetById.get(themeDefinition.id);
-    if (previousPreset && themeDefinitionMatches(themeDefinition, previousPreset)) {
+    const previousPresets = previousPresetsById.get(themeDefinition.id) ?? [];
+    if (previousPresets.some((previousPreset) => themeDefinitionMatches(themeDefinition, previousPreset))) {
       return cloneThemeDefinition(latestPreset);
     }
 
@@ -678,7 +783,9 @@ export function createDefaultAppSettingsPayload(): AppSettingsPayload {
 
 export function normalizeAppSettings(candidate: unknown): AppSettingsSchema {
   const record = isRecord(candidate) ? candidate : {};
-  const customThemes = appSettingsRegistry.customThemes.normalize(record.customThemes);
+  const customThemes = appendMissingEditablePresetThemes(
+    appSettingsRegistry.customThemes.normalize(record.customThemes)
+  );
 
   return {
     automaticUpdates: appSettingsRegistry.automaticUpdates.normalize(record.automaticUpdates),
