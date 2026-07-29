@@ -4214,6 +4214,12 @@ body.reader-pane-resizing .notes-pane img {
   outline: none;
 }
 
+.note-editor__body[data-heading-link-modifier-active="true"]
+  > [data-heading-has-source-reference="true"]
+  > .note-editor__block-content {
+  cursor: pointer;
+}
+
 .page-link {
   display: inline-flex;
   align-items: baseline;
