@@ -38,6 +38,7 @@ import {
 import { resolveAdjacentPreloadPages, resolveDisplayListWarmupPages } from "./preloadStrategy";
 import {
   PDF_RUNTIME_OUTLINE_LOAD_DELAY_MS,
+  PDF_RUNTIME_POST_VISIBLE_FALLBACK_MS,
   shouldRequestNativeTextLayer,
   shouldScheduleDeferredOutlineLoad
 } from "./backgroundWorkPolicy";
@@ -1850,9 +1851,36 @@ export function useReaderController({
       });
 
       const requestedDocumentGeneration = documentGenerationRef.current;
-      void getPdfNativeOutline(document.document.id, {
-        openSessionId: openSessionId ?? undefined
-      })
+      void (async () => {
+        try {
+          const nativeOutline = await getPdfNativeOutline(document.document.id, {
+            openSessionId: openSessionId ?? undefined
+          });
+          if (nativeOutline.length > 0) {
+            return nativeOutline;
+          }
+
+          const runtimeOutline = await runtimeSessionRef.current?.getOutline();
+          debugAction("reader.outline-load-fallback", {
+            documentId: document.document.id,
+            fallbackItemCount: runtimeOutline?.length ?? 0,
+            nativeItemCount: nativeOutline.length,
+            openSessionId,
+            reason: "native-empty"
+          });
+          return runtimeOutline && runtimeOutline.length > 0 ? runtimeOutline : nativeOutline;
+        } catch (nativeError) {
+          const runtimeOutline = await runtimeSessionRef.current?.getOutline();
+          debugAction("reader.outline-load-fallback", {
+            documentId: document.document.id,
+            fallbackItemCount: runtimeOutline?.length ?? 0,
+            nativeError: nativeError instanceof Error ? nativeError.message : String(nativeError),
+            openSessionId,
+            reason: "native-failed"
+          });
+          return runtimeOutline ?? [];
+        }
+      })()
         .then((nextOutline) => {
           if (
             cancelled ||
@@ -1906,6 +1934,34 @@ export function useReaderController({
   const displayedPageDocumentId = displayedPage?.documentId ?? null;
   const displayedPageNumber = displayedPage?.pageNumber ?? null;
   const displayedPageRequestKey = displayedPage?.requestKey ?? null;
+
+  useEffect(() => {
+    if (
+      backgroundWorkSuspended ||
+      !displayedPage ||
+      postVisibleWorkReadyKey === displayedPage.requestKey
+    ) {
+      return;
+    }
+
+    const scheduledAt = performance.now();
+    const timerId = window.setTimeout(() => {
+      setPostVisibleWorkReadyKey((currentKey) =>
+        currentKey === displayedPage.requestKey ? currentKey : displayedPage.requestKey
+      );
+      debugAction("reader.post-visible-work-ready", {
+        documentId: displayedPage.documentId,
+        elapsedMs: Math.round(performance.now() - scheduledAt),
+        openSessionId,
+        reason: "fallback-timeout",
+        requestKey: displayedPage.requestKey
+      });
+    }, PDF_RUNTIME_POST_VISIBLE_FALLBACK_MS);
+
+    return () => {
+      window.clearTimeout(timerId);
+    };
+  }, [backgroundWorkSuspended, displayedPage, openSessionId, postVisibleWorkReadyKey]);
 
   useEffect(() => {
     if (
