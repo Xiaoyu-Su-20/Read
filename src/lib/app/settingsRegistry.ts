@@ -204,6 +204,23 @@ const previousEditablePresetThemeSnapshots: ThemeDefinition[] = [
     }
   },
   {
+    id: "preset-forest",
+    name: "Linen",
+    kind: "custom",
+    source: {
+      chrome: "#e4ddcf",
+      uiText: "#3d362c",
+      documentPaper: "#f2ebdc",
+      documentInk: "#2f2a23",
+      accent: "#92734a",
+      interactive: "#76694c",
+      danger: "#b56a5d"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
     id: "preset-stone",
     name: "Parchment",
     kind: "custom",
@@ -248,6 +265,23 @@ const previousEditablePresetThemeSnapshots: ThemeDefinition[] = [
       documentInk: "#322a20",
       accent: "#a17445",
       interactive: "#806f50",
+      danger: "#c17468"
+    },
+    document: {
+      surfaceTone: "light"
+    }
+  },
+  {
+    id: "preset-ocean",
+    name: "Paper",
+    kind: "custom",
+    source: {
+      chrome: "#dcd2bf",
+      uiText: "#40362a",
+      documentPaper: "#ebe1d0",
+      documentInk: "#342b21",
+      accent: "#967047",
+      interactive: "#78694e",
       danger: "#c17468"
     },
     document: {

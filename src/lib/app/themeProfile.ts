@@ -678,12 +678,12 @@ export const editablePresetThemeDefinitions: ThemeDefinition[] = [
     name: "Linen",
     kind: "custom",
     source: {
-      chrome: "#e4ddcf",
-      uiText: "#3d362c",
-      documentPaper: "#f2ebdc",
-      documentInk: "#2f2a23",
-      accent: "#92734a",
-      interactive: "#76694c",
+      chrome: "#e0d7c7",
+      uiText: "#3f362b",
+      documentPaper: "#eee4d6",
+      documentInk: "#332b22",
+      accent: "#94724a",
+      interactive: "#77694d",
       danger: "#b56a5d"
     },
     document: {
@@ -709,15 +709,15 @@ export const editablePresetThemeDefinitions: ThemeDefinition[] = [
   },
   {
     id: "preset-ocean",
-    name: "Paper",
+    name: "Dove",
     kind: "custom",
     source: {
-      chrome: "#dcd2bf",
-      uiText: "#40362a",
-      documentPaper: "#ebe1d0",
-      documentInk: "#342b21",
-      accent: "#967047",
-      interactive: "#78694e",
+      chrome: "#d8d6cd",
+      uiText: "#34352f",
+      documentPaper: "#e7e5dc",
+      documentInk: "#2f302b",
+      accent: "#7c7f70",
+      interactive: "#696d61",
       danger: "#c17468"
     },
     document: {

@@ -257,10 +257,12 @@ describe("settingsRegistry", () => {
     ).settings;
 
     expect(appSettingsSelectors.themeList(settings).map((theme) => theme.name)).toEqual(
-      expect.arrayContaining(["Linen", "Paper", "Oat"])
+      expect.arrayContaining(["Linen", "Dove", "Oat"])
     );
     expect(settings.customThemes.find((theme) => theme.id === "preset-forest")?.source.documentPaper)
-      .toBe("#f2ebdc");
+      .toBe("#eee4d6");
+    expect(settings.customThemes.find((theme) => theme.id === "preset-ocean")?.source.documentPaper)
+      .toBe("#e7e5dc");
   });
 
   it("drops persisted workspace colors from version-6 custom themes", () => {

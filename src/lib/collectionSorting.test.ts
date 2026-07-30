@@ -1,12 +1,20 @@
 import { describe, expect, it } from "vitest";
 
 import type { DocumentRecord } from "./types";
-import { sortCollectionDocumentsByRecent } from "./collectionSorting";
+import {
+  sortCollectionDocuments,
+  sortCollectionDocumentsByName,
+  sortCollectionDocumentsByRecent
+} from "./collectionSorting";
 
-function document(id: string, lastOpenedAt: string | null): DocumentRecord {
+function document(
+  id: string,
+  lastOpenedAt: string | null,
+  title = id
+): DocumentRecord {
   return {
     id,
-    title: id,
+    title,
     fileName: `${id}.pdf`,
     folderId: "Collection 1",
     relativePath: `Collection 1/${id}.pdf`,
@@ -32,5 +40,36 @@ describe("sortCollectionDocumentsByRecent", () => {
       "unopened-a",
       "unopened-b"
     ]);
+  });
+});
+
+describe("sortCollectionDocumentsByName", () => {
+  it("sorts by title using numeric comparison and preserves manual order for title ties", () => {
+    const sorted = sortCollectionDocumentsByName([
+      document("manual-first", null, "Book 2"),
+      document("zeta", null, "Zeta"),
+      document("alpha", null, "Alpha"),
+      document("book-10", null, "Book 10"),
+      document("manual-second", null, "book 2")
+    ]);
+
+    expect(sorted.map((entry) => entry.id)).toEqual([
+      "alpha",
+      "manual-first",
+      "manual-second",
+      "book-10",
+      "zeta"
+    ]);
+  });
+});
+
+describe("sortCollectionDocuments", () => {
+  it("returns manual order unchanged for manual mode", () => {
+    const documents = [
+      document("second", "2026-01-02T00:00:00Z", "B"),
+      document("first", "2026-01-03T00:00:00Z", "A")
+    ];
+
+    expect(sortCollectionDocuments(documents, "manual")).toEqual(documents);
   });
 });

@@ -15,7 +15,7 @@ import {
 } from "../lib/collectionDocumentMenu";
 import { debugAction, debugLocalAction } from "../lib/debugLog";
 import {
-  sortCollectionDocumentsByRecent,
+  sortCollectionDocuments,
   type CollectionDocumentSortMode
 } from "../lib/collectionSorting";
 import type {
@@ -94,6 +94,12 @@ type OpenDocumentMenuState = {
 type OpenStandaloneNoteMenuState = {
   noteId: string;
 } | null;
+
+const COLLECTION_DOCUMENT_SORT_LABELS: Record<CollectionDocumentSortMode, string> = {
+  manual: "Manual",
+  recent: "Recent",
+  name: "Name"
+};
 
 type InternalPointerDragPayload =
   | {
@@ -383,10 +389,7 @@ export default function CollectionViewRefresh({
     optimisticSelectedBookOrderIds,
     (document) => document.id
   );
-  const books =
-    documentSortMode === "recent"
-      ? sortCollectionDocumentsByRecent(manuallyOrderedBooks)
-      : manuallyOrderedBooks;
+  const books = sortCollectionDocuments(manuallyOrderedBooks, documentSortMode);
   const openMenuDocument =
     openDocumentMenu ? books.find((document) => document.id === openDocumentMenu.documentId) ?? null : null;
   const openMenuStandaloneNote =
@@ -2517,7 +2520,7 @@ export default function CollectionViewRefresh({
                   >
                     <span className="collection-header__sort-label">Sort:</span>
                     <span className="collection-header__sort-value">
-                      {documentSortMode === "recent" ? "Recent" : "Manual"}
+                      {COLLECTION_DOCUMENT_SORT_LABELS[documentSortMode]}
                     </span>
                     <svg
                       className={sortMenuOpen ? "collection-header__sort-chevron--open" : ""}
@@ -2532,7 +2535,7 @@ export default function CollectionViewRefresh({
                   </button>
                   {sortMenuOpen ? (
                     <div className="collection-header__sort-menu" role="menu" aria-label="Sort collection documents">
-                      {(["manual", "recent"] as const).map((mode) => {
+                      {(["manual", "recent", "name"] as const).map((mode) => {
                         const selected = documentSortMode === mode;
                         return (
                           <button
@@ -2547,7 +2550,7 @@ export default function CollectionViewRefresh({
                               setSortMenuOpen(false);
                             }}
                           >
-                            <span>{mode === "recent" ? "Recent" : "Manual"}</span>
+                            <span>{COLLECTION_DOCUMENT_SORT_LABELS[mode]}</span>
                             {selected ? (
                               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                                 <path d="m5 12 4 4L19 6" />
