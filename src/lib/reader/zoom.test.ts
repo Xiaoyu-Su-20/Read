@@ -16,7 +16,7 @@ import {
 describe("zoom helpers", () => {
   it("clamps zoom to the supported range", () => {
     expect(clampZoom(0.1)).toBe(0.7);
-    expect(clampZoom(9)).toBe(2.5);
+    expect(clampZoom(9)).toBe(3.5);
   });
 
   it("scales wheel zoom multiplicatively", () => {
@@ -37,7 +37,8 @@ describe("zoom helpers", () => {
   it("steps Scroll buttons through semantic zoom levels", () => {
     expect(stepScrollZoom(1, "in")).toBe(1.1);
     expect(stepScrollZoom(1, "out")).toBe(0.9);
-    expect(stepScrollZoom(2.5, "in")).toBe(2.5);
+    expect(stepScrollZoom(2.5, "in")).toBe(2.75);
+    expect(stepScrollZoom(3.5, "in")).toBe(3.5);
   });
 
   it("quantizes DPR-aware Scroll raster scale upward", () => {

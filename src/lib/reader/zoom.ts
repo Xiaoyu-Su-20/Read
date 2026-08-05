@@ -1,7 +1,7 @@
 import type { ReaderFitMode } from "../types";
 
 const MIN_ZOOM = 0.7;
-const MAX_ZOOM = 2.5;
+const MAX_ZOOM = 3.5;
 const WHEEL_ZOOM_FACTOR = 1.02;
 const KEYBOARD_ZOOM_FACTOR = 1.03;
 const AUTO_MAXIMIZE_VERTICAL_MARGIN_PX = 0;
@@ -21,7 +21,11 @@ export const SCROLL_ZOOM_LEVELS = [
   1.75,
   2,
   2.25,
-  2.5
+  2.5,
+  2.75,
+  3,
+  3.25,
+  3.5
 ] as const;
 
 export type ResolvedReaderFitMode = Exclude<ReaderFitMode, "width">;
