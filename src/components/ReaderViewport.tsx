@@ -4,6 +4,7 @@ import PdfViewer from "./PdfViewer";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import { debugAction } from "../lib/debugLog";
 import type { DocumentState, OutlineItem, ReaderSession, ReaderViewMode, ViewerApi, ViewerSnapshot } from "../lib/types";
+import type { FolioPrediction } from "../lib/reader/folioPrediction";
 import { toViewEventName, type ViewTransition } from "../lib/workspaceView";
 import ContinuousPdfViewer from "./ContinuousPdfViewer";
 
@@ -19,6 +20,7 @@ type ReaderViewportProps = {
   onStatusChange: (message: string) => void;
   onStateChange: (mode: ReaderViewMode, state: DocumentState | null) => void;
   registerApi: (mode: ReaderViewMode, api: ViewerApi | null) => void;
+  onFolioPrediction?: (pageNumber: number, prediction: FolioPrediction | null) => void;
   viewerDisplayConfig: ViewerDisplayConfig;
   readerViewMode: ReaderViewMode;
   suspendAutoFitDuringPaneResize: boolean;
@@ -36,6 +38,7 @@ const ReaderViewport = memo(function ReaderViewport({
   onStatusChange,
   onStateChange,
   registerApi,
+  onFolioPrediction = () => undefined,
   viewerDisplayConfig,
   readerViewMode,
   suspendAutoFitDuringPaneResize
@@ -109,6 +112,7 @@ const ReaderViewport = memo(function ReaderViewport({
           onStateChange={handleStateChange}
           onStatusChange={onStatusChange}
           registerApi={handleRegisterApi}
+          onFolioPrediction={onFolioPrediction}
           viewerDisplayConfig={viewerDisplayConfig}
           suspendAutoFitDuringPaneResize={suspendAutoFitDuringPaneResize}
         />
@@ -124,6 +128,7 @@ const ReaderViewport = memo(function ReaderViewport({
         onStateChange={handleStateChange}
         onStatusChange={onStatusChange}
         registerApi={handleRegisterApi}
+        onFolioPrediction={onFolioPrediction}
         viewerDisplayConfig={viewerDisplayConfig}
         suspendAutoFitDuringPaneResize={suspendAutoFitDuringPaneResize}
       />

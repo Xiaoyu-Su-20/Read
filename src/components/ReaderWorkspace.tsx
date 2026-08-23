@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import type { ComponentProps, MouseEvent as ReactMouseEvent } from "react";
 
 import DocumentWorkspaceHeader from "./DocumentWorkspaceHeader";
@@ -9,6 +9,7 @@ import WorkspaceHeaderTools from "./WorkspaceHeaderTools";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import type { ViewTransition } from "../lib/workspaceView";
 import { useReaderPaneLayoutController } from "../lib/reader/useReaderPaneLayoutController";
+import type { FolioPrediction } from "../lib/reader/folioPrediction";
 import type {
   DocumentPayload,
   DocumentState,
@@ -172,6 +173,18 @@ export default function ReaderWorkspace({
   const bookOnly = layoutMode === "book";
   const document = readerSession?.document ?? null;
   const bookmarks = readerState?.bookmarks ?? [];
+  const [currentBookPagePrediction, setCurrentBookPagePrediction] = useState<FolioPrediction | null>(null);
+  useEffect(() => {
+    setCurrentBookPagePrediction(null);
+  }, [currentReaderPage, readerSession?.openSessionId]);
+  const handleFolioPrediction = useCallback(
+    (pageNumber: number, prediction: FolioPrediction | null) => {
+      if (pageNumber === currentReaderPage) {
+        setCurrentBookPagePrediction(prediction);
+      }
+    },
+    [currentReaderPage]
+  );
   const autoMaximizeMinDocumentWidth =
     readerViewMode === "page"
       ? viewerApi?.getAutoMaximizeMinDocumentWidth() ?? null
@@ -251,6 +264,7 @@ export default function ReaderWorkspace({
             onStateChange={onStateChange}
             onStatusChange={onStatusChange}
             registerApi={registerApi}
+            onFolioPrediction={handleFolioPrediction}
             viewerDisplayConfig={viewerDisplayConfig}
             readerViewMode={readerViewMode}
             suspendAutoFitDuringPaneResize={isDragging && readerViewMode === "page"}
@@ -281,6 +295,7 @@ export default function ReaderWorkspace({
               onNavigateToTarget={onNavigateToTarget}
               onSetBookmarks={onSetBookmarks}
               currentPage={currentReaderPage}
+              currentBookPagePrediction={currentBookPagePrediction}
               revealRequest={noteRevealRequest}
               headerActionsContainerId="reader-workspace-notes-header-tools"
               commandPaletteOpen={commandPaletteOpen}

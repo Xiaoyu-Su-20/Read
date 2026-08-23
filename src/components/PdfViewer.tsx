@@ -4,6 +4,7 @@ import { type ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import { debugAction, isDebugModeEnabled } from "../lib/debugLog";
 import { readerDiagnostic } from "../lib/debug/readerDiagnostics";
 import { computePageShellOffsets } from "../lib/reader/pageLayout";
+import { predictFolio, type FolioPrediction } from "../lib/reader/folioPrediction";
 import { beginAutoFitCycle } from "../lib/reader/autoFitDebug";
 import { useReaderController, type PresentedPage } from "../lib/reader/useReaderController";
 import {
@@ -28,6 +29,7 @@ type PdfViewerProps = {
   onStatusChange: (message: string) => void;
   onStateChange: (state: DocumentState | null) => void;
   registerApi: (api: ViewerApi | null) => void;
+  onFolioPrediction?: (pageNumber: number, prediction: FolioPrediction | null) => void;
   viewerDisplayConfig: ViewerDisplayConfig;
   suspendAutoFitDuringPaneResize: boolean;
 };
@@ -52,6 +54,7 @@ const PdfViewer = memo(function PdfViewer({
   onStatusChange,
   onStateChange,
   registerApi,
+  onFolioPrediction = () => undefined,
   viewerDisplayConfig,
   suspendAutoFitDuringPaneResize
 }: PdfViewerProps) {
@@ -151,6 +154,7 @@ const PdfViewer = memo(function PdfViewer({
   ]);
   const firstVisibleLoggedSessionRef = useRef<string | null>(null);
   const currentOpenSessionIdRef = useRef<string | null>(openSessionId);
+  const folioPredictionCacheRef = useRef(new Map<string, FolioPrediction | null>());
   const lastSrcAssignedLogRef = useRef<{
     displayed: string | null;
     incoming: string | null;
@@ -158,6 +162,26 @@ const PdfViewer = memo(function PdfViewer({
     displayed: null,
     incoming: null
   });
+
+  useEffect(() => {
+    if (!document || !displayedPage || !displayedPageTextLayer) {
+      return;
+    }
+    if (displayedPageTextLayer.pageNumber !== displayedPage.pageNumber) {
+      debugAction("reader.folio-prediction-skipped-page-mismatch", {
+        documentId: document.document.id,
+        displayedPageNumber: displayedPage.pageNumber,
+        textLayerPageNumber: displayedPageTextLayer.pageNumber
+      });
+      return;
+    }
+    const cacheKey = `${document.document.id}:${openSessionId ?? "legacy"}:${displayedPage.pageNumber}`;
+    const prediction = folioPredictionCacheRef.current.has(cacheKey)
+      ? folioPredictionCacheRef.current.get(cacheKey) ?? null
+      : predictFolio(displayedPageTextLayer).prediction;
+    folioPredictionCacheRef.current.set(cacheKey, prediction);
+    onFolioPrediction(displayedPage.pageNumber, prediction);
+  }, [displayedPage, displayedPageTextLayer, document, onFolioPrediction, openSessionId]);
   const [activeImageSlot, setActiveImageSlot] = useState<0 | 1>(0);
   const [imageSlots, setImageSlots] = useState<[ImageSlotState, ImageSlotState]>(() => [
     {

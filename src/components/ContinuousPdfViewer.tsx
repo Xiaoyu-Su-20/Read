@@ -56,6 +56,7 @@ import {
   createDocumentStateWriterGeneration,
   isStaleDocumentStateWriterError
 } from "../lib/reader/documentStateWriter";
+import { predictFolio, type FolioPrediction } from "../lib/reader/folioPrediction";
 import { updateScrollReaderState } from "../lib/reader/documentReaderState";
 import type {
   Bookmark,
@@ -81,6 +82,7 @@ type ContinuousPdfViewerProps = {
   onStatusChange: (message: string) => void;
   onStateChange: (state: DocumentState | null) => void;
   registerApi: (api: ViewerApi | null) => void;
+  onFolioPrediction?: (pageNumber: number, prediction: FolioPrediction | null) => void;
   viewerDisplayConfig: ViewerDisplayConfig;
   suspendAutoFitDuringPaneResize: boolean;
 };
@@ -254,7 +256,9 @@ function ContinuousPageList({
   visibleRange,
   viewerDisplayConfig,
   onIdentityChanged,
-  onPageMeasured
+  onPageMeasured,
+  onFolioPrediction,
+  folioPredictionCacheRef
 }: {
   coordinator: ScrollRenderCoordinator;
   documentId: string;
@@ -272,6 +276,8 @@ function ContinuousPageList({
   viewerDisplayConfig: ViewerDisplayConfig;
   onIdentityChanged: () => void;
   onPageMeasured: (page: CachedRenderedPage, measuredHeight: number) => void;
+  onFolioPrediction: (pageNumber: number, prediction: FolioPrediction | null) => void;
+  folioPredictionCacheRef: MutableRefObject<Map<string, FolioPrediction | null>>;
 }) {
   const mountedPages = [];
   for (let pageNumber = range.startPage; pageNumber <= range.endPage; pageNumber += 1) {
@@ -318,6 +324,8 @@ function ContinuousPageList({
             viewerDisplayConfig={viewerDisplayConfig}
             onIdentityChanged={onIdentityChanged}
             onPageMeasured={onPageMeasured}
+            onFolioPrediction={onFolioPrediction}
+            folioPredictionCacheRef={folioPredictionCacheRef}
           />
         ))}
       </div>
@@ -339,7 +347,9 @@ const ContinuousPage = memo(function ContinuousPage({
   renderZoom,
   viewerDisplayConfig,
   onIdentityChanged,
-  onPageMeasured
+  onPageMeasured,
+  onFolioPrediction,
+  folioPredictionCacheRef
 }: {
   coordinator: ScrollRenderCoordinator;
   documentId: string;
@@ -354,6 +364,8 @@ const ContinuousPage = memo(function ContinuousPage({
   viewerDisplayConfig: ViewerDisplayConfig;
   onIdentityChanged: () => void;
   onPageMeasured: (page: CachedRenderedPage, measuredHeight: number) => void;
+  onFolioPrediction: (pageNumber: number, prediction: FolioPrediction | null) => void;
+  folioPredictionCacheRef: MutableRefObject<Map<string, FolioPrediction | null>>;
 }) {
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [page, setPage] = useState<CachedRenderedPage | null>(null);
@@ -519,6 +531,12 @@ const ContinuousPage = memo(function ContinuousPage({
           return;
         }
         setTextLayer(payload);
+        const cacheKey = `${documentId}:${openSessionId ?? "legacy"}:${pageNumber}`;
+        const prediction = folioPredictionCacheRef.current.has(cacheKey)
+          ? folioPredictionCacheRef.current.get(cacheKey) ?? null
+          : predictFolio(payload).prediction;
+        folioPredictionCacheRef.current.set(cacheKey, prediction);
+        onFolioPrediction(pageNumber, prediction);
       })
       .catch((error) => {
         if (cancelled) {
@@ -534,7 +552,7 @@ const ContinuousPage = memo(function ContinuousPage({
     return () => {
       cancelled = true;
     };
-  }, [documentId, openSessionId, pageNumber]);
+  }, [documentId, folioPredictionCacheRef, onFolioPrediction, openSessionId, pageNumber]);
 
   useEffect(() => {
     return () => {
@@ -645,7 +663,8 @@ export default function ContinuousPdfViewer({
   onStatusChange,
   onStateChange,
   registerApi,
-  viewerDisplayConfig
+  viewerDisplayConfig,
+  onFolioPrediction = () => undefined
 }: ContinuousPdfViewerProps) {
   const document = readerSession?.document ?? null;
   const documentId = document?.document.id ?? null;
@@ -705,6 +724,7 @@ export default function ContinuousPdfViewer({
     : 1;
   const scrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const pageCacheRef = useRef(createPageCache({ maxBytes: CONTINUOUS_RENDER_CACHE_BYTES }));
+  const folioPredictionCacheRef = useRef(new Map<string, FolioPrediction | null>());
   const renderCoordinatorRef = useRef<ScrollRenderCoordinator | null>(null);
   if (renderCoordinatorRef.current === null) {
     renderCoordinatorRef.current = new ScrollRenderCoordinator({ maxConcurrent: 2 });
@@ -1388,6 +1408,8 @@ export default function ContinuousPdfViewer({
           viewerDisplayConfig={viewerDisplayConfig}
           onIdentityChanged={requestPageGeometryRefresh}
           onPageMeasured={handlePageMeasured}
+          onFolioPrediction={onFolioPrediction}
+          folioPredictionCacheRef={folioPredictionCacheRef}
         /> : null}
       </div>
     </ContinuousScrollModel>

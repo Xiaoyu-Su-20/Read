@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "reac
 import { createPortal } from "react-dom";
 
 import { logNoteDebugEvent } from "../../../lib/api";
-import { debugLocalAction } from "../../../lib/debugLog";
+import { debugAction, debugLocalAction } from "../../../lib/debugLog";
 import {
   headingLevel,
   headingTitle
@@ -32,6 +32,7 @@ import {
 import NoteEditor from "./ModelNoteEditor";
 import type { NoteEditorHandle } from "./noteEditorTypes";
 import WorkspaceHeaderTools from "../../WorkspaceHeaderTools";
+import type { FolioPrediction } from "../../../lib/reader/folioPrediction";
 
 type NotesPaneProps = {
   note: NoteDocument | null;
@@ -56,6 +57,7 @@ type NotesPaneProps = {
   onNavigateToTarget: (target: PdfNavigationTarget) => void;
   onSetBookmarks: (bookmarks: Bookmark[]) => void;
   currentPage: number | null;
+  currentBookPagePrediction: FolioPrediction | null;
   revealRequest: NoteRevealRequest | null;
   navigationOpenRequest: number;
   commandPaletteOpen: boolean;
@@ -210,6 +212,7 @@ const NotesPane = memo(function NotesPane({
   onNavigateToTarget,
   onSetBookmarks,
   currentPage,
+  currentBookPagePrediction,
   revealRequest,
   navigationOpenRequest,
   commandPaletteOpen,
@@ -1513,13 +1516,56 @@ const NotesPane = memo(function NotesPane({
             contextMenuState?.target === "body" ? contextMenuState.blockId : null;
           const targetBlockType =
             contextMenuState?.target === "body" ? contextMenuState.blockType : null;
+          const pageLinkValueSource = currentBookPagePrediction ? "prediction" : "fallback";
+          const initialPageLinkValue = currentBookPagePrediction?.label ?? (currentPage ? String(currentPage) : "");
+          debugAction("notes.page-link-value-resolved", {
+            noteId: note?.id ?? null,
+            currentPage,
+            predictionLabel: currentBookPagePrediction?.label ?? null,
+            predictionConfidence: currentBookPagePrediction?.confidence ?? null,
+            source: pageLinkValueSource,
+            value: initialPageLinkValue
+          });
+
+          if (currentBookPagePrediction?.confidence === "high") {
+            const result = editorRef.current?.insertPageLink(
+              Number.parseInt(currentBookPagePrediction.label, 10)
+            );
+            if (!result) {
+              showToast("Unable to add PageLink.");
+              return;
+            }
+            if (!result.ok) {
+              showToast(result.message);
+              return;
+            }
+            if (
+              documentCapabilities &&
+              currentPage &&
+              (targetBlockType === "heading1" ||
+                targetBlockType === "heading2" ||
+                targetBlockType === "heading3")
+            ) {
+              const block = findHeadingBlock(targetBlockId);
+              if (block && !findBookmarkAtPage(bookmarks, currentPage)) {
+                onSetBookmarks([...bookmarks, makeBookmark(currentPage, headingTitle(block))]);
+              }
+            }
+            editorRef.current?.clearSelectedBlock();
+            closeMenu();
+            window.requestAnimationFrame(() => {
+              editorRef.current?.focus();
+            });
+            return;
+          }
+
           setTopicDialog(null);
           setPageLinkDialog({
             mode: "insert",
             pageLinkId: null,
             blockId: targetBlockId,
             blockType: targetBlockType,
-            value: "",
+            value: initialPageLinkValue,
             error: null
           });
           closeMenu();
