@@ -49,6 +49,7 @@ import type {
   ViewerSnapshot
 } from "./lib/types";
 import { ReaderModeHandoffCoordinator } from "./lib/reader/ReaderModeHandoffCoordinator";
+import type { FolioPrediction } from "./lib/reader/folioPrediction";
 import { toViewEventName, type ViewTransition, type WorkspaceView } from "./lib/workspaceView";
 
 function startupTrace(step: string, fields: Record<string, unknown> = {}) {
@@ -185,6 +186,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteAnchorElement, setPaletteAnchorElement] = useState<HTMLButtonElement | null>(null);
   const [readerViewMode, setReaderViewMode] = useState<ReaderViewMode>("page");
+  const [currentBookPagePrediction, setCurrentBookPagePrediction] = useState<FolioPrediction | null>(null);
   const readerViewModeRef = useRef<ReaderViewMode>(readerViewMode);
   const readerModeHandoffRef = useRef(new ReaderModeHandoffCoordinator());
   const activeReaderApiModeRef = useRef<ReaderViewMode | null>(null);
@@ -219,6 +221,19 @@ export default function App() {
   const [themePreview, setThemePreview] = useState<ThemeDefinition | null>(null);
   const activeTheme = selectors.activeTheme(settings);
   const themeList = selectors.themeList(settings);
+
+  useEffect(() => {
+    setCurrentBookPagePrediction(null);
+  }, [workspace.activeDocumentId, workspace.viewerSnapshot.currentPage]);
+
+  const handleFolioPrediction = useCallback(
+    (pageNumber: number, prediction: FolioPrediction | null) => {
+      if (pageNumber === workspace.viewerSnapshot.currentPage) {
+        setCurrentBookPagePrediction(prediction);
+      }
+    },
+    [workspace.viewerSnapshot.currentPage]
+  );
 
   useEffect(() => {
     startupTrace("component-mounted");
@@ -1751,6 +1766,8 @@ export default function App() {
                 onCopyAllNoteText={notes.copyAllText}
                 onGoToNotePage={workspace.goToReaderPage}
                 currentReaderPage={workspace.viewerSnapshot.currentPage}
+                currentBookPagePrediction={currentBookPagePrediction}
+                onFolioPrediction={handleFolioPrediction}
                 noteRevealRequest={noteRevealRequest}
                 outlineItems={workspace.outlineItems}
                 readerState={workspace.readerState}

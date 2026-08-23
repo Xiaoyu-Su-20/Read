@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import type { ComponentProps, MouseEvent as ReactMouseEvent } from "react";
 
 import DocumentWorkspaceHeader from "./DocumentWorkspaceHeader";
@@ -42,6 +42,8 @@ type ReaderWorkspaceProps = {
   onCopyAllNoteText: () => Promise<void>;
   onGoToNotePage: (page: number) => void;
   currentReaderPage: number | null;
+  currentBookPagePrediction?: FolioPrediction | null;
+  onFolioPrediction?: (pageNumber: number, prediction: FolioPrediction | null) => void;
   noteRevealRequest: NoteRevealRequest | null;
   outlineItems: OutlineItem[];
   readerState: DocumentState | null;
@@ -130,6 +132,8 @@ export default function ReaderWorkspace({
   onCopyAllNoteText,
   onGoToNotePage,
   currentReaderPage,
+  currentBookPagePrediction = null,
+  onFolioPrediction,
   noteRevealRequest,
   outlineItems,
   readerState,
@@ -173,18 +177,6 @@ export default function ReaderWorkspace({
   const bookOnly = layoutMode === "book";
   const document = readerSession?.document ?? null;
   const bookmarks = readerState?.bookmarks ?? [];
-  const [currentBookPagePrediction, setCurrentBookPagePrediction] = useState<FolioPrediction | null>(null);
-  useEffect(() => {
-    setCurrentBookPagePrediction(null);
-  }, [currentReaderPage, readerSession?.openSessionId]);
-  const handleFolioPrediction = useCallback(
-    (pageNumber: number, prediction: FolioPrediction | null) => {
-      if (pageNumber === currentReaderPage) {
-        setCurrentBookPagePrediction(prediction);
-      }
-    },
-    [currentReaderPage]
-  );
   const autoMaximizeMinDocumentWidth =
     readerViewMode === "page"
       ? viewerApi?.getAutoMaximizeMinDocumentWidth() ?? null
@@ -264,7 +256,7 @@ export default function ReaderWorkspace({
             onStateChange={onStateChange}
             onStatusChange={onStatusChange}
             registerApi={registerApi}
-            onFolioPrediction={handleFolioPrediction}
+            onFolioPrediction={onFolioPrediction}
             viewerDisplayConfig={viewerDisplayConfig}
             readerViewMode={readerViewMode}
             suspendAutoFitDuringPaneResize={isDragging && readerViewMode === "page"}
