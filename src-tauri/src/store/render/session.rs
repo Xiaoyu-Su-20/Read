@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{mpsc, Arc, Mutex},
     thread,
 };
@@ -123,7 +123,7 @@ impl RenderSessionRegistry {
     pub fn get_native_text_page(
         &self,
         request: NativeTextPageRequest,
-    ) -> AppResult<NativeTextPagePayload> {
+    ) -> AppResult<Arc<NativeTextPagePayload>> {
         let session = self.session_for(
             &request.fingerprint,
             &request.document_path,
@@ -270,7 +270,7 @@ impl PdfRenderSession {
         &self,
         document_id: &str,
         page_number: u32,
-    ) -> AppResult<NativeTextPagePayload> {
+    ) -> AppResult<Arc<NativeTextPagePayload>> {
         let (reply_sender, reply_receiver) = mpsc::channel();
         self.sender
             .send(RenderSessionMessage::GetNativeTextPage {
@@ -343,7 +343,7 @@ enum RenderSessionMessage {
     GetNativeTextPage {
         document_id: String,
         page_number: u32,
-        reply_sender: mpsc::Sender<Result<NativeTextPagePayload, String>>,
+        reply_sender: mpsc::Sender<Result<Arc<NativeTextPagePayload>, String>>,
     },
     GetNativeOutline {
         document_id: String,
@@ -596,7 +596,7 @@ impl RenderSessionActor {
         &mut self,
         document_id: &str,
         page_number: u32,
-    ) -> Result<NativeTextPagePayload, String> {
+    ) -> Result<Arc<NativeTextPagePayload>, String> {
         if let Some(cached) = self.text_cache.get(page_number) {
             crate::debug::action(
                 "native-text.cache-hit",
@@ -608,7 +608,7 @@ impl RenderSessionActor {
                     "page": page_number,
                 }),
             );
-            return Ok((*cached).clone());
+            return Ok(cached);
         }
 
         crate::debug::action(
@@ -626,7 +626,7 @@ impl RenderSessionActor {
             display_list_page.bounds,
             display_list_page.display_list.as_ref(),
         )?;
-        self.text_cache.insert(page_number, payload.clone());
+        let payload = self.text_cache.insert(page_number, payload);
         crate::debug::action(
             "native-text.loaded",
             json!({
@@ -899,18 +899,47 @@ fn estimate_display_list_bytes(bounds: Rect) -> usize {
         .max(1.0) as usize
 }
 
+/// Maximum number of native text pages kept per open document. Pages carry a per-character
+/// payload, so the cache is bounded (least recently used first) instead of growing with every
+/// page ever read.
+const NATIVE_TEXT_PAGE_CACHE_CAPACITY: usize = 32;
+
 #[derive(Default)]
 struct NativeTextPageCache {
     entries: HashMap<u32, Arc<NativeTextPagePayload>>,
+    /// Page numbers from least to most recently used.
+    recency: VecDeque<u32>,
 }
 
 impl NativeTextPageCache {
-    fn get(&self, page_number: u32) -> Option<Arc<NativeTextPagePayload>> {
-        self.entries.get(&page_number).cloned()
+    fn get(&mut self, page_number: u32) -> Option<Arc<NativeTextPagePayload>> {
+        let payload = self.entries.get(&page_number).cloned()?;
+        self.touch(page_number);
+        Some(payload)
     }
 
-    fn insert(&mut self, page_number: u32, payload: NativeTextPagePayload) {
-        self.entries.insert(page_number, Arc::new(payload));
+    fn insert(
+        &mut self,
+        page_number: u32,
+        payload: NativeTextPagePayload,
+    ) -> Arc<NativeTextPagePayload> {
+        let payload = Arc::new(payload);
+        self.entries.insert(page_number, payload.clone());
+        self.touch(page_number);
+        while self.entries.len() > NATIVE_TEXT_PAGE_CACHE_CAPACITY {
+            match self.recency.pop_front() {
+                Some(evicted) => {
+                    self.entries.remove(&evicted);
+                }
+                None => break,
+            }
+        }
+        payload
+    }
+
+    fn touch(&mut self, page_number: u32) {
+        self.recency.retain(|page| *page != page_number);
+        self.recency.push_back(page_number);
     }
 
     fn entry_count(&self) -> usize {
@@ -1019,4 +1048,49 @@ pub struct DisplayListSessionStats {
     pub hits: u64,
     pub misses: u64,
     pub loaded_count: u64,
+}
+
+#[cfg(test)]
+mod native_text_cache_tests {
+    use super::*;
+
+    fn payload(page_number: u32) -> NativeTextPagePayload {
+        NativeTextPagePayload {
+            page_number,
+            source_width: 1.0,
+            source_height: 1.0,
+            bounds: NativeRect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 1.0,
+                y1: 1.0,
+            },
+            lines: Vec::new(),
+            chars: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn native_text_cache_evicts_least_recently_used_pages() {
+        let mut cache = NativeTextPageCache::default();
+        for page in 1..=NATIVE_TEXT_PAGE_CACHE_CAPACITY as u32 {
+            cache.insert(page, payload(page));
+        }
+        // Touch page 1 so page 2 becomes the eviction candidate.
+        assert!(cache.get(1).is_some());
+        cache.insert(1000, payload(1000));
+
+        assert_eq!(cache.entry_count(), NATIVE_TEXT_PAGE_CACHE_CAPACITY);
+        assert!(cache.get(1).is_some());
+        assert!(cache.get(2).is_none());
+        assert!(cache.get(1000).is_some());
+    }
+
+    #[test]
+    fn native_text_cache_hits_share_the_stored_payload() {
+        let mut cache = NativeTextPageCache::default();
+        let inserted = cache.insert(7, payload(7));
+        let hit = cache.get(7).unwrap();
+        assert!(Arc::ptr_eq(&inserted, &hit));
+    }
 }

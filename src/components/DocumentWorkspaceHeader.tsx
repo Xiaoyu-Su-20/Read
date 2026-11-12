@@ -42,7 +42,6 @@ const DocumentControls = memo(function DocumentControls({
   zoom,
   readerViewMode,
   viewerApi,
-  onReaderViewModeChange
 }: DocumentControlsProps) {
   const hasOpenDocument = pageCount > 0;
   const documentPageLabel = hasOpenDocument ? `${currentPage} / ${pageCount}` : "No document";
@@ -148,35 +147,6 @@ const DocumentControls = memo(function DocumentControls({
           </button>
         </div>
 
-        <div
-          className="reader-workspace__header-group reader-workspace__header-group--view-mode"
-          role="group"
-          aria-label="Reader view mode"
-          data-no-window-drag
-        >
-          <button
-            className={`reader-workspace__view-mode-button${
-              readerViewMode === "page" ? " reader-workspace__view-mode-button--active" : ""
-            }`}
-            type="button"
-            aria-pressed={readerViewMode === "page"}
-            disabled={!hasOpenDocument}
-            onClick={() => onReaderViewModeChange("page")}
-          >
-            Page
-          </button>
-          <button
-            className={`reader-workspace__view-mode-button${
-              readerViewMode === "scroll" ? " reader-workspace__view-mode-button--active" : ""
-            }`}
-            type="button"
-            aria-pressed={readerViewMode === "scroll"}
-            disabled={!hasOpenDocument}
-            onClick={() => onReaderViewModeChange("scroll")}
-          >
-            Scroll
-          </button>
-        </div>
       </div>
     </div>
   );

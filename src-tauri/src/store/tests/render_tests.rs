@@ -1,7 +1,4 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 
 use crate::{
@@ -335,8 +332,8 @@ fn render_cache_evicts_oldest_entries_beyond_the_byte_budget() {
 
 #[test]
 fn cancelled_render_stops_before_cache_lookup() {
-    let cancellation = Arc::new(AtomicBool::new(false));
-    cancellation.store(true, Ordering::Release);
+    let cancellation = Arc::new(super::super::RenderCancellation::default());
+    cancellation.cancel();
     let request = super::super::PageRenderRequest {
         document_id: "doc".to_string(),
         document_generation_id: Some("session".to_string()),
@@ -382,7 +379,8 @@ fn fresh_same_key_render_succeeds_after_cancelled_independent_request() {
         .prepare_render_request(&record.id, 1, 1.0, &manifest_cache)
         .unwrap();
     let cache_key = cancelled_request.cache_key.clone();
-    let cancellation = Arc::new(AtomicBool::new(true));
+    let cancellation = Arc::new(super::super::RenderCancellation::default());
+    cancellation.cancel();
     cancelled_request.request_id = Some("request-a".to_string());
     cancelled_request.cancellation = Some(cancellation);
 
@@ -414,4 +412,50 @@ fn fresh_same_key_render_succeeds_after_cancelled_independent_request() {
         .unwrap()
         .cache_keys()
         .contains(&cache_key));
+}
+
+#[test]
+fn expected_render_outcomes_are_not_treated_as_errors() {
+    assert!(super::super::is_expected_render_outcome(
+        &crate::error::AppError::Render(super::super::RENDER_CANCELLED_MESSAGE.to_string())
+            .to_string()
+    ));
+    assert!(super::super::is_expected_render_outcome(
+        super::super::STALE_RENDER_MESSAGE
+    ));
+    assert!(!super::super::is_expected_render_outcome(
+        "Render error: Unable to render page 1 with MuPDF: boom"
+    ));
+}
+
+#[test]
+fn resolved_render_document_goes_stale_when_the_index_is_written() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("resolved.pdf");
+    write_valid_pdf(&source, "Resolved document");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+
+    let generation = super::super::index_generation(&app_dir);
+    let resolved = store.resolve_render_document(&record.id, generation).unwrap();
+    assert!(resolved.is_current(super::super::index_generation(&app_dir)));
+
+    let manifest_cache = Arc::new(Mutex::new(Default::default()));
+    let request = super::super::prepare_render_request_from_resolved(
+        &app_dir,
+        &resolved,
+        1,
+        1.0,
+        &manifest_cache,
+    )
+    .unwrap();
+    assert_eq!(request.document_id, record.id);
+    assert_eq!(request.fingerprint, record.fingerprint);
+
+    store.rename_document(&record.id, "Renamed").unwrap();
+    assert!(!resolved.is_current(super::super::index_generation(&app_dir)));
 }

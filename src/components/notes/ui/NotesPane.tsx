@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "reac
 import { createPortal } from "react-dom";
 
 import { logNoteDebugEvent } from "../../../lib/api";
-import { debugLocalAction } from "../../../lib/debugLog";
+import { debugAction, debugLocalAction } from "../../../lib/debugLog";
 import {
   headingLevel,
   headingTitle
@@ -32,6 +32,7 @@ import {
 import NoteEditor from "./ModelNoteEditor";
 import type { NoteEditorHandle } from "./noteEditorTypes";
 import WorkspaceHeaderTools from "../../WorkspaceHeaderTools";
+import type { FolioPrediction } from "../../../lib/reader/folioPrediction";
 
 type NotesPaneProps = {
   note: NoteDocument | null;
@@ -56,6 +57,7 @@ type NotesPaneProps = {
   onNavigateToTarget: (target: PdfNavigationTarget) => void;
   onSetBookmarks: (bookmarks: Bookmark[]) => void;
   currentPage: number | null;
+  currentBookPagePrediction: FolioPrediction | null;
   revealRequest: NoteRevealRequest | null;
   navigationOpenRequest: number;
   commandPaletteOpen: boolean;
@@ -210,6 +212,7 @@ const NotesPane = memo(function NotesPane({
   onNavigateToTarget,
   onSetBookmarks,
   currentPage,
+  currentBookPagePrediction,
   revealRequest,
   navigationOpenRequest,
   commandPaletteOpen,
@@ -247,7 +250,20 @@ const NotesPane = memo(function NotesPane({
     timestamp: number;
   } | null>(null);
   const toastTimerRef = useRef<number | null>(null);
-  const [scrollbarVisible, setScrollbarVisible] = useState(false);
+  // Scrollbar visibility is toggled directly on the scrollbar element: going through React state
+  // re-rendered the whole pane (and reconciled every note block) at the start and end of each
+  // scroll gesture.
+  function setScrollbarVisible(visible: boolean) {
+    const scrollbarElement = scrollbarRef.current;
+    if (!scrollbarElement) {
+      return;
+    }
+    if (visible) {
+      scrollbarElement.dataset.visible = "true";
+    } else {
+      delete scrollbarElement.dataset.visible;
+    }
+  }
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
@@ -454,9 +470,11 @@ const NotesPane = memo(function NotesPane({
   }
 
   function updateNotesScrollbar() {
-    const paneElement = paneRef.current;
+    // The thumb variables are written on the scrollbar element, not the pane: custom properties
+    // inherit, so setting them on the pane restyled every note block on every scroll event.
+    const scrollbarElement = scrollbarRef.current;
     const scrollElement = scrollRef.current;
-    if (!paneElement || !scrollElement) {
+    if (!scrollbarElement || !scrollElement) {
       return;
     }
 
@@ -471,8 +489,8 @@ const NotesPane = memo(function NotesPane({
         maxThumbTop: 0,
         maxScroll: 0
       };
-      paneElement.style.setProperty("--notes-scroll-thumb-height", "0px");
-      paneElement.style.setProperty("--notes-scroll-thumb-top", "0px");
+      scrollbarElement.style.setProperty("--notes-scroll-thumb-height", "0px");
+      scrollbarElement.style.setProperty("--notes-scroll-thumb-top", "0px");
       return;
     }
 
@@ -487,8 +505,8 @@ const NotesPane = memo(function NotesPane({
       maxThumbTop,
       maxScroll
     };
-    paneElement.style.setProperty("--notes-scroll-thumb-height", `${thumbHeight}px`);
-    paneElement.style.setProperty("--notes-scroll-thumb-top", `${thumbTop}px`);
+    scrollbarElement.style.setProperty("--notes-scroll-thumb-height", `${thumbHeight}px`);
+    scrollbarElement.style.setProperty("--notes-scroll-thumb-top", `${thumbTop}px`);
   }
 
   function scrollNotesToThumbTop(nextThumbTop: number) {
@@ -1149,9 +1167,7 @@ const NotesPane = memo(function NotesPane({
   return (
     <aside
       ref={paneRef}
-      className={`notes-pane${fullscreen ? " notes-pane--fullscreen" : ""}${
-        scrollbarVisible ? " notes-pane--scrollbar-visible" : ""
-      }`}
+      className={`notes-pane${fullscreen ? " notes-pane--fullscreen" : ""}`}
       aria-label="Notes"
       onKeyDownCapture={(event) => {
         const key = event.key.toLowerCase();
@@ -1513,13 +1529,56 @@ const NotesPane = memo(function NotesPane({
             contextMenuState?.target === "body" ? contextMenuState.blockId : null;
           const targetBlockType =
             contextMenuState?.target === "body" ? contextMenuState.blockType : null;
+          const pageLinkValueSource = currentBookPagePrediction ? "prediction" : "fallback";
+          const initialPageLinkValue = currentBookPagePrediction?.label ?? (currentPage ? String(currentPage) : "");
+          debugAction("notes.page-link-value-resolved", {
+            noteId: note?.id ?? null,
+            currentPage,
+            predictionLabel: currentBookPagePrediction?.label ?? null,
+            predictionConfidence: currentBookPagePrediction?.confidence ?? null,
+            source: pageLinkValueSource,
+            value: initialPageLinkValue
+          });
+
+          if (currentBookPagePrediction?.confidence === "high") {
+            const result = editorRef.current?.insertPageLink(
+              Number.parseInt(currentBookPagePrediction.label, 10)
+            );
+            if (!result) {
+              showToast("Unable to add PageLink.");
+              return;
+            }
+            if (!result.ok) {
+              showToast(result.message);
+              return;
+            }
+            if (
+              documentCapabilities &&
+              currentPage &&
+              (targetBlockType === "heading1" ||
+                targetBlockType === "heading2" ||
+                targetBlockType === "heading3")
+            ) {
+              const block = findHeadingBlock(targetBlockId);
+              if (block && !findBookmarkAtPage(bookmarks, currentPage)) {
+                onSetBookmarks([...bookmarks, makeBookmark(currentPage, headingTitle(block))]);
+              }
+            }
+            editorRef.current?.clearSelectedBlock();
+            closeMenu();
+            window.requestAnimationFrame(() => {
+              editorRef.current?.focus();
+            });
+            return;
+          }
+
           setTopicDialog(null);
           setPageLinkDialog({
             mode: "insert",
             pageLinkId: null,
             blockId: targetBlockId,
             blockType: targetBlockType,
-            value: "",
+            value: initialPageLinkValue,
             error: null
           });
           closeMenu();

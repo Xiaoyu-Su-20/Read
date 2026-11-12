@@ -74,13 +74,6 @@ function normalizePageLinkOrigin(origin: NotePageLinkNode["origin"]): NotePageLi
   return null;
 }
 
-function headingReferenceOrigin(blockId: string): NonNullable<NotePageLinkNode["origin"]> {
-  return {
-    kind: "heading-reference",
-    ownerBlockId: blockId
-  };
-}
-
 function isHeadingReferencePageLink(node: NoteInlineNode, ownerBlockId: string): node is NotePageLinkNode {
   return (
     node.type === "page-link" &&
@@ -97,61 +90,75 @@ function removeHeadingReferencePageLink(children: NoteInlineNode[], ownerBlockId
   return children.filter((child) => !isHeadingReferencePageLink(child, ownerBlockId));
 }
 
-function createPageLinkFromSourceReference(args: {
-  reference: DocumentSourceReference | null;
-  ownerBlockId: string;
+function sourceReferenceFromHeadingPageLink(args: {
+  block: NoteBlock;
+  pageLink: NotePageLinkNode | null;
   fallbackDocumentId?: string | null;
-  existing?: NotePageLinkNode | null;
 }) {
-  const pageIndex = args.reference?.target?.pageIndex;
-  if (!Number.isInteger(pageIndex) || pageIndex == null || pageIndex < 0) {
+  const pageNumber = args.pageLink?.pdfPageIndex;
+  const documentId = args.pageLink?.documentId ?? args.fallbackDocumentId ?? null;
+  if (!Number.isInteger(pageNumber) || pageNumber == null || pageNumber <= 0 || !documentId) {
     return null;
   }
 
-  const pageNumber = pageIndex + 1;
-  return createPageLinkNode({
-    text: formatPageLinkText(pageNumber),
-    bookPageLabel: String(pageNumber),
-    documentId:
-      args.reference?.target?.documentId ??
-      args.reference?.documentId ??
-      args.fallbackDocumentId ??
-      null,
-    pdfPageIndex: pageNumber,
-    id: args.existing?.id,
-    createdAt: args.existing?.createdAt,
-    origin: headingReferenceOrigin(args.ownerBlockId)
-  });
+  const headingChildren = removeHeadingReferencePageLink(args.block.children ?? [], args.block.id);
+  const title =
+    noteBlockText({
+      ...args.block,
+      children: headingChildren
+    }).trim() || "Untitled section";
+
+  return normalizeDocumentSourceReference(
+    {
+      id: args.pageLink?.id || crypto.randomUUID(),
+      documentId,
+      kind: "direct",
+      outlineItemId: null,
+      outlineSource: null,
+      title,
+      target: {
+        documentId,
+        pageIndex: pageNumber - 1
+      },
+      createdAt: args.pageLink?.createdAt || new Date().toISOString()
+    },
+    args.fallbackDocumentId
+  );
 }
 
 function migrateLegacyHeadingReferences(blocks: NoteBlock[], fallbackDocumentId?: string | null) {
   return blocks.map((block) => {
     if (block.type === "paragraph") {
-      return block;
-    }
-
-    const normalizedSourceReference = normalizeDocumentSourceReference(
-      block.sourceReference,
-      fallbackDocumentId
-    );
-    if (!normalizedSourceReference) {
-      return block.sourceReference == null
-        ? block
-        : {
-            ...block,
-            sourceReference: null
-          };
+      return {
+        ...block,
+        sourceReference: null,
+        children: removeHeadingReferencePageLink(block.children ?? [], block.id)
+      };
     }
 
     const normalizedChildren = normalizeNoteInlineNodes(block.children ?? [], fallbackDocumentId);
-    const hasVisibleText = normalizedChildren.some((child) => child.text.trim().length > 0);
-    const existing = findHeadingReferencePageLink(normalizedChildren, block.id);
     const childrenWithoutHeadingReference = removeHeadingReferencePageLink(
       normalizedChildren,
       block.id
     );
+    const normalizedSourceReference = normalizeDocumentSourceReference(
+      block.sourceReference,
+      fallbackDocumentId
+    );
+    const existing = findHeadingReferencePageLink(normalizedChildren, block.id);
+    const hiddenSourceReference =
+      normalizedSourceReference ??
+      sourceReferenceFromHeadingPageLink({
+        block: {
+          ...block,
+          children: normalizedChildren
+        },
+        pageLink: existing,
+        fallbackDocumentId
+      });
+    const hasVisibleText = childrenWithoutHeadingReference.some((child) => child.text.trim().length > 0);
 
-    if (!hasVisibleText) {
+    if (!hiddenSourceReference || !hasVisibleText) {
       return {
         ...block,
         sourceReference: null,
@@ -159,21 +166,10 @@ function migrateLegacyHeadingReferences(blocks: NoteBlock[], fallbackDocumentId?
       };
     }
 
-    const pageLink =
-      createPageLinkFromSourceReference({
-        reference: normalizedSourceReference,
-        ownerBlockId: block.id,
-        fallbackDocumentId,
-        existing
-      }) ??
-      null;
-
     return {
       ...block,
-      sourceReference: null,
-      children: pageLink
-        ? [...childrenWithoutHeadingReference, pageLink]
-        : childrenWithoutHeadingReference
+      sourceReference: hiddenSourceReference,
+      children: childrenWithoutHeadingReference
     };
   });
 }
@@ -480,7 +476,7 @@ export function replaceBlockType(
             ...block,
             type: nextType,
             children: block.children,
-            sourceReference: null
+            sourceReference: nextType === "paragraph" ? null : block.sourceReference ?? null
           }
         : block
     )
@@ -503,11 +499,11 @@ export function replaceBlockSourceReference(
       if (block.type === "paragraph") {
         return {
           ...block,
-          sourceReference: null
+          sourceReference: null,
+          children: removeHeadingReferencePageLink(block.children, block.id)
         };
       }
 
-      const existing = findHeadingReferencePageLink(block.children, block.id);
       const children = removeHeadingReferencePageLink(block.children, block.id);
       if (!normalizedReference) {
         return {
@@ -517,17 +513,10 @@ export function replaceBlockSourceReference(
         };
       }
 
-      const pageLink = createPageLinkFromSourceReference({
-        reference: normalizedReference,
-        ownerBlockId: block.id,
-        fallbackDocumentId,
-        existing
-      });
-
       return {
         ...block,
-        sourceReference: null,
-        children: pageLink ? [...children, pageLink] : children
+        sourceReference: normalizedReference,
+        children
       };
     }),
     fallbackDocumentId

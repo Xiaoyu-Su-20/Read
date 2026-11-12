@@ -19,9 +19,7 @@ fn imports_pdf_without_creating_sidecar_files() {
 
     let app_dir = temp.path().join("app");
     let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
-    let record = store
-        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
-        .unwrap();
+    let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
 
     let imported_path = temp
         .path()
@@ -115,7 +113,7 @@ fn rescans_preserve_state_after_manual_rename() {
             &record.id,
             crate::models::DocumentState {
                 last_page: 42,
-                zoom: 1.35,
+                scroll_zoom: 1.35,
                 ..crate::models::DocumentState::new(record.id.clone(), record.fingerprint.clone())
             },
         )
@@ -136,7 +134,7 @@ fn rescans_preserve_state_after_manual_rename() {
 
     assert_eq!(renamed.file_name, "renamed-manually.pdf");
     assert_eq!(reopened.state.last_page, 42);
-    assert!((reopened.state.zoom - 1.35).abs() < f32::EPSILON);
+    assert!((reopened.state.scroll_zoom - 1.35).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -275,6 +273,32 @@ fn reconcile_library_skips_index_write_when_catalog_is_unchanged() {
 }
 
 #[test]
+fn reconcile_library_skips_state_writes_when_state_is_unchanged() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("steady-state.pdf");
+    write_sample_pdf(&source, "steady");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let _ = store.list_library().unwrap();
+
+    let state_path = app_dir
+        .join("document-states")
+        .join(format!("{}.json", record.id));
+    assert!(state_path.exists());
+    let before = fs::metadata(&state_path).unwrap().modified().unwrap();
+    thread::sleep(Duration::from_millis(1100));
+
+    let _ = store.list_library().unwrap();
+
+    let after = fs::metadata(&state_path).unwrap().modified().unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
 fn reconcile_library_persists_file_metadata_for_cached_fingerprints() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("steady-metadata.pdf");
@@ -317,7 +341,7 @@ fn reconcile_library_removes_stale_missing_duplicates_with_same_fingerprint() {
     let stale_state = crate::models::DocumentState {
         last_opened_at: Some("2026-06-17T10:00:00Z".to_string()),
         last_page: 23,
-        zoom: 1.4,
+        scroll_zoom: 1.4,
         ..crate::models::DocumentState::new(stale_document_id.clone(), record.fingerprint.clone())
     };
     let stale_state_path = app_dir
@@ -362,7 +386,7 @@ fn reconcile_library_removes_stale_missing_duplicates_with_same_fingerprint() {
 
     let reopened = store.open_document(&record.id).unwrap();
     assert_eq!(reopened.state.last_page, 23);
-    assert!((reopened.state.zoom - 1.4).abs() < f32::EPSILON);
+    assert!((reopened.state.scroll_zoom - 1.4).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -390,7 +414,9 @@ fn renaming_collection_one_does_not_recreate_an_empty_collection_one() {
     write_sample_pdf(&source, "default-folder");
 
     let store = LibraryStore::new(temp.path().join("app"), temp.path().join("Reader"));
-    let record = store.import_pdf(&source, Some(DEFAULT_COLLECTION_ID)).unwrap();
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
 
     let renamed = store.rename_folder(DEFAULT_COLLECTION_ID, "Renamed Shelf").unwrap();
     assert_eq!(renamed.id, "Renamed Shelf");

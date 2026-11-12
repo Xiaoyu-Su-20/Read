@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   clampZoom,
+  isPinchWheelDelta,
   normalizeReaderFitMode,
   normalizeZoom,
   resolveAutoMaximizeZoom,
   resolveSurfaceScale,
   resolveScrollRasterScale,
   scaleZoomByKeyboardDirection,
+  scaleZoomByPinchDelta,
   scaleZoomByWheelDelta,
   snapScrollZoom,
   stepScrollZoom
@@ -16,12 +18,41 @@ import {
 describe("zoom helpers", () => {
   it("clamps zoom to the supported range", () => {
     expect(clampZoom(0.1)).toBe(0.7);
-    expect(clampZoom(9)).toBe(2.5);
+    expect(clampZoom(9)).toBe(3.5);
   });
 
   it("scales wheel zoom multiplicatively", () => {
     expect(scaleZoomByWheelDelta(1, -100)).toBe(1.02);
     expect(scaleZoomByWheelDelta(1.02, 100)).toBe(1);
+  });
+
+  it("preserves a small gesture zoom when committed and restored", () => {
+    const gestureZoom = scaleZoomByWheelDelta(1, -1);
+    expect(normalizeZoom(gestureZoom)).toBe(1.02);
+    expect(normalizeZoom(normalizeZoom(gestureZoom))).toBe(1.02);
+  });
+
+  it("treats small wheel deltas as touchpad pinches", () => {
+    expect(isPinchWheelDelta(-2.5)).toBe(true);
+    expect(isPinchWheelDelta(12)).toBe(true);
+    expect(isPinchWheelDelta(-100)).toBe(false);
+    expect(isPinchWheelDelta(0)).toBe(false);
+  });
+
+  it("accumulates tiny pinch deltas without rounding them away", () => {
+    let zoom = 1;
+    for (let index = 0; index < 20; index += 1) {
+      zoom = scaleZoomByPinchDelta(zoom, -0.2);
+    }
+    expect(zoom).toBeCloseTo(Math.exp(0.04), 6);
+    expect(normalizeZoom(zoom)).toBe(1.04);
+
+    for (let index = 0; index < 20; index += 1) {
+      zoom = scaleZoomByPinchDelta(zoom, 0.2);
+    }
+    expect(normalizeZoom(zoom)).toBe(1);
+    expect(scaleZoomByPinchDelta(3.5, -40)).toBe(3.5);
+    expect(scaleZoomByPinchDelta(0.7, 40)).toBe(0.7);
   });
 
   it("scales keyboard zoom in fixed steps", () => {
@@ -37,7 +68,8 @@ describe("zoom helpers", () => {
   it("steps Scroll buttons through semantic zoom levels", () => {
     expect(stepScrollZoom(1, "in")).toBe(1.1);
     expect(stepScrollZoom(1, "out")).toBe(0.9);
-    expect(stepScrollZoom(2.5, "in")).toBe(2.5);
+    expect(stepScrollZoom(2.5, "in")).toBe(2.75);
+    expect(stepScrollZoom(3.5, "in")).toBe(3.5);
   });
 
   it("quantizes DPR-aware Scroll raster scale upward", () => {

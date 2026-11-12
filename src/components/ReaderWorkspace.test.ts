@@ -64,16 +64,13 @@ const documentPayload: DocumentPayload = {
     availability: "available"
   },
   state: {
-    version: 1,
+    version: 2,
     documentId: "doc-1",
     fingerprint: "fingerprint-1",
     lastOpenedAt: "2026-06-14T00:00:00Z",
     lastPage: 52,
-    zoom: 1,
-    bookmarks: [],
-    preferences: {
-      fitMode: "width"
-    }
+    scrollZoom: 1,
+    bookmarks: []
   },
   filePath: "D:/Read/example.pdf",
   pageCount: 191
@@ -83,7 +80,7 @@ const readerSession: ReaderSession = {
   document: documentPayload,
   documentId: documentPayload.document.id,
   page: documentPayload.state.lastPage,
-  zoom: documentPayload.state.zoom,
+  scrollZoom: documentPayload.state.scrollZoom,
   openSessionId: "open-test",
   clickStartedAtMs: 0,
   source: "collection"
@@ -119,6 +116,7 @@ function renderWorkspace(overrides?: Partial<Parameters<typeof ReaderWorkspace>[
     layoutMode: "reader",
     activeViewTransition: null,
     readerSession,
+    initialReaderPage: documentPayload.state.lastPage,
     readerActive: true,
     pendingReaderOpenSessionId: null,
     note: null,
@@ -243,9 +241,7 @@ describe("ReaderWorkspace document header", () => {
     expect(markup).toContain('aria-label="Zoom in"');
     expect(markup).not.toContain("Switch to free zoom");
     expect(markup).not.toContain("Switch to auto maximize");
-    expect(markup).toContain('aria-label="Reader view mode"');
-    expect(markup).toContain("Page");
-    expect(markup).toContain("Scroll");
+    expect(markup).not.toContain('aria-label="Reader view mode"');
   });
 
   it("disables page and zoom controls when no document is open", () => {
@@ -261,10 +257,10 @@ describe("ReaderWorkspace document header", () => {
     expect(markup.match(/aria-label="Next page"/g)).toHaveLength(1);
     expect(markup.match(/aria-label="Zoom out"/g)).toHaveLength(1);
     expect(markup.match(/aria-label="Zoom in"/g)).toHaveLength(1);
-    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(6);
+    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(4);
   });
 
-  it("routes page, zoom, and reader view mode button clicks through the viewer api", () => {
+  it("routes page and zoom button clicks through the viewer api", () => {
     const viewerApi = makeViewerApi();
     const onReaderViewModeChange = vi.fn();
     const tree = renderWorkspace({ viewerApi, onReaderViewModeChange });
@@ -274,26 +270,23 @@ describe("ReaderWorkspace document header", () => {
     const nextPageButton = elements.find((element) => element.props["aria-label"] === "Next page");
     const zoomOutButton = elements.find((element) => element.props["aria-label"] === "Zoom out");
     const zoomInButton = elements.find((element) => element.props["aria-label"] === "Zoom in");
-    const scrollModeButton = elements.find((element) => element.props.children === "Scroll");
 
     const previousPageClick = previousPageButton?.props.onClick as (() => void) | undefined;
     const nextPageClick = nextPageButton?.props.onClick as (() => void) | undefined;
     const zoomOutClick = zoomOutButton?.props.onClick as (() => void) | undefined;
     const zoomInClick = zoomInButton?.props.onClick as (() => void) | undefined;
-    const scrollModeClick = scrollModeButton?.props.onClick as (() => void) | undefined;
 
     previousPageClick?.();
     nextPageClick?.();
     zoomOutClick?.();
     zoomInClick?.();
-    scrollModeClick?.();
 
     expect(viewerApi.previousPage).toHaveBeenCalledTimes(1);
     expect(viewerApi.nextPage).toHaveBeenCalledTimes(1);
     expect(viewerApi.zoomOut).toHaveBeenCalledTimes(1);
     expect(viewerApi.zoomIn).toHaveBeenCalledTimes(1);
     expect(viewerApi.setFitMode).not.toHaveBeenCalled();
-    expect(onReaderViewModeChange).toHaveBeenCalledWith("scroll");
+    expect(onReaderViewModeChange).not.toHaveBeenCalled();
   });
 
   it("uses the persistent document pane for the full-width book layout", () => {

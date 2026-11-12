@@ -222,7 +222,7 @@ export function toCachedRenderedPage(
   }
 ): CachedRenderedPage {
   const encodedByteSize = payload.imageBytes.length;
-  const imageBlob = new Blob([Uint8Array.from(payload.imageBytes)], {
+  const imageBlob = new Blob([payload.imageBytes as BlobPart], {
     type: "image/jpeg"
   });
   const imageUrl = URL.createObjectURL(imageBlob);

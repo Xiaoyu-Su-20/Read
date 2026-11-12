@@ -9,6 +9,7 @@ import WorkspaceHeaderTools from "./WorkspaceHeaderTools";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import type { ViewTransition } from "../lib/workspaceView";
 import { useReaderPaneLayoutController } from "../lib/reader/useReaderPaneLayoutController";
+import type { FolioPrediction } from "../lib/reader/folioPrediction";
 import type {
   DocumentPayload,
   DocumentState,
@@ -41,16 +42,19 @@ type ReaderWorkspaceProps = {
   onCopyAllNoteText: () => Promise<void>;
   onGoToNotePage: (page: number) => void;
   currentReaderPage: number | null;
+  currentBookPagePrediction?: FolioPrediction | null;
+  onFolioPrediction?: (pageNumber: number, prediction: FolioPrediction | null) => void;
   noteRevealRequest: NoteRevealRequest | null;
   outlineItems: OutlineItem[];
   readerState: DocumentState | null;
+  initialReaderPage: number | null;
   onNavigateToTarget: (target: PdfNavigationTarget) => void;
   onSetBookmarks: (bookmarks: DocumentState["bookmarks"]) => void;
-  onSnapshotChange: (snapshot: ViewerSnapshot) => void;
+  onSnapshotChange: (mode: ReaderViewMode, snapshot: ViewerSnapshot) => void;
   onOutlineChange: (items: OutlineItem[]) => void;
   onStatusChange: (message: string) => void;
-  onStateChange: (state: DocumentState | null) => void;
-  registerApi: (api: ViewerApi | null) => void;
+  onStateChange: (mode: ReaderViewMode, state: DocumentState | null) => void;
+  registerApi: (mode: ReaderViewMode, api: ViewerApi | null) => void;
   viewerDisplayConfig: ViewerDisplayConfig;
   documentHeaderTitle: string;
   documentHeaderCurrentPage: number;
@@ -128,9 +132,12 @@ export default function ReaderWorkspace({
   onCopyAllNoteText,
   onGoToNotePage,
   currentReaderPage,
+  currentBookPagePrediction = null,
+  onFolioPrediction,
   noteRevealRequest,
   outlineItems,
   readerState,
+  initialReaderPage,
   onNavigateToTarget,
   onSetBookmarks,
   onSnapshotChange,
@@ -240,6 +247,8 @@ export default function ReaderWorkspace({
           <ReaderViewport
             activeViewTransition={activeViewTransition}
             readerSession={readerSession}
+            readerState={readerState}
+            initialReaderPage={initialReaderPage}
             readerActive={readerActive}
             pendingReaderOpenSessionId={pendingReaderOpenSessionId}
             onSnapshotChange={onSnapshotChange}
@@ -247,6 +256,7 @@ export default function ReaderWorkspace({
             onStateChange={onStateChange}
             onStatusChange={onStatusChange}
             registerApi={registerApi}
+            onFolioPrediction={onFolioPrediction}
             viewerDisplayConfig={viewerDisplayConfig}
             readerViewMode={readerViewMode}
             suspendAutoFitDuringPaneResize={isDragging && readerViewMode === "page"}
@@ -277,6 +287,7 @@ export default function ReaderWorkspace({
               onNavigateToTarget={onNavigateToTarget}
               onSetBookmarks={onSetBookmarks}
               currentPage={currentReaderPage}
+              currentBookPagePrediction={currentBookPagePrediction}
               revealRequest={noteRevealRequest}
               headerActionsContainerId="reader-workspace-notes-header-tools"
               commandPaletteOpen={commandPaletteOpen}

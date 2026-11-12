@@ -193,6 +193,78 @@ describe("settingsRegistry", () => {
     });
   });
 
+  it("updates unchanged persisted editable presets to the latest shipped theme definitions", () => {
+    const settings = parseStoredAppSettings(
+      JSON.stringify({
+        version: APP_SETTINGS_VERSION,
+        settings: {
+          ...createDefaultAppSettingsPayload().settings,
+          customThemes: [
+            {
+              id: "preset-forest",
+              name: "Forest",
+              kind: "custom",
+              source: {
+                chrome: "#1f2b20",
+                uiText: "#c7d3bf",
+                documentPaper: "#1d271d",
+                documentInk: "#c7d3bf",
+                accent: "#9ba86d",
+                interactive: "#7fa26f",
+                danger: "#b56a5d"
+              },
+              document: {
+                surfaceTone: "dark"
+              }
+            },
+            {
+              id: "preset-ocean",
+              name: "Ocean",
+              kind: "custom",
+              source: {
+                chrome: "#536884",
+                uiText: "#dbe4f2",
+                documentPaper: "#e6ecf5",
+                documentInk: "#465b79",
+                accent: "#86a6ce",
+                interactive: "#89a9d8",
+                danger: "#c17468"
+              },
+              document: {
+                surfaceTone: "light"
+              }
+            },
+            {
+              id: "preset-clay",
+              name: "Clay",
+              kind: "custom",
+              source: {
+                chrome: "#c97147",
+                uiText: "#f6dbc6",
+                documentPaper: "#f5d4c0",
+                documentInk: "#934d2f",
+                accent: "#f0b18a",
+                interactive: "#de9468",
+                danger: "#b85b4e"
+              },
+              document: {
+                surfaceTone: "light"
+              }
+            }
+          ]
+        }
+      })
+    ).settings;
+
+    expect(appSettingsSelectors.themeList(settings).map((theme) => theme.name)).toEqual(
+      expect.arrayContaining(["Linen", "Dove", "Oat"])
+    );
+    expect(settings.customThemes.find((theme) => theme.id === "preset-forest")?.source.documentPaper)
+      .toBe("#eee4d6");
+    expect(settings.customThemes.find((theme) => theme.id === "preset-ocean")?.source.documentPaper)
+      .toBe("#e7e5dc");
+  });
+
   it("drops persisted workspace colors from version-6 custom themes", () => {
     expect(
       migrateAppSettingsPayload({
@@ -294,37 +366,37 @@ describe("settingsRegistry", () => {
   });
 
   it("validates each setting and falls back to per-setting defaults", () => {
-    expect(
-      normalizeAppSettings({
-        readerPaneSplitRatio: "nope",
-        readerPreferences: {
-          fullscreenMode: "yes",
-          showPageNumbers: null,
-          twoPageView: 1,
-          verticalScrolling: undefined
-        },
-        activeThemeId: "missing-theme",
-        customThemes: [
-          {
-            id: "custom-1",
-            name: "",
-            kind: "custom",
-            source: {
-              chrome: "#1a2",
-              uiText: "#ABCDEF",
-              documentPaper: "#ffeedd",
-              documentInk: "#zzz999",
-              accent: "#d4aa63",
-              interactive: "#zzz999",
-              danger: 42
-            },
-            document: {
-              surfaceTone: "sepia"
-            }
+    const settings = normalizeAppSettings({
+      readerPaneSplitRatio: "nope",
+      readerPreferences: {
+        fullscreenMode: "yes",
+        showPageNumbers: null,
+        twoPageView: 1,
+        verticalScrolling: undefined
+      },
+      activeThemeId: "missing-theme",
+      customThemes: [
+        {
+          id: "custom-1",
+          name: "",
+          kind: "custom",
+          source: {
+            chrome: "#1a2",
+            uiText: "#ABCDEF",
+            documentPaper: "#ffeedd",
+            documentInk: "#zzz999",
+            accent: "#d4aa63",
+            interactive: "#zzz999",
+            danger: 42
+          },
+          document: {
+            surfaceTone: "sepia"
           }
-        ]
-      })
-    ).toEqual({
+        }
+      ]
+    });
+
+    expect(settings).toMatchObject({
       automaticUpdates: true,
       readerPaneSplitRatio: 0.42,
       readerPreferences: {
@@ -335,7 +407,10 @@ describe("settingsRegistry", () => {
         autoHidePageResizer: true
       },
       activeThemeId: "builtin-midnight",
-      customThemes: [
+      ignoredSpellcheckWords: []
+    });
+    expect(settings.customThemes).toEqual(
+      expect.arrayContaining([
         {
           id: "custom-1",
           name: "Custom Theme",
@@ -353,9 +428,8 @@ describe("settingsRegistry", () => {
             surfaceTone: "dark"
           }
         }
-      ],
-      ignoredSpellcheckWords: []
-    });
+      ])
+    );
   });
 
   it("returns active-theme-driven viewer config through the typed selector", () => {

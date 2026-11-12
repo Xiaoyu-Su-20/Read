@@ -8,9 +8,7 @@ import {
   createPageLinkNode,
   createTextNode,
   createTopicCardNode,
-  normalizeNoteBlocks,
-  replaceBlockSourceReference,
-  replaceBlockType
+  normalizeNoteBlocks
 } from "../../../lib/notes";
 import type { NoteBlock, NoteDocument, NotePageLinkNode } from "../../../lib/types";
 import { captureModelSelection } from "../dom/noteBlockSelection";
@@ -167,7 +165,11 @@ function dispatchInput(target: HTMLElement, inputType: string, data: string | nu
   target.dispatchEvent(event);
 }
 
-function dispatchComposition(target: HTMLElement, type: "compositionstart" | "compositionend", data = "") {
+function dispatchComposition(
+  target: HTMLElement,
+  type: "compositionstart" | "compositionupdate" | "compositionend",
+  data = ""
+) {
   const event = new CompositionEvent(type, {
     bubbles: true,
     cancelable: true,
@@ -183,7 +185,52 @@ function latestBlocks(onChangeBlocks: OnChangeBlocksSpy) {
   return blocks!;
 }
 
+function rect(top: number, bottom: number): DOMRect {
+  return {
+    x: 0,
+    y: top,
+    width: 100,
+    height: bottom - top,
+    top,
+    right: 100,
+    bottom,
+    left: 0,
+    toJSON: () => ({})
+  } as DOMRect;
+}
+
+function placeEditorInScrollSurface(
+  container: HTMLDivElement,
+  scrollTop: number,
+  blockTop: number
+) {
+  const surface = document.createElement("div");
+  surface.className = "notes-pane__scroll-surface";
+  document.body.insertBefore(surface, container);
+  surface.appendChild(container);
+  surface.scrollTop = scrollTop;
+  const initialScrollTop = scrollTop;
+
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    if (this === surface) {
+      return rect(0, 100);
+    }
+    if (this.hasAttribute("data-block-id")) {
+      const blocks = Array.from(container.querySelectorAll("[data-block-id]"));
+      const index = blocks.indexOf(this);
+      const top = blockTop + index * 24 - (surface.scrollTop - initialScrollTop);
+      return rect(top, top + 24);
+    }
+    return rect(0, 0);
+  });
+
+  return surface;
+}
+
 afterEach(() => {
+  vi.restoreAllMocks();
   document.body.innerHTML = "";
 });
 
@@ -598,6 +645,54 @@ describe("ModelNoteEditor interactions", () => {
     expect(blocks[1].children).toEqual([createTextNode(" world")]);
   });
 
+  it("minimally advances the notes viewport when Enter creates a block below it", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("At the viewport edge")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    const surface = placeEditorInScrollSurface(container, 40, 76);
+    const content = blockContent(container, 0);
+
+    setCaret(content, "At the viewport edge".length);
+    act(() => {
+      dispatchBeforeInput(content, "insertParagraph");
+    });
+
+    const blocks = latestBlocks(onChangeBlocks);
+    const selection = captureModelSelection(editorBody(container), blocks);
+    const newBlock = container.querySelectorAll<HTMLElement>("[data-block-id]")[1];
+    expect(blocks).toHaveLength(2);
+    expect(selection?.focus.blockId).toBe(blocks[1].id);
+    expect(newBlock.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      surface.getBoundingClientRect().bottom
+    );
+    expect(surface.scrollTop).toBe(64);
+  });
+
+  it("does not move the notes viewport when the block created by Enter is visible", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Already visible")]
+      }
+    ]);
+    const { container } = renderEditor(note);
+    const surface = placeEditorInScrollSurface(container, 25, 30);
+    const content = blockContent(container, 0);
+
+    setCaret(content, "Already visible".length);
+    act(() => {
+      dispatchBeforeInput(content, "insertParagraph");
+    });
+
+    expect(surface.scrollTop).toBe(25);
+  });
+
   it("treats insertLineBreak the same as insertParagraph", () => {
     const note = createNote([
       {
@@ -824,7 +919,71 @@ describe("ModelNoteEditor interactions", () => {
     expect(latestBlocks(onChangeBlocks)[0].children).toEqual([createTextNode("Hello世")]);
   });
 
-  it("opens a heading source-reference icon like a normal page link", () => {
+  it("recovers composition text from the host when compositionend data is empty", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello")]
+      }
+    ]);
+    const { container, onChangeBlocks } = renderEditor(note);
+    const content = blockContent(container, 0);
+
+    setCaret(content, 5);
+    act(() => {
+      dispatchComposition(content, "compositionstart", "");
+    });
+    act(() => {
+      content.textContent = "Hello!";
+      dispatchComposition(content, "compositionupdate", "!");
+      dispatchInput(content, "insertCompositionText", "!");
+    });
+    act(() => {
+      dispatchComposition(content, "compositionend", "");
+    });
+
+    expect(latestBlocks(onChangeBlocks)[0].children).toEqual([createTextNode("Hello!")]);
+  });
+
+  it("does not replace the active composition host during same-note refreshes", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("Hello")]
+      }
+    ]);
+    const rendered = renderEditor(note);
+    const content = blockContent(rendered.container, 0);
+
+    setCaret(content, 5);
+    act(() => {
+      dispatchComposition(content, "compositionstart", "");
+    });
+
+    const refreshedNote = createNote([
+      {
+        id: "a",
+        type: "paragraph",
+        children: [createTextNode("External refresh")]
+      }
+    ]);
+    rerenderEditor(rendered, refreshedNote);
+
+    expect(blockContent(rendered.container, 0)).toBe(content);
+
+    act(() => {
+      content.textContent = "Hello!";
+      dispatchComposition(content, "compositionend", "!");
+    });
+
+    expect(latestBlocks(rendered.onChangeBlocks)[0].children).toEqual([
+      createTextNode("Hello!")
+    ]);
+  });
+
+  it("opens a heading source reference with Ctrl-click", () => {
     const note = createNote([
       {
         id: "a",
@@ -846,11 +1005,18 @@ describe("ModelNoteEditor interactions", () => {
       }
     ]);
     const { container, onOpenPageLink } = renderEditor(note);
-    const headingIcon = container.querySelector<HTMLElement>("[data-inline-type='page-link']");
-    expect(headingIcon).toBeTruthy();
+    const heading = container.querySelector<HTMLElement>("[data-block-id='a'] .note-editor__block-content");
+    expect(heading).toBeTruthy();
+    expect(container.querySelector("[data-inline-type='page-link']")).toBeNull();
 
     act(() => {
-      headingIcon?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      heading?.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          ctrlKey: true
+        })
+      );
     });
 
     expect(onOpenPageLink).toHaveBeenCalledTimes(1);
@@ -860,7 +1026,7 @@ describe("ModelNoteEditor interactions", () => {
     });
   });
 
-  it("resolves a heading page-link through the canonical model path", () => {
+  it("marks the editor root while the heading-link modifier is held", () => {
     const note = createNote([
       {
         id: "a",
@@ -881,134 +1047,141 @@ describe("ModelNoteEditor interactions", () => {
         }
       }
     ]);
-    const { container, onOpenPageLink, editorRef } = renderEditor(note);
-    const headingIcon = container.querySelector<HTMLElement>("[data-inline-type='page-link']");
-    expect(headingIcon).toBeTruthy();
-    const pageLinkId = headingIcon?.dataset.pageLinkId ?? null;
-    expect(pageLinkId).toBeTruthy();
+    const { container } = renderEditor(note);
+    const root = container.querySelector<HTMLElement>(".note-editor__body");
+    const heading = container.querySelector<HTMLElement>("[data-block-id='a']");
+    expect(root?.dataset.headingLinkModifierActive).toBeUndefined();
+    expect(heading?.dataset.headingHasSourceReference).toBe("true");
 
-    const resolved = pageLinkId ? editorRef.current?.getPageLink(pageLinkId) : null;
-    expect(resolved).toMatchObject({
-      id: pageLinkId,
-      type: "page-link",
-      pdfPageIndex: 9,
-      documentId: "book-1",
-      bookPageLabel: "9"
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true }));
+    });
+    expect(root?.dataset.headingLinkModifierActive).toBe("true");
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keyup"));
+    });
+    expect(root?.dataset.headingLinkModifierActive).toBeUndefined();
+
+    act(() => {
+      heading?.dispatchEvent(
+        new PointerEvent("pointermove", {
+          bubbles: true,
+          ctrlKey: true
+        })
+      );
+    });
+    expect(root?.dataset.headingLinkModifierActive).toBe("true");
+
+    act(() => {
+      root?.dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
+    });
+    expect(root?.dataset.headingLinkModifierActive).toBeUndefined();
+  });
+
+  it("does not open a heading source reference on ordinary click", () => {
+    const note = createNote([
+      {
+        id: "a",
+        type: "heading1",
+        children: [createTextNode("Chapter")],
+        sourceReference: {
+          id: "ref-1",
+          documentId: "book-1",
+          kind: "direct",
+          outlineItemId: null,
+          outlineSource: null,
+          title: "Chapter",
+          target: {
+            documentId: "book-1",
+            pageIndex: 8
+          },
+          createdAt: "2026-06-24T00:00:00.000Z"
+        }
+      }
+    ]);
+    const { container, onOpenPageLink } = renderEditor(note);
+    const heading = container.querySelector<HTMLElement>("[data-block-id='a'] .note-editor__block-content");
+    expect(heading).toBeTruthy();
+
+    act(() => {
+      heading?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    expect(onOpenPageLink).not.toHaveBeenCalled();
+  });
+
+  it("attaches the current page when turning a paragraph into a heading", () => {
+    const note = createNote([
+      {
+        id: "heading",
+        type: "paragraph",
+        children: [createTextNode("Chapter")]
+      }
+    ]);
+    const rendered = renderEditor(note);
+    const content = rendered.container.querySelector<HTMLElement>("[data-block-id='heading'] .note-editor__block-content");
+    expect(content).toBeTruthy();
+
+    act(() => {
+      content?.focus();
+      document.getSelection()?.setPosition(content?.firstChild ?? content, 0);
     });
 
     act(() => {
-      headingIcon?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      // The test renderer's currentPage prop is 12.
+      rendered.editorRef.current?.turnInto("heading", "heading1");
     });
 
-    expect(onOpenPageLink).toHaveBeenCalledTimes(1);
-    expect(onOpenPageLink.mock.calls[0]?.[0]).toMatchObject({
-      id: pageLinkId,
-      type: "page-link",
-      pdfPageIndex: 9,
-      documentId: "book-1",
-      bookPageLabel: "9"
+    const blocks = latestBlocks(rendered.onChangeBlocks);
+    expect(blocks[0]?.sourceReference).toMatchObject({
+      target: {
+        documentId: "book-1",
+        pageIndex: 11
+      }
     });
-
-    if (!pageLinkId) {
-      throw new Error("Missing rendered heading page-link id");
-    }
-    const opened = editorRef.current?.openPageLink(pageLinkId);
-    expect(opened).toMatchObject({
-      id: pageLinkId,
-      type: "page-link",
-      pdfPageIndex: 9
+    expect(blocks[0]?.children).toEqual([createTextNode("Chapter")]);
+    act(() => {
+      rendered.root.unmount();
     });
   });
 
-  it("keeps a heading-reference page-link clickable after paragraph-heading conversion", () => {
-    const headingBlocks = replaceBlockSourceReference(
-      [
+  it("migrates legacy heading-reference page-links into Ctrl-clickable hidden references", () => {
+    const note = createNote(
+      normalizeNoteBlocks([
         {
           id: "heading",
           type: "heading1",
-          children: [createTextNode("Chapter")]
+          children: [
+            createTextNode("Heading 1"),
+            createPageLinkNode({
+              id: "legacy-heading-link",
+              text: "(p. 4)",
+              bookPageLabel: "4",
+              documentId: "book-1",
+              pdfPageIndex: 4,
+              origin: {
+                kind: "heading-reference",
+                ownerBlockId: "heading"
+              }
+            })
+          ]
         }
-      ],
-      "heading",
-      {
-        id: "ref-1",
-        documentId: "book-1",
-        kind: "direct",
-        outlineItemId: null,
-        outlineSource: null,
-        title: "Chapter",
-        target: {
-          documentId: "book-1",
-          pageIndex: 8
-        },
-        createdAt: "2026-06-24T00:00:00.000Z"
-      },
-      "book-1"
+      ])
     );
-    const paragraphBlocks = replaceBlockType(headingBlocks, "heading", "paragraph");
-    const roundTrippedBlocks = replaceBlockType(paragraphBlocks, "heading", "heading1");
-    const note = createNote(roundTrippedBlocks);
     const { container, onOpenPageLink } = renderEditor(note);
-    const headingIcon = container.querySelector<HTMLElement>("[data-inline-type='page-link']");
-    expect(headingIcon).toBeTruthy();
+    const heading = container.querySelector<HTMLElement>("[data-block-id='heading'] .note-editor__block-content");
+    expect(heading).toBeTruthy();
+    expect(container.querySelector("[data-inline-type='page-link']")).toBeNull();
 
     act(() => {
-      headingIcon?.dispatchEvent(
-        new MouseEvent("pointerdown", {
+      heading?.dispatchEvent(
+        new MouseEvent("click", {
           bubbles: true,
           cancelable: true,
-          button: 0
+          ctrlKey: true
         })
       );
-      headingIcon?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    });
-
-    expect(onOpenPageLink).toHaveBeenCalledTimes(1);
-    expect(onOpenPageLink.mock.calls[0]?.[0]).toMatchObject({
-      type: "page-link",
-      pdfPageIndex: 9,
-      origin: {
-        kind: "heading-reference",
-        ownerBlockId: "heading"
-      }
-    });
-  });
-
-  it("opens a heading page-link when the click lands on the svg path", () => {
-    const note = createNote(
-      replaceBlockSourceReference(
-        [
-          {
-            id: "heading",
-            type: "heading1",
-            children: [createTextNode("Heading 1")]
-          }
-        ],
-        "heading",
-        {
-          id: "ref-1",
-          documentId: "book-1",
-          kind: "direct",
-          outlineItemId: null,
-          outlineSource: null,
-          title: "Heading 1",
-          target: {
-            documentId: "book-1",
-            pageIndex: 3
-          },
-          createdAt: "2026-06-24T00:00:00.000Z"
-        },
-        "book-1"
-      )
-    );
-    const { container, onOpenPageLink } = renderEditor(note);
-    const iconPath = container.querySelector<SVGPathElement>(
-      "[data-inline-type='page-link'] .page-link__icon path"
-    );
-    expect(iconPath).toBeTruthy();
-
-    act(() => {
-      iconPath?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
 
     expect(onOpenPageLink).toHaveBeenCalledTimes(1);

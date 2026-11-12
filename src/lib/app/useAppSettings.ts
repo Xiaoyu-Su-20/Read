@@ -93,7 +93,8 @@ export function useAppSettings() {
     }
   }, [payload.settings]);
 
-  function setSetting<Key extends AppSettingKey>(
+  // Only closes over the stable setPayload, so the identity can safely be fixed.
+  const setSetting = useCallback(function setSetting<Key extends AppSettingKey>(
     key: Key,
     value: AppSettingsSchema[Key] | ((currentValue: AppSettingsSchema[Key]) => AppSettingsSchema[Key])
   ) {
@@ -113,9 +114,9 @@ export function useAppSettings() {
         })
       };
     });
-  }
+  }, []);
 
-  function updateSettings(
+  const updateSettings = useCallback(function updateSettings(
     value:
       | AppSettingsSchema
       | ((currentSettings: AppSettingsSchema) => AppSettingsSchema)
@@ -133,7 +134,7 @@ export function useAppSettings() {
         settings: normalizeAppSettings(nextSettings)
       };
     });
-  }
+  }, []);
 
   return {
     flushSettings,

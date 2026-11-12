@@ -9,6 +9,7 @@ import type {
   OutlineItem,
   PdfNavigationTarget
 } from "../lib/types";
+import type { FolioPrediction } from "../lib/reader/folioPrediction";
 
 type NotesViewportProps = {
   note: NoteDocument | null;
@@ -37,6 +38,7 @@ type NotesViewportProps = {
   onNavigateToTarget: (target: PdfNavigationTarget) => void;
   onSetBookmarks: (bookmarks: Bookmark[]) => void;
   currentPage: number | null;
+  currentBookPagePrediction: FolioPrediction | null;
   revealRequest: NoteRevealRequest | null;
 };
 
@@ -67,6 +69,7 @@ const NotesViewport = memo(function NotesViewport({
   onNavigateToTarget,
   onSetBookmarks,
   currentPage,
+  currentBookPagePrediction,
   revealRequest
 }: NotesViewportProps) {
   return (
@@ -101,6 +104,7 @@ const NotesViewport = memo(function NotesViewport({
         onNavigateToTarget={onNavigateToTarget}
         onSetBookmarks={onSetBookmarks}
         currentPage={currentPage}
+        currentBookPagePrediction={currentBookPagePrediction}
         revealRequest={revealRequest}
       />
     </section>

@@ -175,7 +175,7 @@ export function renderPdfPage(
     bypassInFlightJoin?: boolean;
   }
 ) {
-  return invokeLogged<RenderedPagePayload>("render_pdf_page", {
+  return invokeLogged<ArrayBuffer | Uint8Array | number[]>("render_pdf_page", {
     documentId,
     pageNumber,
     zoom,
@@ -186,7 +186,36 @@ export function renderPdfPage(
     expectedRenderVariant: options?.expectedRenderVariant ?? null,
     rotation: options?.rotation ?? null,
     bypassInFlightJoin: options?.bypassInFlightJoin ?? false
-  });
+  }).then(decodeRenderedPageResponse);
+}
+
+// `render_pdf_page` answers on Tauri's raw IPC channel so the image is not expanded
+// into a JSON number array: `[u32 LE header length][JSON metadata][image bytes]`.
+// The encoder lives in `encode_rendered_page_response` (src-tauri/src/lib.rs).
+export function decodeRenderedPageResponse(
+  response: ArrayBuffer | Uint8Array | number[]
+): RenderedPagePayload {
+  const bytes =
+    response instanceof ArrayBuffer
+      ? new Uint8Array(response)
+      : response instanceof Uint8Array
+        ? response
+        : Uint8Array.from(response);
+  if (bytes.byteLength < 4) {
+    throw new Error("Rendered page response is truncated.");
+  }
+  const headerLength = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
+    0,
+    true
+  );
+  const imageStart = 4 + headerLength;
+  if (imageStart > bytes.byteLength) {
+    throw new Error("Rendered page response has an invalid header length.");
+  }
+  const metadata = JSON.parse(
+    new TextDecoder().decode(bytes.subarray(4, imageStart))
+  ) as Omit<RenderedPagePayload, "imageBytes">;
+  return { ...metadata, imageBytes: bytes.subarray(imageStart) };
 }
 
 export function cancelPdfPageRender(requestId: string) {
@@ -231,10 +260,28 @@ export function getPdfNativeOutline(documentId: string, options?: { openSessionI
   });
 }
 
-export function saveDocumentState(documentId: string, readerState: DocumentState) {
+export function activateDocumentStateWriter(
+  documentId: string,
+  openSessionId: string,
+  writerGeneration: number
+) {
+  return invokeLogged<void>("activate_document_state_writer", {
+    documentId,
+    openSessionId,
+    writerGeneration
+  });
+}
+
+export function saveDocumentState(
+  documentId: string,
+  readerState: DocumentState,
+  options: { openSessionId: string; writerGeneration: number }
+) {
   return invokeLogged<void>("save_document_state", {
     documentId,
-    readerState
+    readerState,
+    openSessionId: options.openSessionId,
+    writerGeneration: options.writerGeneration
   });
 }
 

@@ -10,13 +10,18 @@ import {
   type MutableRefObject,
   type ReactNode,
   type RefObject,
-  type UIEvent,
-  type WheelEvent
+  type UIEvent
 } from "react";
 
 import NativePdfTextLayer from "./NativePdfTextLayer";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
-import { getPdfNativeOutline, getPdfNativeTextPage, getPdfPageGeometries, saveDocumentState } from "../lib/api";
+import {
+  activateDocumentStateWriter,
+  getPdfNativeOutline,
+  getPdfNativeTextPage,
+  getPdfPageGeometries,
+  saveDocumentState
+} from "../lib/api";
 import { dedupeBookmarks } from "../lib/commands";
 import { debugAction } from "../lib/debugLog";
 import {
@@ -24,9 +29,10 @@ import {
   captureContinuousSemanticAnchor,
   computeContinuousPagePlacements,
   computeContinuousVirtualRange,
+  computeContinuousVirtualRangeFromPlacements,
   createEstimatedPageMetrics,
   mergeContinuousVirtualRanges,
-  resolveContinuousActivePage,
+  resolveContinuousActivePageFromPlacements,
   restoreScrollTopForContinuousAnchor,
   restoreScrollTopForContinuousSemanticAnchor,
   updateMeasuredPageHeight,
@@ -41,11 +47,19 @@ import {
   type RenderPriority
 } from "../lib/reader/ScrollRenderCoordinator";
 import {
+  isPinchWheelDelta,
   resolveScrollRasterScale,
+  scaleZoomByPinchDelta,
   scaleZoomByWheelDelta,
-  snapScrollZoom,
+  normalizeZoom,
   stepScrollZoom
 } from "../lib/reader/zoom";
+import {
+  createDocumentStateWriterGeneration,
+  isStaleDocumentStateWriterError
+} from "../lib/reader/documentStateWriter";
+import { predictFolio, type FolioPrediction } from "../lib/reader/folioPrediction";
+import { updateScrollReaderState } from "../lib/reader/documentReaderState";
 import type {
   Bookmark,
   DocumentState,
@@ -61,6 +75,8 @@ import type {
 
 type ContinuousPdfViewerProps = {
   readerSession: ReaderSession | null;
+  readerState: DocumentState | null;
+  initialPage: number | null;
   readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
   onSnapshotChange: (snapshot: ViewerSnapshot) => void;
@@ -68,6 +84,7 @@ type ContinuousPdfViewerProps = {
   onStatusChange: (message: string) => void;
   onStateChange: (state: DocumentState | null) => void;
   registerApi: (api: ViewerApi | null) => void;
+  onFolioPrediction?: (pageNumber: number, prediction: FolioPrediction | null) => void;
   viewerDisplayConfig: ViewerDisplayConfig;
   suspendAutoFitDuringPaneResize: boolean;
 };
@@ -87,21 +104,21 @@ function clampPage(page: number, pageCount: number) {
 
 function makeDocumentState(
   readerSession: ReaderSession,
+  currentState: DocumentState,
   page: number,
-  zoom: number,
-  fitMode: ReaderFitMode,
+  scrollZoom: number,
+  _fitMode: ReaderFitMode,
   bookmarks: Bookmark[]
 ): DocumentState {
-  return {
-    ...readerSession.document.state,
-    lastOpenedAt: new Date().toISOString(),
-    lastPage: clampPage(page, readerSession.document.pageCount),
-    zoom,
-    bookmarks: dedupeBookmarks(bookmarks),
-    preferences: {
-      fitMode
-    }
-  };
+  return updateScrollReaderState(
+    {
+      ...currentState,
+      lastOpenedAt: new Date().toISOString()
+    },
+    clampPage(page, readerSession.document.pageCount),
+    scrollZoom,
+    dedupeBookmarks(bookmarks)
+  );
 }
 
 function appearanceStyle(viewerDisplayConfig: ViewerDisplayConfig) {
@@ -173,6 +190,42 @@ function scaleTextLayerTransform(
   };
 }
 
+// Pages unmount and remount as they scroll through the virtual window; keep their
+// text payloads so a remount does not cost another IPC round trip and JSON parse.
+const NATIVE_TEXT_PAGE_CACHE_LIMIT = 24;
+const nativeTextPageCache = new Map<string, Promise<NativeTextPagePayload>>();
+
+function loadNativeTextPage(
+  documentId: string,
+  openSessionId: string | null,
+  pageNumber: number
+) {
+  const key = `${documentId}:${openSessionId ?? "legacy"}:${pageNumber}`;
+  const cached = nativeTextPageCache.get(key);
+  if (cached) {
+    nativeTextPageCache.delete(key);
+    nativeTextPageCache.set(key, cached);
+    return cached;
+  }
+  const request = getPdfNativeTextPage(documentId, pageNumber, {
+    openSessionId: openSessionId ?? undefined
+  });
+  nativeTextPageCache.set(key, request);
+  request.catch(() => {
+    if (nativeTextPageCache.get(key) === request) {
+      nativeTextPageCache.delete(key);
+    }
+  });
+  while (nativeTextPageCache.size > NATIVE_TEXT_PAGE_CACHE_LIMIT) {
+    const oldestKey = nativeTextPageCache.keys().next().value;
+    if (oldestKey === undefined) {
+      break;
+    }
+    nativeTextPageCache.delete(oldestKey);
+  }
+  return request;
+}
+
 function makeEffectivePageIdentity(
   documentId: string,
   documentGenerationId: string,
@@ -233,7 +286,7 @@ function ContinuousPageList({
   pageCacheRef,
   placements,
   range,
-  readingLineY,
+  readingLineYRef,
   renderZoom,
   rasterScale,
   transientScale,
@@ -241,7 +294,9 @@ function ContinuousPageList({
   visibleRange,
   viewerDisplayConfig,
   onIdentityChanged,
-  onPageMeasured
+  onPageMeasured,
+  onFolioPrediction,
+  folioPredictionCacheRef
 }: {
   coordinator: ScrollRenderCoordinator;
   documentId: string;
@@ -250,7 +305,7 @@ function ContinuousPageList({
   pageCacheRef: MutableRefObject<ReturnType<typeof createPageCache>>;
   placements: ReturnType<typeof computeContinuousPagePlacements>;
   range: ReturnType<typeof computeContinuousVirtualRange>;
-  readingLineY: number;
+  readingLineYRef: MutableRefObject<number>;
   renderZoom: number;
   rasterScale: number;
   transientScale: number;
@@ -259,6 +314,8 @@ function ContinuousPageList({
   viewerDisplayConfig: ViewerDisplayConfig;
   onIdentityChanged: () => void;
   onPageMeasured: (page: CachedRenderedPage, measuredHeight: number) => void;
+  onFolioPrediction: (pageNumber: number, prediction: FolioPrediction | null) => void;
+  folioPredictionCacheRef: MutableRefObject<Map<string, FolioPrediction | null>>;
 }) {
   const mountedPages = [];
   for (let pageNumber = range.startPage; pageNumber <= range.endPage; pageNumber += 1) {
@@ -297,14 +354,15 @@ function ContinuousPageList({
                 ? "visible"
                 : "overscan"
             }
-            readingLineDistance={Math.abs(
-              (placements[pageNumber - 1]?.top ?? 0) - readingLineY
-            )}
+            pageTop={placements[pageNumber - 1]?.top ?? 0}
+            readingLineYRef={readingLineYRef}
             renderZoom={renderZoom}
             rasterScale={rasterScale}
             viewerDisplayConfig={viewerDisplayConfig}
             onIdentityChanged={onIdentityChanged}
             onPageMeasured={onPageMeasured}
+            onFolioPrediction={onFolioPrediction}
+            folioPredictionCacheRef={folioPredictionCacheRef}
           />
         ))}
       </div>
@@ -321,12 +379,15 @@ const ContinuousPage = memo(function ContinuousPage({
   pageCacheRef,
   pageNumber,
   priority,
-  readingLineDistance,
+  pageTop,
+  readingLineYRef,
   rasterScale,
   renderZoom,
   viewerDisplayConfig,
   onIdentityChanged,
-  onPageMeasured
+  onPageMeasured,
+  onFolioPrediction,
+  folioPredictionCacheRef
 }: {
   coordinator: ScrollRenderCoordinator;
   documentId: string;
@@ -335,12 +396,15 @@ const ContinuousPage = memo(function ContinuousPage({
   pageCacheRef: MutableRefObject<ReturnType<typeof createPageCache>>;
   pageNumber: number;
   priority: RenderPriority;
-  readingLineDistance: number;
+  pageTop: number;
+  readingLineYRef: MutableRefObject<number>;
   rasterScale: number;
   renderZoom: number;
   viewerDisplayConfig: ViewerDisplayConfig;
   onIdentityChanged: () => void;
   onPageMeasured: (page: CachedRenderedPage, measuredHeight: number) => void;
+  onFolioPrediction: (pageNumber: number, prediction: FolioPrediction | null) => void;
+  folioPredictionCacheRef: MutableRefObject<Map<string, FolioPrediction | null>>;
 }) {
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [page, setPage] = useState<CachedRenderedPage | null>(null);
@@ -352,19 +416,23 @@ const ContinuousPage = memo(function ContinuousPage({
   const [incomingVisible, setIncomingVisible] = useState(true);
   const [textLayer, setTextLayer] = useState<NativeTextPagePayload | null>(null);
   const targetGeometry = getPageGeometry(geometry, renderZoom);
-  const targetRasterKey = makeRasterIdentityKey(
-    makeEffectivePageIdentity(
-      documentId,
-      openSessionId ?? "legacy",
-      pageNumber,
-      rasterScale,
-      geometry
-    )
-  );
-  const pageIsFallback = page !== null && page.logicalKey !== targetRasterKey;
-  const previousPageIsFallback =
-    previousPage !== null && previousPage.logicalKey !== targetRasterKey;
   pageRef.current = page;
+  // Values the effects below read at call time; keeping them out of the dependency
+  // lists stops scrolling or a layout-only zoom change from restarting work.
+  const targetHeightRef = useRef(targetGeometry.height);
+  targetHeightRef.current = targetGeometry.height;
+  const pageTopRef = useRef(pageTop);
+  pageTopRef.current = pageTop;
+  const onFolioPredictionRef = useRef(onFolioPrediction);
+  onFolioPredictionRef.current = onFolioPrediction;
+  const pageTextLayerTransform = page?.textLayerTransform ?? null;
+  const textRenderTransform = useMemo(
+    () =>
+      pageTextLayerTransform
+        ? scaleTextLayerTransform(pageTextLayerTransform, renderZoom, rasterScale)
+        : undefined,
+    [pageTextLayerTransform, rasterScale, renderZoom]
+  );
 
   const promotePage = useCallback((nextPage: CachedRenderedPage) => {
     const currentPage = pageRef.current;
@@ -412,7 +480,7 @@ const ContinuousPage = memo(function ContinuousPage({
           if (fadedPage) {
             pageCacheRef.current.release(fadedPage);
           }
-        }, 90);
+        }, 140);
       });
     }
   }, [pageCacheRef]);
@@ -449,7 +517,11 @@ const ContinuousPage = memo(function ContinuousPage({
       return;
     }
 
-    const lease = coordinator.request({ identity, priority, distanceFromReadingLine: readingLineDistance });
+    const lease = coordinator.request({
+      identity,
+      priority,
+      distanceFromReadingLine: Math.abs(pageTopRef.current - readingLineYRef.current)
+    });
     void lease.promise
       .then((renderedPage) => {
         if (cancelled) {
@@ -458,7 +530,7 @@ const ContinuousPage = memo(function ContinuousPage({
         }
         const canonicalPage = pageCacheRef.current.set(cacheKey, renderedPage);
         promotePage(canonicalPage);
-        onPageMeasured(canonicalPage, targetGeometry.height);
+        onPageMeasured(canonicalPage, targetHeightRef.current);
       })
       .catch((error) => {
         if (cancelled || (error instanceof DOMException && error.name === "AbortError")) {
@@ -479,7 +551,9 @@ const ContinuousPage = memo(function ContinuousPage({
       cancelled = true;
       lease.release();
     };
-  }, [coordinator, documentId, geometry, onIdentityChanged, onPageMeasured, openSessionId, pageCacheRef, pageNumber, promotePage, rasterScale, renderZoom, targetGeometry.height]);
+    // `priority` is deliberately omitted: the effect below reprioritizes a queued job
+    // without cancelling and restarting it.
+  }, [coordinator, documentId, geometry, onIdentityChanged, onPageMeasured, openSessionId, pageCacheRef, pageNumber, promotePage, rasterScale, readingLineYRef]);
 
   useEffect(() => {
     coordinator.reprioritize({
@@ -491,21 +565,25 @@ const ContinuousPage = memo(function ContinuousPage({
         geometry
       ),
       priority,
-      distanceFromReadingLine: readingLineDistance
+      distanceFromReadingLine: Math.abs(pageTopRef.current - readingLineYRef.current)
     });
-  }, [coordinator, documentId, geometry, openSessionId, pageNumber, priority, rasterScale, readingLineDistance]);
+  }, [coordinator, documentId, geometry, openSessionId, pageNumber, priority, rasterScale, readingLineYRef]);
 
   useEffect(() => {
     let cancelled = false;
     setTextLayer(null);
-    void getPdfNativeTextPage(documentId, pageNumber, {
-      openSessionId: openSessionId ?? undefined
-    })
+    void loadNativeTextPage(documentId, openSessionId, pageNumber)
       .then((payload) => {
         if (cancelled || payload.pageNumber !== pageNumber) {
           return;
         }
         setTextLayer(payload);
+        const cacheKey = `${documentId}:${openSessionId ?? "legacy"}:${pageNumber}`;
+        const prediction = folioPredictionCacheRef.current.has(cacheKey)
+          ? folioPredictionCacheRef.current.get(cacheKey) ?? null
+          : predictFolio(payload).prediction;
+        folioPredictionCacheRef.current.set(cacheKey, prediction);
+        onFolioPredictionRef.current(pageNumber, prediction);
       })
       .catch((error) => {
         if (cancelled) {
@@ -521,7 +599,7 @@ const ContinuousPage = memo(function ContinuousPage({
     return () => {
       cancelled = true;
     };
-  }, [documentId, openSessionId, pageNumber]);
+  }, [documentId, folioPredictionCacheRef, openSessionId, pageNumber]);
 
   useEffect(() => {
     return () => {
@@ -580,23 +658,22 @@ const ContinuousPage = memo(function ContinuousPage({
             }}
           >
             <div className="continuous-reader__page-image-stack">
+              {/* The outgoing raster stays fully opaque underneath while the new one
+                  fades in on top, so the paper never shows through mid-swap. */}
               {previousPage ? (
                 <img
-                  className={`reader-page__image reader-page__image--active continuous-reader__page-image--previous${previousPageIsFallback ? " continuous-reader__page-image--fallback" : ""}`}
+                  className="reader-page__image reader-page__image--active continuous-reader__page-image--previous"
                   src={previousPage.imageUrl}
                   alt=""
                   draggable={false}
-                  style={{
-                    opacity: incomingVisible ? 0 : previousPageIsFallback ? 0.96 : 1
-                  }}
                 />
               ) : null}
               <img
-                className={`reader-page__image reader-page__image--active continuous-reader__page-image--incoming${pageIsFallback ? " continuous-reader__page-image--fallback" : ""}`}
+                className="reader-page__image reader-page__image--active continuous-reader__page-image--incoming"
                 src={page.imageUrl}
                 alt={`Page ${page.pageNumber}`}
                 draggable={false}
-                style={{ opacity: incomingVisible ? (pageIsFallback ? 0.96 : 1) : 0 }}
+                style={{ opacity: incomingVisible ? 1 : 0 }}
               />
             </div>
             <NativePdfTextLayer
@@ -604,11 +681,7 @@ const ContinuousPage = memo(function ContinuousPage({
               textLayer={textLayer}
               renderedWidth={targetGeometry.width}
               renderedHeight={targetGeometry.height}
-              renderTransform={scaleTextLayerTransform(
-                page.textLayerTransform,
-                renderZoom,
-                rasterScale
-              )}
+              renderTransform={textRenderTransform}
             />
           </div>
         ) : (
@@ -624,24 +697,76 @@ const ContinuousPage = memo(function ContinuousPage({
 
 export default function ContinuousPdfViewer({
   readerSession,
+  readerState,
+  initialPage: initialPageOverride,
   readerActive,
   onSnapshotChange,
   onOutlineChange,
   onStatusChange,
   onStateChange,
   registerApi,
-  viewerDisplayConfig
+  viewerDisplayConfig,
+  onFolioPrediction = () => undefined
 }: ContinuousPdfViewerProps) {
   const document = readerSession?.document ?? null;
   const documentId = document?.document.id ?? null;
   const pageCount = document?.pageCount ?? 0;
   const openSessionId = readerSession?.openSessionId ?? null;
-  const initialZoom = snapScrollZoom(readerSession?.zoom ?? readerSession?.document.state.zoom ?? 1);
+  const writerLeaseRef = useRef<{
+    active: boolean;
+    generation: number;
+    openSessionId: string | null;
+    ready: Promise<void>;
+  }>({
+    active: false,
+    generation: createDocumentStateWriterGeneration(),
+    openSessionId,
+    ready: Promise.resolve()
+  });
+  if (writerLeaseRef.current.openSessionId !== openSessionId) {
+    writerLeaseRef.current.active = false;
+    writerLeaseRef.current = {
+      active: false,
+      generation: createDocumentStateWriterGeneration(),
+      openSessionId,
+      ready: Promise.resolve()
+    };
+  }
+  const initialReaderStateRef = useRef<{
+    openSessionId: string | null;
+    state: DocumentState | null;
+  }>({ openSessionId, state: readerState ?? readerSession?.document.state ?? null });
+  if (initialReaderStateRef.current.openSessionId !== openSessionId) {
+    initialReaderStateRef.current = {
+      openSessionId,
+      state: readerState ?? readerSession?.document.state ?? null
+    };
+  }
+  const sourceReaderState = initialReaderStateRef.current.state;
+  const initialPageSeedRef = useRef<{
+    openSessionId: string | null;
+    page: number | null;
+  }>({ openSessionId, page: initialPageOverride });
+  if (initialPageSeedRef.current.openSessionId !== openSessionId) {
+    initialPageSeedRef.current = { openSessionId, page: initialPageOverride };
+  }
+  const initialZoom = normalizeZoom(
+    sourceReaderState?.scrollZoom ?? readerSession?.scrollZoom ?? 1
+  );
   const initialFitMode = SCROLL_READER_FIT_MODE;
-  const initialBookmarks = readerSession?.document.state.bookmarks ?? [];
-  const initialPage = readerSession ? clampPage(readerSession.page || readerSession.document.state.lastPage, pageCount) : 1;
+  const initialBookmarks = sourceReaderState?.bookmarks ?? [];
+  const initialPage = readerSession
+    ? clampPage(
+        initialPageSeedRef.current.page ??
+          sourceReaderState?.lastPage ??
+          readerSession.page ??
+          readerSession.document.state.lastPage,
+        pageCount
+      )
+    : 1;
   const scrollSurfaceRef = useRef<HTMLDivElement | null>(null);
   const pageCacheRef = useRef(createPageCache({ maxBytes: CONTINUOUS_RENDER_CACHE_BYTES }));
+  const folioPredictionCacheRef = useRef(new Map<string, FolioPrediction | null>());
   const renderCoordinatorRef = useRef<ScrollRenderCoordinator | null>(null);
   if (renderCoordinatorRef.current === null) {
     renderCoordinatorRef.current = new ScrollRenderCoordinator({ maxConcurrent: 2 });
@@ -655,8 +780,12 @@ export default function ContinuousPdfViewer({
   const pendingZoomScrollTopRef = useRef<number | null>(null);
   const rangeReleaseFrameRef = useRef<number | null>(null);
   const rangeReleaseStableFrameRef = useRef<number | null>(null);
-  const latestStateRef = useRef<DocumentState | null>(readerSession?.document.state ?? null);
+  const latestStateRef = useRef<DocumentState | null>(sourceReaderState);
   const initialScrollAppliedRef = useRef<string | null>(null);
+  const pendingPageNavigationRef = useRef<{
+    align: "top" | "reading-line";
+    page: number;
+  } | null>(null);
   const [displayZoom, setDisplayZoom] = useState(() => initialZoom);
   const [wheelPreviewZoom, setWheelPreviewZoom] = useState<number | null>(null);
   const [fitMode, setFitModeState] = useState<ReaderFitMode>(() => initialFitMode);
@@ -668,6 +797,7 @@ export default function ContinuousPdfViewer({
     typeof window === "undefined" ? 1 : window.devicePixelRatio
   );
   const [currentPage, setCurrentPage] = useState(initialPage);
+  const [initialLocationApplied, setInitialLocationApplied] = useState(false);
   const [pageGeometries, setPageGeometries] = useState<EffectivePageGeometry[]>([]);
   const [geometryRevision, setGeometryRevision] = useState(0);
   const [pinnedVirtualRange, setPinnedVirtualRange] = useState<{
@@ -699,16 +829,17 @@ export default function ContinuousPdfViewer({
   metricsRef.current = metrics;
   pageCountRef.current = pageCount;
   scrollTopRef.current = scrollTop;
+  const placementsRef = useRef(placements);
+  placementsRef.current = placements;
   const desiredVirtualRange = useMemo(
     () =>
-      computeContinuousVirtualRange({
-        metrics,
+      computeContinuousVirtualRangeFromPlacements({
+        placements,
         scrollTop,
         viewportHeight,
-        overscanPx: CONTINUOUS_OVERSCAN_PX,
-        pageGapPx: CONTINUOUS_PAGE_GAP_PX
+        overscanPx: CONTINUOUS_OVERSCAN_PX
       }),
-    [metrics, scrollTop, viewportHeight]
+    [placements, scrollTop, viewportHeight]
   );
   const virtualRange = useMemo(
     () =>
@@ -724,24 +855,49 @@ export default function ContinuousPdfViewer({
   mountedRangeRef.current = virtualRange;
   const visibleRange = useMemo(
     () =>
-      computeContinuousVirtualRange({
-        metrics,
+      computeContinuousVirtualRangeFromPlacements({
+        placements,
         scrollTop,
         viewportHeight,
-        overscanPx: 0,
-        pageGapPx: CONTINUOUS_PAGE_GAP_PX
+        overscanPx: 0
       }),
-    [metrics, scrollTop, viewportHeight]
+    [placements, scrollTop, viewportHeight]
   );
 
   const readingLineOffsetPx = Math.max(Math.min(viewportHeight * 0.28, 220), 48);
+  // Pages read this lazily when they queue a render, so scrolling does not re-render them.
+  const readingLineYRef = useRef(0);
+  readingLineYRef.current = scrollTop + readingLineOffsetPx;
+
+  useEffect(() => {
+    if (!documentId || !openSessionId) {
+      return;
+    }
+    const lease = writerLeaseRef.current;
+    lease.active = true;
+    lease.ready = activateDocumentStateWriter(
+      documentId,
+      openSessionId,
+      lease.generation
+    );
+    return () => {
+      lease.active = false;
+    };
+  }, [documentId, openSessionId]);
 
   const publishState = useCallback(
     (nextPage: number, nextZoom = displayZoom, nextFitMode = fitMode, nextBookmarks = bookmarks) => {
       if (!readerSession) {
         return;
       }
-      const nextState = makeDocumentState(readerSession, nextPage, nextZoom, nextFitMode, nextBookmarks);
+      const nextState = makeDocumentState(
+        readerSession,
+        latestStateRef.current ?? sourceReaderState ?? readerSession.document.state,
+        nextPage,
+        nextZoom,
+        nextFitMode,
+        nextBookmarks
+      );
       latestStateRef.current = nextState;
       onStateChange(nextState);
       onSnapshotChange({
@@ -754,45 +910,77 @@ export default function ContinuousPdfViewer({
         window.clearTimeout(saveTimerRef.current);
       }
       saveTimerRef.current = window.setTimeout(() => {
-        void saveDocumentState(readerSession.documentId, nextState).catch((error) => {
-          debugAction("continuous-reader.state-save-error", {
-            documentId: readerSession.documentId,
-            error: error instanceof Error ? error.message : String(error)
+        const lease = writerLeaseRef.current;
+        void lease.ready.then(() => {
+          if (!lease.active || lease !== writerLeaseRef.current || !openSessionId) {
+            return;
+          }
+          return saveDocumentState(readerSession.documentId, nextState, {
+            openSessionId,
+            writerGeneration: lease.generation
           });
+        }).catch((error) => {
+          if (isStaleDocumentStateWriterError(error)) {
+            lease.active = false;
+            return;
+          }
+          if (lease.active) {
+            debugAction("continuous-reader.state-save-error", {
+              documentId: readerSession.documentId,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
         });
       }, READER_STATE_SAVE_DEBOUNCE_MS);
     },
-    [bookmarks, displayZoom, fitMode, onSnapshotChange, onStateChange, readerSession]
+    [bookmarks, displayZoom, fitMode, onSnapshotChange, onStateChange, openSessionId, readerSession, sourceReaderState]
   );
   publishStateRef.current = publishState;
 
   const scrollToPage = useCallback(
     (page: number, options?: { align?: "top" | "reading-line" }) => {
+      const clampedPage = clampPage(page, pageCount);
+      const align = options?.align ?? "top";
+      pendingPageNavigationRef.current = { align, page: clampedPage };
       const scrollSurface = scrollSurfaceRef.current;
-      if (!scrollSurface) {
+      if (!scrollSurface || pageGeometries.length !== pageCount) {
         return;
       }
-      const clampedPage = clampPage(page, pageCount);
       const placement = placements.find((candidate) => candidate.pageNumber === clampedPage);
       if (!placement) {
         return;
       }
       const nextScrollTop =
-        options?.align === "reading-line"
+        align === "reading-line"
           ? Math.max(placement.top - readingLineOffsetPx, 0)
           : placement.top;
+      pendingPageNavigationRef.current = null;
+      if (documentId && openSessionId) {
+        initialScrollAppliedRef.current = `${documentId}:${openSessionId}`;
+      }
       scrollSurface.scrollTop = nextScrollTop;
+      scrollTopRef.current = nextScrollTop;
+      currentPageRef.current = clampedPage;
       setScrollTop(nextScrollTop);
       setCurrentPage(clampedPage);
+      setInitialLocationApplied(true);
       publishState(clampedPage);
     },
-    [pageCount, placements, publishState, readingLineOffsetPx]
+    [
+      documentId,
+      openSessionId,
+      pageCount,
+      pageGeometries.length,
+      placements,
+      publishState,
+      readingLineOffsetPx
+    ]
   );
   scrollToPageRef.current = scrollToPage;
 
   const updateZoom = useCallback(
     (nextZoom: number) => {
-      const normalizedZoom = snapScrollZoom(nextZoom);
+      const normalizedZoom = normalizeZoom(nextZoom);
       const mountedRange = mountedRangeRef.current;
       if (mountedRange.startPage > 0) {
         setPinnedVirtualRange({
@@ -905,7 +1093,7 @@ export default function ContinuousPdfViewer({
   }, [documentId]);
 
   useEffect(() => {
-    latestStateRef.current = readerSession?.document.state ?? null;
+    latestStateRef.current = sourceReaderState;
     setDisplayZoom(initialZoom);
     setWheelPreviewZoom(null);
     wheelZoomTargetRef.current = null;
@@ -922,8 +1110,10 @@ export default function ContinuousPdfViewer({
     setFitModeState(initialFitMode);
     setBookmarksState(initialBookmarks);
     setCurrentPage(initialPage);
+    setInitialLocationApplied(false);
     setScrollTop(0);
     initialScrollAppliedRef.current = null;
+    pendingPageNavigationRef.current = null;
     baseHeightsRef.current = new Map();
     setPageGeometries([]);
     pageCacheRef.current.clear();
@@ -976,7 +1166,7 @@ export default function ContinuousPdfViewer({
   }, [documentId, geometryRevision, onStatusChange, pageCount, readerSession?.openSessionId]);
 
   useEffect(() => {
-    if (!readerSession || !readerActive) {
+    if (!readerSession || !readerActive || !initialLocationApplied) {
       return;
     }
     onSnapshotChange({
@@ -984,7 +1174,7 @@ export default function ContinuousPdfViewer({
       pageCount,
       zoom: displayZoom
     });
-  }, [currentPage, displayZoom, onSnapshotChange, pageCount, readerActive, readerSession]);
+  }, [currentPage, displayZoom, initialLocationApplied, onSnapshotChange, pageCount, readerActive, readerSession]);
 
   useEffect(() => {
     if (!documentId || !readerSession) {
@@ -1046,8 +1236,18 @@ export default function ContinuousPdfViewer({
   }, [displayZoom, pageCount, pageGeometries, viewportWidth]);
 
   useLayoutEffect(() => {
+    const pendingNavigation = pendingPageNavigationRef.current;
+    if (!pendingNavigation || pageGeometries.length !== pageCount) {
+      return;
+    }
+    scrollToPageRef.current(pendingNavigation.page, {
+      align: pendingNavigation.align
+    });
+  }, [pageCount, pageGeometries.length, placements.length]);
+
+  useLayoutEffect(() => {
     const scrollSurface = scrollSurfaceRef.current;
-    const scrollKey = documentId ? `${documentId}:${initialPage}` : null;
+    const scrollKey = documentId && openSessionId ? `${documentId}:${openSessionId}` : null;
     if (
       !scrollSurface ||
       !scrollKey ||
@@ -1061,12 +1261,20 @@ export default function ContinuousPdfViewer({
     if (placement) {
       initialScrollAppliedRef.current = scrollKey;
       scrollSurface.scrollTop = placement.top;
+      scrollTopRef.current = placement.top;
+      currentPageRef.current = initialPage;
       setScrollTop(placement.top);
+      setCurrentPage(initialPage);
+      setInitialLocationApplied(true);
     }
-  }, [documentId, initialPage, pageCount, pageGeometries.length, placements.length]);
+  }, [documentId, initialPage, openSessionId, pageCount, pageGeometries.length, placements.length]);
 
   useEffect(() => {
     const activeOpenSessionId = readerSession?.openSessionId ?? null;
+    // Joined line text per page for in-document search, scoped to this open session so repeated
+    // queries do not refetch the (large) native text payload. Deliberately separate from the
+    // shared native text LRU, which a full-document search would otherwise flush.
+    const searchTextByPage = new Map<number, string>();
     const api: ViewerApi | null =
       readerSession && documentId
         ? {
@@ -1085,7 +1293,10 @@ export default function ContinuousPdfViewer({
                 SCROLL_READER_FIT_MODE
               );
             },
-            goToPage: (page) => scrollToPageRef.current(page),
+            goToPage: (page, options) =>
+              scrollToPageRef.current(page, {
+                align: options?.alignment === "reading-line" ? "reading-line" : "top"
+              }),
             navigateToTarget: (target: PdfNavigationTarget) => {
               scrollToPageRef.current(target.pageIndex + 1);
             },
@@ -1096,10 +1307,16 @@ export default function ContinuousPdfViewer({
                 if (signal.aborted) {
                   return "";
                 }
+                const cachedText = searchTextByPage.get(pageNumber);
+                if (cachedText !== undefined) {
+                  return cachedText;
+                }
                 const textPage = await getPdfNativeTextPage(documentId, pageNumber, {
                   openSessionId: activeOpenSessionId ?? undefined
                 });
-                return signal.aborted ? "" : textPage.lines.map((line) => line.text).join("\n");
+                const pageText = textPage.lines.map((line) => line.text).join("\n");
+                searchTextByPage.set(pageNumber, pageText);
+                return signal.aborted ? "" : pageText;
               }
             },
             jumpToOutline: (item: OutlineItem) => {
@@ -1160,28 +1377,33 @@ export default function ContinuousPdfViewer({
       const nextScrollTop = event.currentTarget.scrollTop;
       setScrollTop(nextScrollTop);
       const nextPage = clampPage(
-        resolveContinuousActivePage(metrics, nextScrollTop, readingLineOffsetPx, CONTINUOUS_PAGE_GAP_PX),
-        pageCount || 1
+        resolveContinuousActivePageFromPlacements(
+          placementsRef.current,
+          nextScrollTop,
+          readingLineOffsetPx
+        ),
+        pageCountRef.current || 1
       );
-      if (nextPage !== currentPage) {
+      if (nextPage !== currentPageRef.current) {
+        currentPageRef.current = nextPage;
         setCurrentPage(nextPage);
-        publishState(nextPage);
+        publishStateRef.current(nextPage);
       }
     },
-    [currentPage, metrics, pageCount, publishState, readingLineOffsetPx]
+    [readingLineOffsetPx]
   );
 
   const handleWheel = useCallback(
-    (event: WheelEvent<HTMLDivElement>) => {
+    (event: WheelEvent) => {
       if (!event.ctrlKey && !event.metaKey) {
         return;
       }
       event.preventDefault();
       const delta = event.deltaY === 0 ? event.deltaX : event.deltaY;
-      const nextZoom = scaleZoomByWheelDelta(
-        wheelZoomTargetRef.current ?? displayZoomRef.current,
-        delta
-      );
+      const baseZoom = wheelZoomTargetRef.current ?? displayZoomRef.current;
+      const nextZoom = isPinchWheelDelta(delta)
+        ? scaleZoomByPinchDelta(baseZoom, delta)
+        : scaleZoomByWheelDelta(baseZoom, delta);
       wheelZoomTargetRef.current = nextZoom;
       setWheelPreviewZoom(nextZoom);
       if (wheelZoomTimerRef.current !== null) {
@@ -1200,6 +1422,13 @@ export default function ContinuousPdfViewer({
     },
     []
   );
+
+  useEffect(() => {
+    const surface = scrollSurfaceRef.current;
+    if (!surface) return;
+    surface.addEventListener("wheel", handleWheel, { passive: false });
+    return () => surface.removeEventListener("wheel", handleWheel);
+  }, [documentId, handleWheel, readerSession]);
 
   if (!readerSession || !document || !documentId) {
     return (
@@ -1222,7 +1451,7 @@ export default function ContinuousPdfViewer({
       viewerDisplayConfig={viewerDisplayConfig}
       zoomGestureActive={wheelPreviewZoom !== null}
     >
-      <div onWheel={handleWheel}>
+      <div>
         {pageGeometries.length === pageCount ? <ContinuousPageList
           coordinator={renderCoordinator}
           documentId={documentId}
@@ -1231,7 +1460,7 @@ export default function ContinuousPdfViewer({
           pageCacheRef={pageCacheRef}
           placements={placements}
           range={virtualRange}
-          readingLineY={scrollTop + readingLineOffsetPx}
+          readingLineYRef={readingLineYRef}
           renderZoom={displayZoom}
           rasterScale={rasterScale}
           transientScale={transientScale}
@@ -1240,6 +1469,8 @@ export default function ContinuousPdfViewer({
           viewerDisplayConfig={viewerDisplayConfig}
           onIdentityChanged={requestPageGeometryRefresh}
           onPageMeasured={handlePageMeasured}
+          onFolioPrediction={onFolioPrediction}
+          folioPredictionCacheRef={folioPredictionCacheRef}
         /> : null}
       </div>
     </ContinuousScrollModel>
