@@ -250,7 +250,20 @@ const NotesPane = memo(function NotesPane({
     timestamp: number;
   } | null>(null);
   const toastTimerRef = useRef<number | null>(null);
-  const [scrollbarVisible, setScrollbarVisible] = useState(false);
+  // Scrollbar visibility is toggled directly on the scrollbar element: going through React state
+  // re-rendered the whole pane (and reconciled every note block) at the start and end of each
+  // scroll gesture.
+  function setScrollbarVisible(visible: boolean) {
+    const scrollbarElement = scrollbarRef.current;
+    if (!scrollbarElement) {
+      return;
+    }
+    if (visible) {
+      scrollbarElement.dataset.visible = "true";
+    } else {
+      delete scrollbarElement.dataset.visible;
+    }
+  }
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
@@ -457,9 +470,11 @@ const NotesPane = memo(function NotesPane({
   }
 
   function updateNotesScrollbar() {
-    const paneElement = paneRef.current;
+    // The thumb variables are written on the scrollbar element, not the pane: custom properties
+    // inherit, so setting them on the pane restyled every note block on every scroll event.
+    const scrollbarElement = scrollbarRef.current;
     const scrollElement = scrollRef.current;
-    if (!paneElement || !scrollElement) {
+    if (!scrollbarElement || !scrollElement) {
       return;
     }
 
@@ -474,8 +489,8 @@ const NotesPane = memo(function NotesPane({
         maxThumbTop: 0,
         maxScroll: 0
       };
-      paneElement.style.setProperty("--notes-scroll-thumb-height", "0px");
-      paneElement.style.setProperty("--notes-scroll-thumb-top", "0px");
+      scrollbarElement.style.setProperty("--notes-scroll-thumb-height", "0px");
+      scrollbarElement.style.setProperty("--notes-scroll-thumb-top", "0px");
       return;
     }
 
@@ -490,8 +505,8 @@ const NotesPane = memo(function NotesPane({
       maxThumbTop,
       maxScroll
     };
-    paneElement.style.setProperty("--notes-scroll-thumb-height", `${thumbHeight}px`);
-    paneElement.style.setProperty("--notes-scroll-thumb-top", `${thumbTop}px`);
+    scrollbarElement.style.setProperty("--notes-scroll-thumb-height", `${thumbHeight}px`);
+    scrollbarElement.style.setProperty("--notes-scroll-thumb-top", `${thumbTop}px`);
   }
 
   function scrollNotesToThumbTop(nextThumbTop: number) {
@@ -1152,9 +1167,7 @@ const NotesPane = memo(function NotesPane({
   return (
     <aside
       ref={paneRef}
-      className={`notes-pane${fullscreen ? " notes-pane--fullscreen" : ""}${
-        scrollbarVisible ? " notes-pane--scrollbar-visible" : ""
-      }`}
+      className={`notes-pane${fullscreen ? " notes-pane--fullscreen" : ""}`}
       aria-label="Notes"
       onKeyDownCapture={(event) => {
         const key = event.key.toLowerCase();

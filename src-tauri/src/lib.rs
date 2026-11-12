@@ -9,10 +9,7 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
     process::Command,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Condvar, Mutex,
-    },
+    sync::{Arc, Condvar, Mutex},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -33,10 +30,12 @@ struct AppState {
     render_cache: Arc<Mutex<RenderCache>>,
     render_sessions: RenderSessionRegistry,
     in_flight_renders: Arc<Mutex<HashMap<String, Arc<InFlightRender>>>>,
-    render_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    render_cancellations: Arc<Mutex<HashMap<String, Arc<store::RenderCancellation>>>>,
     active_reader_generation: Arc<Mutex<Option<ActiveReaderGeneration>>>,
     normalization_worker: NormalizationWorker,
     normalization_cache: ManifestCache,
+    /// Catalog-derived render inputs per document id; see `prepare_cached_render_request`.
+    resolved_documents: store::ResolvedDocumentCache,
 }
 
 #[derive(Deserialize)]
@@ -423,9 +422,35 @@ fn run_or_join_in_flight_render(
                 .wait(guard)
                 .map_err(|_| "Unable to wait for in-flight render result.".to_string())?;
         }
-        return guard
+        let leader_result = guard
             .clone()
             .ok_or_else(|| "Unable to resolve in-flight render result.".to_string())?;
+        drop(guard);
+
+        // A leader that was cancelled says nothing about this request: if the follower itself
+        // is still wanted, render it instead of inheriting the leader's cancellation.
+        let leader_cancelled = leader_result
+            .as_ref()
+            .err()
+            .is_some_and(|message| message.contains(store::RENDER_CANCELLED_MESSAGE));
+        let follower_cancelled = request
+            .cancellation
+            .as_ref()
+            .is_some_and(|cancellation| cancellation.is_cancelled());
+        if leader_cancelled && !follower_cancelled {
+            crate::debug::action(
+                "command.render_pdf_page:rerender-after-cancelled-leader",
+                json!({
+                    "cacheKey": cache_key,
+                    "documentId": request.document_id,
+                    "page": request.page_number,
+                    "requestSequence": request.request_sequence,
+                }),
+            );
+            return LibraryStore::render_pdf_page_blocking(request, render_cache, render_sessions)
+                .map_err(|error| error.to_string());
+        }
+        return leader_result;
     }
 
     let result = LibraryStore::render_pdf_page_blocking(request, render_cache, render_sessions)
@@ -461,6 +486,56 @@ fn app_store(app: &AppHandle) -> Result<LibraryStore, String> {
     Ok(LibraryStore::new(app_dir, library_root))
 }
 
+/// Builds a render request for `document_id`, resolving its catalog data (record, absolute path)
+/// at most once until it can have changed.
+///
+/// An entry is reused only while the library index generation is unchanged (every index write
+/// and library-root change bumps it) and the PDF still exists. The generation is read before
+/// the library root or index is read, so a write that lands during resolution leaves the new
+/// entry already stale instead of letting it outlive the change.
+fn prepare_cached_render_request(
+    app: &AppHandle,
+    resolved_documents: &store::ResolvedDocumentCache,
+    normalization_cache: &ManifestCache,
+    document_id: &str,
+    page_number: u32,
+    zoom: f32,
+) -> Result<store::PageRenderRequest, String> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Unable to resolve app data directory: {error}"))?;
+    let generation = store::index_generation(&app_dir);
+
+    let cached = resolved_documents
+        .lock()
+        .map_err(|_| "Unable to lock resolved document cache.".to_string())?
+        .get(document_id)
+        .cloned();
+    let resolved = match cached {
+        Some(resolved) if resolved.is_current(generation) => resolved,
+        _ => {
+            let resolved = app_store(app)?
+                .resolve_render_document(document_id, generation)
+                .map_err(|error| error.to_string())?;
+            resolved_documents
+                .lock()
+                .map_err(|_| "Unable to lock resolved document cache.".to_string())?
+                .insert(document_id.to_string(), resolved.clone());
+            resolved
+        }
+    };
+
+    store::prepare_render_request_from_resolved(
+        &app_dir,
+        &resolved,
+        page_number,
+        zoom,
+        normalization_cache,
+    )
+    .map_err(|error| error.to_string())
+}
+
 fn with_store<T>(
     app: &AppHandle,
     state: State<'_, AppState>,
@@ -494,11 +569,15 @@ fn release_document_render_resources(
     store: &LibraryStore,
     render_cache: &Arc<Mutex<RenderCache>>,
     render_sessions: &RenderSessionRegistry,
+    resolved_documents: &store::ResolvedDocumentCache,
     document_id: &str,
 ) -> Result<(), String> {
     let document = store
         .document_record(document_id)
         .map_err(|error| error.to_string())?;
+    if let Ok(mut resolved) = resolved_documents.lock() {
+        resolved.remove(document_id);
+    }
     render_sessions.drop_fingerprint(&document.fingerprint);
     if let Ok(mut cache) = render_cache.lock() {
         cache.remove_fingerprint(&document.fingerprint);
@@ -631,6 +710,11 @@ fn set_library_root(
             }
 
             save_library_root_config(&app_dir, &new_root)?;
+            // Cached absolute document paths belong to the old root.
+            store::bump_index_generation(&app_dir);
+            if let Ok(mut resolved) = state.resolved_documents.lock() {
+                resolved.clear();
+            }
             LibraryStore::new(&app_dir, &new_root)
                 .ensure_ready()
                 .map_err(|error| error.to_string())?;
@@ -767,11 +851,13 @@ fn move_document(
         || {
             let render_cache = state.render_cache.clone();
             let render_sessions = state.render_sessions.clone();
+            let resolved_documents = state.resolved_documents.clone();
             with_store(&app, state, |store| {
                 release_document_render_resources(
                     &store,
                     &render_cache,
                     &render_sessions,
+                    &resolved_documents,
                     &document_id,
                 )?;
                 store
@@ -842,11 +928,13 @@ fn rename_document(
         || {
             let render_cache = state.render_cache.clone();
             let render_sessions = state.render_sessions.clone();
+            let resolved_documents = state.resolved_documents.clone();
             with_store(&app, state, |store| {
                 release_document_render_resources(
                     &store,
                     &render_cache,
                     &render_sessions,
+                    &resolved_documents,
                     &document_id,
                 )?;
                 store
@@ -871,11 +959,13 @@ fn delete_document(
         || {
             let render_cache = state.render_cache.clone();
             let render_sessions = state.render_sessions.clone();
+            let resolved_documents = state.resolved_documents.clone();
             with_store(&app, state, |store| {
                 release_document_render_resources(
                     &store,
                     &render_cache,
                     &render_sessions,
+                    &resolved_documents,
                     &document_id,
                 )?;
                 store
@@ -1450,7 +1540,7 @@ async fn render_pdf_page(
     expected_render_variant: Option<RenderVariant>,
     rotation: Option<i32>,
     bypass_in_flight_join: Option<bool>,
-) -> Result<RenderedPagePayload, String> {
+) -> Result<tauri::ipc::Response, String> {
     let bypass_in_flight_join = bypass_in_flight_join.unwrap_or(false);
     let process = debug_process(
         "command.render_pdf_page",
@@ -1474,8 +1564,9 @@ async fn render_pdf_page(
     let in_flight_renders = state.in_flight_renders.clone();
     let active_reader_generation = state.active_reader_generation.clone();
     let normalization_cache = state.normalization_cache.clone();
+    let resolved_documents = state.resolved_documents.clone();
     let render_cancellations = state.render_cancellations.clone();
-    let cancellation = Arc::new(AtomicBool::new(false));
+    let cancellation = Arc::new(store::RenderCancellation::default());
     if let Some(request_id) = request_id.as_ref() {
         render_cancellations
             .lock()
@@ -1518,13 +1609,21 @@ async fn render_pdf_page(
                     "zoom": zoom,
                 }),
             );
-            return Err("Stale render request skipped.".to_string());
+            return Err(store::STALE_RENDER_MESSAGE.to_string());
         }
 
-        let store = app_store(&app)?;
-        let mut request = store
-            .prepare_render_request(&task_document_id, page_number, zoom, &normalization_cache)
-            .map_err(|error| error.to_string())?;
+        if task_cancellation.is_cancelled() {
+            return Err(store::RENDER_CANCELLED_MESSAGE.to_string());
+        }
+
+        let mut request = prepare_cached_render_request(
+            &app,
+            &resolved_documents,
+            &normalization_cache,
+            &task_document_id,
+            page_number,
+            zoom,
+        )?;
         request.document_generation_id = task_open_session_id.clone();
         request.request_sequence = request_sequence;
         request.request_id = task_request_id.clone();
@@ -1580,13 +1679,35 @@ async fn render_pdf_page(
     }
     let result = task_result?;
 
+    let result = result.and_then(encode_rendered_page_response);
+
     if let Err(error) = &result {
-        process.fail(error, json!({}));
+        if store::is_expected_render_outcome(error) {
+            process.abandon(error, json!({}));
+        } else {
+            process.fail(error, json!({}));
+        }
     } else {
         process.finish(json!({}));
     }
 
-    result
+    result.map(tauri::ipc::Response::new)
+}
+
+/// Packs a rendered page for the raw IPC channel so the image is not expanded into a
+/// JSON number array: `[u32 LE header length][JSON metadata][image bytes]`.
+/// The frontend decoder lives in `decodeRenderedPageResponse` (src/lib/api.ts).
+fn encode_rendered_page_response(mut payload: RenderedPagePayload) -> Result<Vec<u8>, String> {
+    let image_bytes = std::mem::take(&mut payload.image_bytes);
+    let header = serde_json::to_vec(&payload)
+        .map_err(|error| format!("Unable to encode rendered page metadata: {error}"))?;
+    let header_length = u32::try_from(header.len())
+        .map_err(|_| "Rendered page metadata is too large.".to_string())?;
+    let mut body = Vec::with_capacity(4 + header.len() + image_bytes.len());
+    body.extend_from_slice(&header_length.to_le_bytes());
+    body.extend_from_slice(&header);
+    body.extend_from_slice(&image_bytes);
+    Ok(body)
 }
 
 #[tauri::command]
@@ -1598,7 +1719,7 @@ fn cancel_pdf_page_render(state: State<'_, AppState>, request_id: String) -> Res
         .get(&request_id)
         .cloned();
     if let Some(cancellation) = cancellation {
-        cancellation.store(true, Ordering::Release);
+        cancellation.cancel();
         crate::debug::action(
             "command.cancel_pdf_page_render",
             json!({ "requestId": request_id, "status": "marked" }),
@@ -1619,7 +1740,7 @@ async fn get_pdf_native_text_page(
     document_id: String,
     page_number: u32,
     open_session_id: Option<String>,
-) -> Result<NativeTextPagePayload, String> {
+) -> Result<Arc<NativeTextPagePayload>, String> {
     let process = debug_process(
         "command.get_pdf_native_text_page",
         json!({
@@ -1955,6 +2076,7 @@ pub fn run() {
                 active_reader_generation: Arc::new(Mutex::new(None)),
                 normalization_worker,
                 normalization_cache,
+                resolved_documents: Arc::new(Mutex::new(HashMap::new())),
             });
             crate::debug::startup(
                 "app.setup:finish",

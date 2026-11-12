@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect } from "react";
 
-import PdfViewer from "./PdfViewer";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import { debugAction } from "../lib/debugLog";
 import type { DocumentState, OutlineItem, ReaderSession, ReaderViewMode, ViewerApi, ViewerSnapshot } from "../lib/types";
@@ -100,8 +99,7 @@ const ReaderViewport = memo(function ReaderViewport({
       aria-label="Reader viewport"
       data-reader-view-mode={readerViewMode}
     >
-      {readerViewMode === "scroll" ? (
-        <ContinuousPdfViewer
+      <ContinuousPdfViewer
           readerSession={readerSession}
           readerState={readerState}
           initialPage={initialReaderPage}
@@ -116,23 +114,7 @@ const ReaderViewport = memo(function ReaderViewport({
           viewerDisplayConfig={viewerDisplayConfig}
           suspendAutoFitDuringPaneResize={suspendAutoFitDuringPaneResize}
         />
-      ) : (
-        <PdfViewer
-        readerSession={readerSession}
-        readerState={readerState}
-        initialPage={initialReaderPage}
-        readerActive={readerActive}
-        pendingReaderOpenSessionId={pendingReaderOpenSessionId}
-        onSnapshotChange={handleSnapshotChange}
-        onOutlineChange={onOutlineChange}
-        onStateChange={handleStateChange}
-        onStatusChange={onStatusChange}
-        registerApi={handleRegisterApi}
-        onFolioPrediction={onFolioPrediction}
-        viewerDisplayConfig={viewerDisplayConfig}
-        suspendAutoFitDuringPaneResize={suspendAutoFitDuringPaneResize}
-      />
-      )}
+
     </section>
   );
 });

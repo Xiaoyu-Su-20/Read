@@ -47,6 +47,20 @@ export function scaleZoomByWheelDelta(currentZoom: number, delta: number) {
   return normalizeZoom(currentZoom * directionFactor);
 }
 
+const PINCH_WHEEL_DELTA_LIMIT = 50;
+const PINCH_WHEEL_DELTA_PER_E = 100;
+
+// Touchpad pinches arrive as a stream of ctrl+wheel events with small deltas where
+// deltaY ~= -100 * ln(scale). Mouse wheel notches arrive as large deltas.
+export function isPinchWheelDelta(delta: number) {
+  return delta !== 0 && Math.abs(delta) < PINCH_WHEEL_DELTA_LIMIT;
+}
+
+// Returns an unrounded zoom so tiny per-event changes accumulate across a gesture.
+export function scaleZoomByPinchDelta(currentZoom: number, delta: number) {
+  return clampZoom(currentZoom * Math.exp(-delta / PINCH_WHEEL_DELTA_PER_E));
+}
+
 export function scaleZoomByKeyboardDirection(currentZoom: number, direction: "in" | "out") {
   const directionFactor = direction === "in" ? KEYBOARD_ZOOM_FACTOR : 1 / KEYBOARD_ZOOM_FACTOR;
   return normalizeZoom(currentZoom * directionFactor);

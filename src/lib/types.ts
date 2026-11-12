@@ -135,7 +135,7 @@ export type ReaderSession = {
 };
 
 export type RenderedPagePayload = {
-  imageBytes: number[];
+  imageBytes: Uint8Array;
   pageNumber: number;
   width: number;
   height: number;

@@ -2625,13 +2625,8 @@ button {
   mix-blend-mode: normal;
 }
 
-.continuous-reader__page-image--incoming,
-.continuous-reader__page-image--previous {
+.continuous-reader__page-image--incoming {
   transition: opacity 90ms ease-out;
-}
-
-.continuous-reader__page-image-stack .continuous-reader__page-image--fallback {
-  filter: brightness(0.97) contrast(0.94) saturate(0.92);
 }
 
 @media (max-width: 1320px) {
@@ -3203,7 +3198,7 @@ body.reader-pane-resizing .notes-pane img {
   transition: opacity 140ms ease;
 }
 
-.notes-pane--scrollbar-visible .notes-pane__scrollbar {
+.notes-pane__scrollbar[data-visible="true"] {
   opacity: 1;
   pointer-events: auto;
 }

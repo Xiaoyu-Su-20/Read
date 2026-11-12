@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -25,9 +26,11 @@ pub(crate) mod paths;
 mod render;
 mod state;
 
+pub use catalog::{bump_index_generation, index_generation};
 pub use render::{
-    DisplayListWarmupRequest, NativeOutlineRequest, NativeTextPageRequest, PageRenderRequest,
-    RenderCache, RenderSessionRegistry,
+    is_expected_render_outcome, DisplayListWarmupRequest, NativeOutlineRequest,
+    NativeTextPageRequest, PageRenderRequest, RenderCache, RenderCancellation,
+    RenderSessionRegistry, RENDER_CANCELLED_MESSAGE, STALE_RENDER_MESSAGE,
 };
 
 use catalog::CatalogStore;
@@ -51,6 +54,63 @@ pub struct LibraryStore {
     states: DocumentStateStore,
     notes: NoteStore,
     renderer: PdfRenderStore,
+}
+
+/// Catalog-derived data needed to build a render request, cached per document id so page
+/// requests do not re-read the library root config and index. Normalization state is
+/// deliberately not part of it.
+#[derive(Debug, Clone)]
+pub struct ResolvedRenderDocument {
+    pub record: DocumentRecord,
+    pub document_path: PathBuf,
+    library_dir: PathBuf,
+    generation: u64,
+}
+
+impl ResolvedRenderDocument {
+    /// True while nothing has written the library index (or changed the library root) since this
+    /// entry was resolved and the PDF is still on disk.
+    pub fn is_current(&self, current_generation: u64) -> bool {
+        self.generation == current_generation && self.document_path.exists()
+    }
+}
+
+pub type ResolvedDocumentCache = Arc<Mutex<HashMap<String, ResolvedRenderDocument>>>;
+
+/// Builds a render request from an already-resolved document (no catalog or library-root I/O).
+pub fn prepare_render_request_from_resolved(
+    app_dir: &Path,
+    resolved: &ResolvedRenderDocument,
+    page_number: u32,
+    zoom: f32,
+    manifest_cache: &ManifestCache,
+) -> AppResult<PageRenderRequest> {
+    let paths = StorePaths::new(app_dir, &resolved.library_dir);
+    prepare_render_request_for(&paths, resolved, page_number, zoom, manifest_cache)
+}
+
+fn prepare_render_request_for(
+    paths: &StorePaths,
+    resolved: &ResolvedRenderDocument,
+    page_number: u32,
+    zoom: f32,
+    manifest_cache: &ManifestCache,
+) -> AppResult<PageRenderRequest> {
+    // Normalization is read fresh: the worker can finish at any time.
+    let normalization = ready_manifest_for(
+        paths,
+        manifest_cache,
+        &resolved.record.id,
+        &resolved.record.fingerprint,
+    )?;
+    PdfRenderStore.prepare_request(
+        paths,
+        &resolved.record,
+        &resolved.document_path,
+        page_number,
+        zoom,
+        normalization,
+    )
 }
 
 impl LibraryStore {
@@ -470,24 +530,28 @@ impl LibraryStore {
         zoom: f32,
         manifest_cache: &ManifestCache,
     ) -> AppResult<PageRenderRequest> {
+        let resolved = self.resolve_render_document(document_id, 0)?;
+        prepare_render_request_for(&self.paths, &resolved, page_number, zoom, manifest_cache)
+    }
+
+    /// Resolves the catalog-derived inputs of a render (record and absolute path) from disk.
+    /// `generation` is the [`index_generation`] the caller read *before* building this store;
+    /// it is stored on the result so the caller can later tell whether it went stale.
+    pub fn resolve_render_document(
+        &self,
+        document_id: &str,
+        generation: u64,
+    ) -> AppResult<ResolvedRenderDocument> {
         self.ensure_ready()?;
         let document = self.catalog.find_document_by_id(&self.paths, document_id)?;
         self.catalog.ensure_document_available(&document)?;
-        let path = self.resolved_document_path(&document)?;
-        let normalization = ready_manifest_for(
-            &self.paths,
-            manifest_cache,
-            &document.id,
-            &document.fingerprint,
-        )?;
-        self.renderer.prepare_request(
-            &self.paths,
-            &document,
-            &path,
-            page_number,
-            zoom,
-            normalization,
-        )
+        let document_path = self.resolved_document_path(&document)?;
+        Ok(ResolvedRenderDocument {
+            record: document,
+            document_path,
+            library_dir: self.paths.library_dir.clone(),
+            generation,
+        })
     }
 
     pub fn prepare_display_list_warmup_request(

@@ -273,6 +273,32 @@ fn reconcile_library_skips_index_write_when_catalog_is_unchanged() {
 }
 
 #[test]
+fn reconcile_library_skips_state_writes_when_state_is_unchanged() {
+    let temp = tempdir().unwrap();
+    let source = temp.path().join("steady-state.pdf");
+    write_sample_pdf(&source, "steady");
+
+    let app_dir = temp.path().join("app");
+    let store = LibraryStore::new(&app_dir, temp.path().join("Reader"));
+    let record = store
+        .import_pdf(&source, Some(DEFAULT_COLLECTION_ID))
+        .unwrap();
+    let _ = store.list_library().unwrap();
+
+    let state_path = app_dir
+        .join("document-states")
+        .join(format!("{}.json", record.id));
+    assert!(state_path.exists());
+    let before = fs::metadata(&state_path).unwrap().modified().unwrap();
+    thread::sleep(Duration::from_millis(1100));
+
+    let _ = store.list_library().unwrap();
+
+    let after = fs::metadata(&state_path).unwrap().modified().unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
 fn reconcile_library_persists_file_metadata_for_cached_fingerprints() {
     let temp = tempdir().unwrap();
     let source = temp.path().join("steady-metadata.pdf");

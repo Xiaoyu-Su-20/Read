@@ -14,6 +14,7 @@
       {
         "label": "main",
         "create": false,
+        "zoomHotkeysEnabled": true,
         "title": "Readr",
         "width": 1440,
         "height": 960,
