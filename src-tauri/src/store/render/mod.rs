@@ -449,11 +449,12 @@ impl PdfRenderStore {
         let device = Device::from_pixmap(&pixmap).map_err(|error| {
             AppError::Render(format!("Unable to create render device: {error}"))
         })?;
-        display_list_page
-            .display_list
-            .run_with_cookie(&device, &matrix, Rect::INF, cookie)
-            .map_err(|error| render_run_error(error, cookie, request))?;
-        drop(device);
+        let run_result =
+            display_list_page
+                .display_list
+                .run_with_cookie(&device, &matrix, Rect::INF, cookie);
+        release_render_device(device, cookie, run_result.is_ok());
+        run_result.map_err(|error| render_run_error(error, cookie, request))?;
 
         Ok((
             pixmap,
@@ -519,11 +520,12 @@ impl PdfRenderStore {
                 "Unable to create normalized render device: {error}"
             ))
         })?;
-        display_list_page
-            .display_list
-            .run_with_cookie(&device, &matrix, Rect::INF, cookie)
-            .map_err(|error| render_run_error(error, cookie, request))?;
-        drop(device);
+        let run_result =
+            display_list_page
+                .display_list
+                .run_with_cookie(&device, &matrix, Rect::INF, cookie);
+        release_render_device(device, cookie, run_result.is_ok());
+        run_result.map_err(|error| render_run_error(error, cookie, request))?;
 
         Ok((
             pixmap,
@@ -608,6 +610,20 @@ fn ensure_render_not_cancelled(request: &PageRenderRequest, phase: &str) -> AppR
     Err(AppError::Render(RENDER_CANCELLED_MESSAGE.to_string()))
 }
 
+/// Releases a draw device after a display-list run.
+///
+/// A run that was aborted through its cookie, or that failed, stops wherever it was and can
+/// leave clips or transparency groups open. Closing a draw device in that state raises a MuPDF
+/// error that nothing catches, and MuPDF then terminates the whole process. So only a run that
+/// completed normally is closed; any other is dropped unclosed, which MuPDF unwinds safely.
+fn release_render_device(device: Device, cookie: &Cookie, run_succeeded: bool) {
+    if run_succeeded && !cookie.is_aborted() {
+        drop(device);
+    } else {
+        device.drop_unclosed();
+    }
+}
+
 fn render_run_error(
     error: impl std::fmt::Display,
     _cookie: &Cookie,
@@ -680,4 +696,52 @@ fn normalized_matrix(
         placed_width,
         placed_height,
     )
+}
+
+#[cfg(test)]
+mod release_render_device_tests {
+    use super::*;
+    use mupdf::BlendMode;
+
+    /// A draw device with a transparency group left open, as an aborted run leaves it.
+    fn device_with_open_group(pixmap: &Pixmap) -> Device {
+        let device = Device::from_pixmap(pixmap).unwrap();
+        device
+            .begin_group(
+                Rect::new(0.0, 0.0, 8.0, 8.0),
+                &Colorspace::device_rgb(),
+                true,
+                false,
+                BlendMode::Normal,
+                1.0,
+            )
+            .unwrap();
+        device
+    }
+
+    #[test]
+    fn aborted_run_releases_an_unbalanced_device_without_killing_the_process() {
+        let pixmap = Pixmap::new_with_w_h(&Colorspace::device_rgb(), 8, 8, false).unwrap();
+        let mut cookie = Cookie::new().unwrap();
+        cookie.abort();
+
+        release_render_device(device_with_open_group(&pixmap), &cookie, true);
+    }
+
+    #[test]
+    fn failed_run_releases_an_unbalanced_device_without_killing_the_process() {
+        let pixmap = Pixmap::new_with_w_h(&Colorspace::device_rgb(), 8, 8, false).unwrap();
+        let cookie = Cookie::new().unwrap();
+
+        release_render_device(device_with_open_group(&pixmap), &cookie, false);
+    }
+
+    /// Demonstrates the crash this module guards against: closing an unbalanced draw device
+    /// makes MuPDF exit the process. Ignored because it takes the test binary down with it.
+    #[test]
+    #[ignore = "terminates the test process by design"]
+    fn closing_an_unbalanced_device_terminates_the_process() {
+        let pixmap = Pixmap::new_with_w_h(&Colorspace::device_rgb(), 8, 8, false).unwrap();
+        drop(device_with_open_group(&pixmap));
+    }
 }

@@ -51,6 +51,12 @@ impl Cookie {
         }
     }
 
+    /// True once an abort has been requested, through [`Cookie::abort`] or a
+    /// [`CookieAbortHandle`].
+    pub fn is_aborted(&self) -> bool {
+        unsafe { (*self.inner).abort != 0 }
+    }
+
     /// Communicates rendering progress back to the application.
     /// Increments as a page is being rendered.
     pub fn progress(&self) -> i32 {

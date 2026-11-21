@@ -604,6 +604,21 @@ impl Device {
     pub fn end_metatext(&self) -> Result<(), Error> {
         unsafe { ffi_try!(mupdf_end_metatext(context(), self.dev)) }
     }
+
+    /// Drops the device without closing it.
+    ///
+    /// Use this after a run that was aborted (cookie) or failed. Such a run can leave clips or
+    /// groups open, and closing a draw device in that state raises a MuPDF error. `Drop` closes
+    /// the device outside any `fz_try`, so that error is uncaught and MuPDF terminates the whole
+    /// process (`exit(EXIT_FAILURE)`). Dropping an unclosed device is the documented way to
+    /// discard it: MuPDF unwinds the leftover state and only emits a warning.
+    pub fn drop_unclosed(mut self) {
+        if !self.dev.is_null() {
+            unsafe { fz_drop_device(context(), self.dev) };
+            // `Drop` still runs to release the display list; it skips the nulled device.
+            self.dev = ptr::null_mut();
+        }
+    }
 }
 
 impl Drop for Device {

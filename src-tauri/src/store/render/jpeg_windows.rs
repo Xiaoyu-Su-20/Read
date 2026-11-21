@@ -148,7 +148,17 @@ pub fn encode_pixmap_as_jpeg(pixmap: &Pixmap, quality: u32) -> Result<Vec<u8>, S
     }
 
     let output_stride = ((width as usize * 3) + 3) & !3;
-    let mut output = vec![0u8; output_stride * height as usize];
+    // A failed `vec!` allocation aborts the whole process, so reserve fallibly: an oversized
+    // page (large format at high zoom) must fail this one render, not close the app.
+    let output_len = output_stride
+        .checked_mul(height as usize)
+        .filter(|len| i32::try_from(output_stride).is_ok() && *len <= isize::MAX as usize)
+        .ok_or_else(|| format!("Page is too large to encode ({width}x{height})."))?;
+    let mut output: Vec<u8> = Vec::new();
+    output
+        .try_reserve_exact(output_len)
+        .map_err(|_| format!("Not enough memory to encode a {width}x{height} page."))?;
+    output.resize(output_len, 0);
     let samples = pixmap.samples();
 
     for y in 0..height as usize {
