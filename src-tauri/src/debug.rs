@@ -414,6 +414,22 @@ impl DebugProcess {
         );
     }
 
+    /// Ends the process for an expected, non-failure outcome (for example a cancelled or
+    /// superseded request). Traced like `finish`, never written to the error log.
+    pub fn abandon(self, reason: &str, fields: Value) {
+        emit_trace(
+            &format!("{}:abandoned", self.event),
+            merge_fields(
+                &self.fields,
+                json!({
+                    "elapsedMs": self.started_at.elapsed().as_millis(),
+                    "reason": reason,
+                }),
+                fields,
+            ),
+        );
+    }
+
     pub fn fail(self, error: &str, fields: Value) {
         report_error(
             &format!("{}:error", self.event),

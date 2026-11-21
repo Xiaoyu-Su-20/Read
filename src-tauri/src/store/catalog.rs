@@ -4,6 +4,7 @@ use std::{
     fs::File,
     io::Read,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
     time::{Instant, UNIX_EPOCH},
 };
 
@@ -27,6 +28,25 @@ use super::{
 
 #[derive(Debug, Clone, Default)]
 pub struct CatalogStore;
+
+/// Per app-data-directory counter bumped every time the library index is written (and when the
+/// library root changes). Anything derived from the index can record the value it was resolved
+/// at and treat a different value as "stale".
+static INDEX_GENERATIONS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+
+pub fn index_generation(app_dir: &Path) -> u64 {
+    INDEX_GENERATIONS
+        .get_or_init(Default::default)
+        .lock()
+        .map(|generations| generations.get(app_dir).copied().unwrap_or(0))
+        .unwrap_or(0)
+}
+
+pub fn bump_index_generation(app_dir: &Path) {
+    if let Ok(mut generations) = INDEX_GENERATIONS.get_or_init(Default::default).lock() {
+        *generations.entry(app_dir.to_path_buf()).or_insert(0) += 1;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExistingDocumentMatchKind {
@@ -330,14 +350,12 @@ impl CatalogStore {
                 document.file_modified_ms = Some(file_modified_ms);
                 document.availability = DocumentAvailability::Available;
 
-                let private_state = states
-                    .read_state_file(&paths.state_path(&document.id))
-                    .ok()
-                    .or_else(|| {
-                        previous_document_id
-                            .as_ref()
-                            .and_then(|id| states.read_state_file(&paths.state_path(id)).ok())
-                    });
+                let own_state = states.read_state_file(&paths.state_path(&document.id)).ok();
+                let private_state = own_state.clone().or_else(|| {
+                    previous_document_id
+                        .as_ref()
+                        .and_then(|id| states.read_state_file(&paths.state_path(id)).ok())
+                });
                 if private_state.is_some() {
                     if previous_document_id.as_deref() == Some(document.id.as_str()) {
                         state_reused_same_id += 1;
@@ -347,7 +365,10 @@ impl CatalogStore {
                 }
                 let merged_state = states.merge_for_document(&document, private_state);
                 document.last_opened_at = merged_state.last_opened_at.clone();
-                states.write_state(paths, &merged_state)?;
+                // Only touch the disk when the document's own state file would change.
+                if own_state.as_ref() != Some(&merged_state) {
+                    states.write_state(paths, &merged_state)?;
+                }
 
                 if let Some(previous_document_id) = previous_document_id {
                     if previous_document_id != document.id {
@@ -403,11 +424,13 @@ impl CatalogStore {
                     continue;
                 }
 
-                let private_state = states.read_state_file(&paths.state_path(&document.id)).ok();
-                let merged_state = states.merge_for_document(&document, private_state);
+                let own_state = states.read_state_file(&paths.state_path(&document.id)).ok();
+                let merged_state = states.merge_for_document(&document, own_state.clone());
                 document.last_opened_at = merged_state.last_opened_at.clone();
                 document.availability = DocumentAvailability::Missing;
-                states.write_state(paths, &merged_state)?;
+                if own_state.as_ref() != Some(&merged_state) {
+                    states.write_state(paths, &merged_state)?;
+                }
                 carried_missing_documents += 1;
                 next_documents.push(document);
             }
@@ -836,7 +859,11 @@ impl CatalogStore {
                     "byteCount": raw.len(),
                 }),
             );
-            paths.write_string_atomically(&paths.index_path, &raw)?;
+            let write_result = paths.write_string_atomically(&paths.index_path, &raw);
+            // Bump whether or not the write succeeded: a failed write may still have changed
+            // what is on disk, and a spurious bump only costs one re-resolution.
+            bump_index_generation(&paths.app_dir);
+            write_result?;
             process.checkpoint(
                 "write-complete",
                 json!({

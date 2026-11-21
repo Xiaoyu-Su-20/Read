@@ -300,7 +300,7 @@ describe("notes helpers", () => {
     ]);
   });
 
-  it("converts valid heading references into heading page-links and removes them from paragraphs", () => {
+  it("keeps valid heading references hidden on headings and removes them from paragraphs", () => {
     const reference = normalizeDocumentSourceReference({
       id: "ref-1",
       documentId: "doc-1",
@@ -330,16 +330,18 @@ describe("notes helpers", () => {
       }
     ]);
 
-    expect(blocks[0]?.sourceReference).toBeNull();
-    expect(blocks[0]?.children[blocks[0].children.length - 1]).toMatchObject({
-      type: "page-link",
-      bookPageLabel: "5",
-      pdfPageIndex: 5
+    expect(blocks[0]?.sourceReference).toMatchObject({
+      id: "ref-1",
+      target: {
+        documentId: "doc-1",
+        pageIndex: 4
+      }
     });
+    expect(blocks[0]?.children).toEqual([createTextNode("Chapter")]);
     expect(blocks[1]?.sourceReference).toBeNull();
   });
 
-  it("replaces heading references without changing the heading text prefix", () => {
+  it("replaces hidden heading references without changing the heading text prefix", () => {
     const blocks = replaceBlockSourceReference(
       [
         {
@@ -365,44 +367,49 @@ describe("notes helpers", () => {
     );
 
     expect(blocks[0]?.children[0]).toEqual(createTextNode("Section"));
-    expect(blocks[0]?.children[1]).toMatchObject({
-      type: "page-link",
-      bookPageLabel: "9",
-      pdfPageIndex: 9,
-      origin: {
-        kind: "heading-reference",
-        ownerBlockId: "heading"
+    expect(blocks[0]?.sourceReference).toMatchObject({
+      id: "ref-1",
+      target: {
+        documentId: "doc-1",
+        pageIndex: 8
       }
     });
-    expect(blocks[0]?.sourceReference).toBeNull();
+    expect(blocks[0]?.children).toHaveLength(1);
   });
 
-  it("updates an existing heading-associated page-link in place and preserves its id", () => {
-    const first = replaceBlockSourceReference(
+  it("absorbs an existing heading-associated page-link into the hidden source reference", () => {
+    const first = normalizeNoteBlocks(
       [
         {
           id: "heading",
           type: "heading2",
-          children: [createTextNode("Section")]
+          children: [
+            createTextNode("Section"),
+            createPageLinkNode({
+              id: "legacy-link",
+              text: "(p. 9)",
+              bookPageLabel: "9",
+              documentId: "doc-1",
+              pdfPageIndex: 9,
+              origin: {
+                kind: "heading-reference",
+                ownerBlockId: "heading"
+              }
+            })
+          ]
         }
       ],
-      "heading",
-      {
-        id: "ref-1",
-        documentId: "doc-1",
-        kind: "direct",
-        outlineItemId: null,
-        outlineSource: null,
-        title: "Section",
-        target: {
-          documentId: "doc-1",
-          pageIndex: 8
-        },
-        createdAt: "2026-06-14T00:00:00Z"
-      }
+      "doc-1"
     );
-    const firstLink = first[0]?.children.find((child) => child.type === "page-link");
-    expect(firstLink?.type).toBe("page-link");
+    expect(first[0]?.sourceReference).toMatchObject({
+      id: "legacy-link",
+      title: "Section",
+      target: {
+        documentId: "doc-1",
+        pageIndex: 8
+      }
+    });
+    expect(first[0]?.children).toEqual([createTextNode("Section")]);
 
     const updated = replaceBlockSourceReference(
       first,
@@ -421,16 +428,14 @@ describe("notes helpers", () => {
         createdAt: "2026-06-15T00:00:00Z"
       }
     );
-    const updatedLink = updated[0]?.children.find((child) => child.type === "page-link");
-    expect(updatedLink).toMatchObject({
-      id: firstLink?.id,
-      bookPageLabel: "11",
-      pdfPageIndex: 11,
-      origin: {
-        kind: "heading-reference",
-        ownerBlockId: "heading"
+    expect(updated[0]?.sourceReference).toMatchObject({
+      id: "ref-2",
+      target: {
+        documentId: "doc-1",
+        pageIndex: 10
       }
     });
+    expect(updated[0]?.children).toEqual([createTextNode("Section")]);
   });
 
   it("removes only the heading-associated page-link when clearing the reference", () => {
@@ -477,7 +482,7 @@ describe("notes helpers", () => {
     });
   });
 
-  it("converts duplicated adjacent heading references into a single visible heading page-link", () => {
+  it("keeps only non-empty hidden heading references during normalization", () => {
     const reference = normalizeDocumentSourceReference({
       id: "ref-1",
       documentId: "doc-1",
@@ -507,16 +512,17 @@ describe("notes helpers", () => {
       }
     ]);
 
-    expect(blocks[0]?.sourceReference).toBeNull();
-    expect(blocks[0]?.children[blocks[0].children.length - 1]).toMatchObject({
-      type: "page-link",
-      bookPageLabel: "13",
-      pdfPageIndex: 13
+    expect(blocks[0]?.sourceReference).toMatchObject({
+      id: "ref-1",
+      target: {
+        documentId: "doc-1",
+        pageIndex: 12
+      }
     });
     expect(blocks[1]?.sourceReference).toBeNull();
   });
 
-  it("preserves the generated heading page-link id across repeated normalization", () => {
+  it("preserves hidden heading source references across repeated normalization", () => {
     const reference = normalizeDocumentSourceReference({
       id: "ref-stable",
       documentId: "doc-1",
@@ -539,13 +545,12 @@ describe("notes helpers", () => {
         sourceReference: reference
       }
     ]);
-    const generated = once[0]?.children.find((child) => child.type === "page-link");
-    expect(generated?.type).toBe("page-link");
+    expect(once[0]?.sourceReference?.id).toBe("ref-stable");
+    expect(once[0]?.children).toEqual([createTextNode("Chapter")]);
 
     const twice = normalizeNoteBlocks(once);
-    const regenerated = twice[0]?.children.find((child) => child.type === "page-link");
-    expect(regenerated?.type).toBe("page-link");
-    expect(regenerated?.id).toBe(generated?.id);
+    expect(twice[0]?.sourceReference?.id).toBe("ref-stable");
+    expect(twice[0]?.children).toEqual([createTextNode("Chapter")]);
   });
 
   it("clears heading references from empty headings", () => {

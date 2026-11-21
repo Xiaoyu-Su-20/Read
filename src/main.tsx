@@ -24,6 +24,32 @@ initializeLoggingBridge();
 
 document.body.classList.toggle("app-env--dev", import.meta.env.DEV);
 
+// The webview has zoom gestures enabled so that touchpad pinches reach the page as
+// ctrl+wheel events (WebView2 drops them otherwise). Cancel the webview's own
+// whole-UI zoom here; the reader handles zoom itself.
+window.addEventListener(
+  "wheel",
+  (event) => {
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+    }
+  },
+  { passive: false, capture: true }
+);
+
+window.addEventListener(
+  "keydown",
+  (event) => {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+    if (["+", "=", "-", "_", "0"].includes(event.key)) {
+      event.preventDefault();
+    }
+  },
+  { capture: true }
+);
+
 window.addEventListener("error", (event) => {
   reportFrontendError("frontend.startup.main.window-error", event.error, {
     message: event.message

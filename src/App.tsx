@@ -42,7 +42,15 @@ import { usePaletteController } from "./lib/app/usePaletteController";
 import { useWorkspaceController } from "./lib/app/useWorkspaceController";
 import { debugAction, debugLocalAction, reportFrontendError, traceEvent } from "./lib/debugLog";
 import { collectDocuments } from "./lib/tree";
-import type { ReaderViewMode } from "./lib/types";
+import type {
+  Bookmark,
+  DocumentState,
+  ReaderViewMode,
+  ViewerApi,
+  ViewerSnapshot
+} from "./lib/types";
+import { ReaderModeHandoffCoordinator } from "./lib/reader/ReaderModeHandoffCoordinator";
+import type { FolioPrediction } from "./lib/reader/folioPrediction";
 import { toViewEventName, type ViewTransition, type WorkspaceView } from "./lib/workspaceView";
 
 function startupTrace(step: string, fields: Record<string, unknown> = {}) {
@@ -91,6 +99,8 @@ type SavedWindowState = {
   position: { x: number; y: number } | null;
   size: { width: number; height: number } | null;
 };
+
+const EMPTY_BOOKMARKS: Bookmark[] = [];
 
 function shouldStartWindowDrag(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
@@ -178,7 +188,10 @@ export default function App() {
   const [sidebarSearchAnchorElement, setSidebarSearchAnchorElement] = useState<HTMLButtonElement | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteAnchorElement, setPaletteAnchorElement] = useState<HTMLButtonElement | null>(null);
-  const [readerViewMode, setReaderViewMode] = useState<ReaderViewMode>("page");
+  const [readerViewMode, setReaderViewMode] = useState<ReaderViewMode>("scroll");
+  const readerViewModeRef = useRef<ReaderViewMode>(readerViewMode);
+  const readerModeHandoffRef = useRef(new ReaderModeHandoffCoordinator());
+  const activeReaderApiModeRef = useRef<ReaderViewMode | null>(null);
   const [fullscreenState, setFullscreenState] = useState<FullscreenState>("windowed");
   const [showFullscreenHint, setShowFullscreenHint] = useState(false);
   const fullscreenTransitionRef = useRef(false);
@@ -211,6 +224,37 @@ export default function App() {
   const activeTheme = selectors.activeTheme(settings);
   const themeList = selectors.themeList(settings);
 
+  // Pages report their folio prediction once, when their text loads (often before
+  // they become the current page). Keep every report and look up the current page's
+  // at render time, so the callback stays stable and pages never have to re-report.
+  const folioPredictionsRef = useRef<{
+    documentId: string | null;
+    byPage: Map<number, FolioPrediction | null>;
+  }>({ documentId: workspace.activeDocumentId ?? null, byPage: new Map() });
+  if (folioPredictionsRef.current.documentId !== (workspace.activeDocumentId ?? null)) {
+    folioPredictionsRef.current = {
+      documentId: workspace.activeDocumentId ?? null,
+      byPage: new Map()
+    };
+  }
+  const currentFolioPageRef = useRef(workspace.viewerSnapshot.currentPage);
+  currentFolioPageRef.current = workspace.viewerSnapshot.currentPage;
+  const [, setFolioPredictionRevision] = useState(0);
+  const currentBookPagePrediction =
+    folioPredictionsRef.current.byPage.get(workspace.viewerSnapshot.currentPage) ?? null;
+
+  const handleFolioPrediction = useCallback(
+    (pageNumber: number, prediction: FolioPrediction | null) => {
+      const predictions = folioPredictionsRef.current.byPage;
+      const changed = !predictions.has(pageNumber) || predictions.get(pageNumber) !== prediction;
+      predictions.set(pageNumber, prediction);
+      if (changed && pageNumber === currentFolioPageRef.current) {
+        setFolioPredictionRevision((revision) => revision + 1);
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     startupTrace("component-mounted");
     return () => {
@@ -234,9 +278,14 @@ export default function App() {
     workspace.workspaceMode
   ]);
   const readerPreferences = selectors.readerPreferences(settings);
-  const viewerDisplayConfig = themePreview
-    ? createViewerDisplayConfig(themePreview)
-    : selectors.viewerDisplayConfig(settings);
+  const viewerDisplayConfig = useMemo(
+    () =>
+      themePreview
+        ? createViewerDisplayConfig(themePreview)
+        : selectors.viewerDisplayConfig(settings),
+    // The selector only reads these two settings fields.
+    [themePreview, settings.activeThemeId, settings.customThemes]
+  );
   const readerPaneSplitRatio = selectors.readerPaneSplitRatio(settings);
   const readerFullscreenActive =
     workspace.workspaceMode !== "collection" &&
@@ -307,6 +356,115 @@ export default function App() {
     currentViewRef.current = workspace.workspaceMode;
     activeDocumentIdRef.current = workspace.activeDocumentId;
   }, [workspace.activeDocumentId, workspace.workspaceMode]);
+
+  readerViewModeRef.current = readerViewMode;
+  activeDocumentIdRef.current = workspace.activeDocumentId;
+  readerModeHandoffRef.current.resetForDocument(workspace.activeDocumentId);
+
+  const handleReaderViewModeChange = useCallback(
+    (nextMode: ReaderViewMode) => {
+      const sourceMode = readerViewModeRef.current;
+      if (sourceMode === nextMode) {
+        return;
+      }
+      const documentId = workspace.activeDocumentId;
+      if (!documentId) {
+        setReaderViewMode(nextMode);
+        return;
+      }
+      const pageNumber = readerModeHandoffRef.current.preferredPage(
+        documentId,
+        workspace.viewerApiRef.current?.getCurrentPage() ??
+          workspace.viewerSnapshot.currentPage ??
+          workspace.readerState?.lastPage ??
+          1
+      );
+      const handoff = readerModeHandoffRef.current.capture(
+        documentId,
+        pageNumber,
+        sourceMode,
+        nextMode
+      );
+      debugAction("reader.view-mode-handoff-captured", {
+        documentId,
+        pageNumber,
+        sourceMode,
+        targetMode: nextMode,
+        token: handoff.token
+      });
+      activeReaderApiModeRef.current = null;
+      workspace.registerViewerApi(null);
+      setReaderViewMode(nextMode);
+    },
+    [workspace.activeDocumentId, workspace.readerState?.lastPage, workspace.registerViewerApi, workspace.viewerApiRef, workspace.viewerSnapshot.currentPage]
+  );
+
+  const handleReaderApiRegistration = useCallback(
+    (mode: ReaderViewMode, api: ViewerApi | null) => {
+      if (mode !== readerViewModeRef.current) {
+        return;
+      }
+      if (!api) {
+        if (activeReaderApiModeRef.current === mode) {
+          activeReaderApiModeRef.current = null;
+          workspace.registerViewerApi(null);
+        }
+        return;
+      }
+
+      activeReaderApiModeRef.current = mode;
+      workspace.registerViewerApi(api);
+      const handoff = readerModeHandoffRef.current.apply(
+        mode,
+        activeDocumentIdRef.current,
+        api
+      );
+      if (handoff) {
+        debugAction("reader.view-mode-handoff-applied", {
+          documentId: handoff.documentId,
+          pageNumber: handoff.pageNumber,
+          sourceMode: handoff.sourceMode,
+          targetMode: mode,
+          token: handoff.token
+        });
+      }
+    },
+    [workspace.registerViewerApi]
+  );
+
+  const handleReaderSnapshotChange = useCallback(
+    (mode: ReaderViewMode, snapshot: ViewerSnapshot) => {
+      if (
+        mode !== readerViewModeRef.current ||
+        !readerModeHandoffRef.current.shouldPublishSnapshot(
+          mode,
+          activeDocumentIdRef.current,
+          snapshot
+        )
+      ) {
+        return;
+      }
+      workspace.handleViewerSnapshotChange(snapshot);
+    },
+    [workspace.handleViewerSnapshotChange]
+  );
+
+  const handleReaderStateChange = useCallback(
+    (mode: ReaderViewMode, state: DocumentState | null) => {
+      if (
+        mode !== readerViewModeRef.current ||
+        !readerModeHandoffRef.current.shouldPublishState(
+          mode,
+          activeDocumentIdRef.current,
+          state
+        )
+      ) {
+        return;
+      }
+      workspace.handleViewerStateChange(state);
+    },
+    [workspace.handleViewerStateChange]
+  );
 
   useEffect(() => {
     if (
@@ -694,6 +852,9 @@ export default function App() {
     workspace.viewerSnapshot.pageCount
   ]);
 
+  const { closePalette: closeCommandPalette, openCommands: openCommandPaletteItems } = palette;
+  const handleOpenDocument = workspace.handleOpenDocument;
+
   const dismissWorkspaceOverlays = useCallback(
     ({
       keepCommandPalette = false,
@@ -711,7 +872,7 @@ export default function App() {
       keepWorkspaceSearch?: boolean;
     } = {}) => {
       if (!keepCommandPalette) {
-        palette.closePalette();
+        closeCommandPalette();
       }
       if (!keepNotesNavigation) {
         setNotesNavigationOpen(false);
@@ -729,7 +890,7 @@ export default function App() {
         searchController.dismiss();
       }
     },
-    [palette, searchController]
+    [closeCommandPalette, searchController]
   );
 
   const openWorkspaceSearch = useCallback(() => {
@@ -743,11 +904,11 @@ export default function App() {
   }, [dismissWorkspaceOverlays, searchController, workspace.workspaceMode]);
 
   const openSidebarSearchDocument = useCallback(async (documentId: string) => {
-    await workspace.handleOpenDocument(documentId, {
+    await handleOpenDocument(documentId, {
       source: "sidebar-search",
       targetMode: currentReadingTargetMode
     });
-  }, [currentReadingTargetMode, workspace]);
+  }, [currentReadingTargetMode, handleOpenDocument]);
 
   const toggleIgnoredSpellcheckWord = useCallback(
     (word: string, ignored: boolean) => {
@@ -831,27 +992,58 @@ export default function App() {
     copyAllNoteText: notes.copyAllText
   });
 
+  // The registry is rebuilt every render (it closes over inline callbacks); read it through a ref
+  // so the palette openers stay referentially stable.
+  const commandRegistryRef = useRef(commandRegistry);
+  commandRegistryRef.current = commandRegistry;
+
   const openCommandPalette = useCallback(() => {
     dismissWorkspaceOverlays({ keepCommandPalette: true });
-    palette.openCommands(commandRegistry);
-  }, [commandRegistry, dismissWorkspaceOverlays, palette]);
+    openCommandPaletteItems(commandRegistryRef.current);
+  }, [dismissWorkspaceOverlays, openCommandPaletteItems]);
 
+  const paletteOpen = palette.paletteOpen;
   const toggleWorkspaceCommandPalette = useCallback(() => {
-    if (palette.paletteOpen) {
-      palette.closePalette();
+    if (paletteOpen) {
+      closeCommandPalette();
       return;
     }
     openCommandPalette();
-  }, [openCommandPalette, palette]);
+  }, [closeCommandPalette, openCommandPalette, paletteOpen]);
+
+  const viewerApiRef = workspace.viewerApiRef;
+  const flushNoteNow = notes.flushNow;
+  const handleFlushNoteOnBlur = useCallback(() => flushNoteNow("editor-blur"), [flushNoteNow]);
+  const handleNavigateToTarget = useCallback(
+    (target: Parameters<ViewerApi["navigateToTarget"]>[0]) => {
+      viewerApiRef.current?.navigateToTarget(target);
+    },
+    [viewerApiRef]
+  );
+  const handleSetBookmarks = useCallback(
+    (bookmarks: Parameters<ViewerApi["setBookmarks"]>[0]) => {
+      viewerApiRef.current?.setBookmarks(bookmarks);
+    },
+    [viewerApiRef]
+  );
+  const handleSearchOpenNoteResult = useCallback(async (_noteId: string, blockId: string) => {
+    setNoteRevealRequest((current) => ({ blockId, sequence: (current?.sequence ?? 0) + 1 }));
+  }, []);
+  const handleChangeReaderPaneSplitRatio = useCallback(
+    (nextRatio: number) => {
+      setSetting("readerPaneSplitRatio", nextRatio);
+    },
+    [setSetting]
+  );
 
   const openSearchResultDocument = useCallback(
     async (documentId: string) => {
-      await workspace.handleOpenDocument(documentId, {
+      await handleOpenDocument(documentId, {
         source: "search-result",
         targetMode: currentReadingTargetMode
       });
     },
-    [currentReadingTargetMode, workspace]
+    [currentReadingTargetMode, handleOpenDocument]
   );
 
   const toggleNotesNavigation = useCallback(() => {
@@ -1629,31 +1821,39 @@ export default function App() {
                 onChangeNoteTitle={notes.updateTitle}
                 onChangeNoteBlocks={notes.updateBlocks}
                 onToggleIgnoredSpellcheckWord={toggleIgnoredSpellcheckWord}
-                onFlushNote={() => notes.flushNow("editor-blur")}
+                onFlushNote={handleFlushNoteOnBlur}
                 onCopyAllNoteText={notes.copyAllText}
                 onGoToNotePage={workspace.goToReaderPage}
                 currentReaderPage={workspace.viewerSnapshot.currentPage}
+                currentBookPagePrediction={currentBookPagePrediction}
+                onFolioPrediction={handleFolioPrediction}
                 noteRevealRequest={noteRevealRequest}
                 outlineItems={workspace.outlineItems}
                 readerState={workspace.readerState}
-                onNavigateToTarget={(target) => {
-                  workspace.viewerApiRef.current?.navigateToTarget(target);
-                }}
-                onSetBookmarks={(bookmarks) => {
-                  workspace.viewerApiRef.current?.setBookmarks(bookmarks);
-                }}
-                onSnapshotChange={workspace.handleViewerSnapshotChange}
+                initialReaderPage={
+                  workspace.activeDocumentId
+                    ? readerModeHandoffRef.current.preferredPage(
+                        workspace.activeDocumentId,
+                        workspace.readerState?.lastPage ??
+                          workspace.viewerSnapshot.currentPage ??
+                          1
+                      )
+                    : null
+                }
+                onNavigateToTarget={handleNavigateToTarget}
+                onSetBookmarks={handleSetBookmarks}
+                onSnapshotChange={handleReaderSnapshotChange}
                 onOutlineChange={workspace.handleViewerOutlineChange}
-                onStateChange={workspace.handleViewerStateChange}
+                onStateChange={handleReaderStateChange}
                 onStatusChange={workspace.handleViewerStatusChange}
-                registerApi={workspace.registerViewerApi}
+                registerApi={handleReaderApiRegistration}
                 viewerDisplayConfig={viewerDisplayConfig}
                 documentHeaderTitle={workspace.activeDocument?.document.title ?? "Reader"}
                 documentHeaderCurrentPage={workspace.viewerSnapshot.currentPage}
                 documentHeaderPageCount={workspace.viewerSnapshot.pageCount}
                 documentHeaderZoom={workspace.viewerSnapshot.zoom}
                 readerViewMode={readerViewMode}
-                onReaderViewModeChange={setReaderViewMode}
+                onReaderViewModeChange={handleReaderViewModeChange}
                 viewerApi={workspace.viewerApi}
                 onHeaderMouseDown={handleTopbarMouseDown}
                 searchController={searchController}
@@ -1666,9 +1866,7 @@ export default function App() {
                 registerCommandPaletteAnchor={setPaletteAnchorElement}
                 onSearchOpenDocument={openSearchResultDocument}
                 onSearchGoToPage={workspace.goToReaderPage}
-                onSearchOpenNoteResult={async (_noteId: string, blockId: string) => {
-                  setNoteRevealRequest((current) => ({ blockId, sequence: (current?.sequence ?? 0) + 1 }));
-                }}
+                onSearchOpenNoteResult={handleSearchOpenNoteResult}
                 showHeaders={!readerFullscreenActive}
                 showFullscreenHint={showFullscreenHint}
                 fullscreen={readerFullscreenActive}
@@ -1676,9 +1874,7 @@ export default function App() {
                 readerPaneSplitRatio={readerPaneSplitRatio}
                 hidePaneResizeHandle={false}
                 autoHidePaneResizeHandle={readerPreferences.autoHidePageResizer}
-                onChangeReaderPaneSplitRatio={(nextRatio) => {
-                  setSetting("readerPaneSplitRatio", nextRatio);
-                }}
+                onChangeReaderPaneSplitRatio={handleChangeReaderPaneSplitRatio}
               />
             </Suspense>
           </div>
@@ -1705,7 +1901,7 @@ export default function App() {
                 navigationOpenRequest={notesNavigationOpenRequest}
                 onChangeNoteTitle={notes.updateTitle}
                 onChangeNoteBlocks={notes.updateBlocks}
-                onFlushNote={() => notes.flushNow("editor-blur")}
+                onFlushNote={handleFlushNoteOnBlur}
                 onCopyAllNoteText={notes.copyAllText}
                 onCreateStandaloneNote={async () => {
                   await workspace.createStandaloneNoteInWorkspace();
@@ -1764,7 +1960,7 @@ export default function App() {
             currentPage={workspace.viewerSnapshot.currentPage}
             open={outlineOpen}
             items={workspace.outlineItems}
-            bookmarks={workspace.readerState?.bookmarks ?? []}
+            bookmarks={workspace.readerState?.bookmarks ?? EMPTY_BOOKMARKS}
             onClose={() => setOutlineOpen(false)}
             onAddBookmark={(bookmark) => {
               const currentState = workspace.viewerApiRef.current?.getReaderState();

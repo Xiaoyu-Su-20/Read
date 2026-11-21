@@ -1,22 +1,25 @@
-import { memo, useEffect } from "react";
+import { memo, useCallback, useEffect } from "react";
 
-import PdfViewer from "./PdfViewer";
 import type { ViewerDisplayConfig } from "../lib/app/settingsRegistry";
 import { debugAction } from "../lib/debugLog";
 import type { DocumentState, OutlineItem, ReaderSession, ReaderViewMode, ViewerApi, ViewerSnapshot } from "../lib/types";
+import type { FolioPrediction } from "../lib/reader/folioPrediction";
 import { toViewEventName, type ViewTransition } from "../lib/workspaceView";
 import ContinuousPdfViewer from "./ContinuousPdfViewer";
 
 type ReaderViewportProps = {
   activeViewTransition: ViewTransition | null;
   readerSession: ReaderSession | null;
+  readerState: DocumentState | null;
+  initialReaderPage: number | null;
   readerActive: boolean;
   pendingReaderOpenSessionId: string | null;
-  onSnapshotChange: (snapshot: ViewerSnapshot) => void;
+  onSnapshotChange: (mode: ReaderViewMode, snapshot: ViewerSnapshot) => void;
   onOutlineChange: (items: OutlineItem[]) => void;
   onStatusChange: (message: string) => void;
-  onStateChange: (state: DocumentState | null) => void;
-  registerApi: (api: ViewerApi | null) => void;
+  onStateChange: (mode: ReaderViewMode, state: DocumentState | null) => void;
+  registerApi: (mode: ReaderViewMode, api: ViewerApi | null) => void;
+  onFolioPrediction?: (pageNumber: number, prediction: FolioPrediction | null) => void;
   viewerDisplayConfig: ViewerDisplayConfig;
   readerViewMode: ReaderViewMode;
   suspendAutoFitDuringPaneResize: boolean;
@@ -25,6 +28,8 @@ type ReaderViewportProps = {
 const ReaderViewport = memo(function ReaderViewport({
   activeViewTransition,
   readerSession,
+  readerState,
+  initialReaderPage,
   readerActive,
   pendingReaderOpenSessionId,
   onSnapshotChange,
@@ -32,10 +37,24 @@ const ReaderViewport = memo(function ReaderViewport({
   onStatusChange,
   onStateChange,
   registerApi,
+  onFolioPrediction = () => undefined,
   viewerDisplayConfig,
   readerViewMode,
   suspendAutoFitDuringPaneResize
 }: ReaderViewportProps) {
+  const handleSnapshotChange = useCallback(
+    (snapshot: ViewerSnapshot) => onSnapshotChange(readerViewMode, snapshot),
+    [onSnapshotChange, readerViewMode]
+  );
+  const handleStateChange = useCallback(
+    (state: DocumentState | null) => onStateChange(readerViewMode, state),
+    [onStateChange, readerViewMode]
+  );
+  const handleRegisterApi = useCallback(
+    (api: ViewerApi | null) => registerApi(readerViewMode, api),
+    [readerViewMode, registerApi]
+  );
+
   useEffect(() => {
     if (!readerSession) {
       return;
@@ -80,33 +99,22 @@ const ReaderViewport = memo(function ReaderViewport({
       aria-label="Reader viewport"
       data-reader-view-mode={readerViewMode}
     >
-      {readerViewMode === "scroll" ? (
-        <ContinuousPdfViewer
+      <ContinuousPdfViewer
           readerSession={readerSession}
+          readerState={readerState}
+          initialPage={initialReaderPage}
           readerActive={readerActive}
           pendingReaderOpenSessionId={pendingReaderOpenSessionId}
-          onSnapshotChange={onSnapshotChange}
+          onSnapshotChange={handleSnapshotChange}
           onOutlineChange={onOutlineChange}
-          onStateChange={onStateChange}
+          onStateChange={handleStateChange}
           onStatusChange={onStatusChange}
-          registerApi={registerApi}
+          registerApi={handleRegisterApi}
+          onFolioPrediction={onFolioPrediction}
           viewerDisplayConfig={viewerDisplayConfig}
           suspendAutoFitDuringPaneResize={suspendAutoFitDuringPaneResize}
         />
-      ) : (
-        <PdfViewer
-        readerSession={readerSession}
-        readerActive={readerActive}
-        pendingReaderOpenSessionId={pendingReaderOpenSessionId}
-        onSnapshotChange={onSnapshotChange}
-        onOutlineChange={onOutlineChange}
-        onStateChange={onStateChange}
-        onStatusChange={onStatusChange}
-        registerApi={registerApi}
-        viewerDisplayConfig={viewerDisplayConfig}
-        suspendAutoFitDuringPaneResize={suspendAutoFitDuringPaneResize}
-      />
-      )}
+
     </section>
   );
 });

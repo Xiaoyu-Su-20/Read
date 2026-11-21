@@ -52,6 +52,7 @@ export default function BookWorkspace({
   readerSession,
   readerActive,
   pendingReaderOpenSessionId,
+  readerState,
   onSnapshotChange,
   onOutlineChange,
   onStatusChange,
@@ -113,13 +114,15 @@ export default function BookWorkspace({
           <ReaderViewport
             activeViewTransition={activeViewTransition}
             readerSession={readerSession}
+            readerState={readerState}
+            initialReaderPage={readerState?.lastPage ?? readerSession?.page ?? null}
             readerActive={readerActive}
             pendingReaderOpenSessionId={pendingReaderOpenSessionId}
-            onSnapshotChange={onSnapshotChange}
+            onSnapshotChange={(_mode, snapshot) => onSnapshotChange(snapshot)}
             onOutlineChange={onOutlineChange}
-            onStateChange={onStateChange}
+            onStateChange={(_mode, state) => onStateChange(state)}
             onStatusChange={onStatusChange}
-            registerApi={registerApi}
+            registerApi={(_mode, api) => registerApi(api)}
             viewerDisplayConfig={viewerDisplayConfig}
             readerViewMode={readerViewMode}
             suspendAutoFitDuringPaneResize={false}

@@ -4,14 +4,61 @@ import {
   captureContinuousScrollAnchor,
   captureContinuousSemanticAnchor,
   computeContinuousTotalHeight,
+  computeContinuousPagePlacements,
   computeContinuousVirtualRange,
+  computeContinuousVirtualRangeFromPlacements,
   createEstimatedPageMetrics,
   mergeContinuousVirtualRanges,
   resolveContinuousActivePage,
+  resolveContinuousActivePageFromPlacements,
   restoreScrollTopForContinuousSemanticAnchor,
   restoreScrollTopForContinuousAnchor,
   updateMeasuredPageHeight
 } from "./continuousPageMetrics";
+
+describe("continuousPageMetrics placement lookups", () => {
+  const heights = [100, 240, 0, 180, 60, 300, 120];
+
+  for (const gap of [0, 20]) {
+    it(`matches a linear scan for every offset (gap ${gap})`, () => {
+      const metrics = createEstimatedPageMetrics(heights.length, (page) => heights[page - 1]);
+      const placements = computeContinuousPagePlacements(metrics, gap);
+      const totalHeight = placements[placements.length - 1].bottom;
+
+      for (let scrollTop = 0; scrollTop <= totalHeight + 200; scrollTop += 7) {
+        const readingLine = scrollTop + 40;
+        const expectedPage = (
+          placements.find((p) => readingLine >= p.top && readingLine <= p.bottom) ??
+          placements.reduce((best, p) => {
+            const distance = (q: typeof p) =>
+              Math.min(Math.abs(readingLine - q.top), Math.abs(readingLine - q.bottom));
+            return distance(p) < distance(best) ? p : best;
+          }, placements[0])
+        ).pageNumber;
+        expect(resolveContinuousActivePageFromPlacements(placements, scrollTop, 40)).toBe(
+          expectedPage
+        );
+
+        const viewportStart = scrollTop - 50;
+        const viewportEnd = scrollTop + 150 + 50;
+        const visible = placements.filter(
+          (p) => p.bottom >= viewportStart && p.top <= viewportEnd
+        );
+        const first = visible[0] ?? placements[0];
+        const last = visible[visible.length - 1] ?? first;
+        const range = computeContinuousVirtualRangeFromPlacements({
+          placements,
+          scrollTop,
+          viewportHeight: 150,
+          overscanPx: 50
+        });
+        expect([range.startPage, range.endPage]).toEqual([first.pageNumber, last.pageNumber]);
+        expect(range.topSpacerHeight).toBe(first.top);
+        expect(range.totalHeight).toBe(totalHeight);
+      }
+    });
+  }
+});
 
 describe("continuousPageMetrics", () => {
   it("builds a continuous document height from estimated page metrics", () => {

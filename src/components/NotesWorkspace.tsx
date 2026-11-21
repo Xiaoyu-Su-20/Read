@@ -144,6 +144,7 @@ export default function NotesWorkspace({
               onNavigateToTarget={() => undefined}
               onSetBookmarks={() => undefined}
               currentPage={null}
+              currentBookPagePrediction={null}
               revealRequest={noteRevealRequest}
               headerActionsContainerId="notes-workspace-header-tools"
               commandPaletteOpen={commandPaletteOpen}

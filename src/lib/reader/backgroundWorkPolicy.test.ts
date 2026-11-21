@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   PDF_RUNTIME_OUTLINE_LOAD_DELAY_MS,
+  PDF_RUNTIME_POST_VISIBLE_FALLBACK_MS,
   shouldRequestNativeTextLayer,
   shouldScheduleDeferredOutlineLoad
 } from "./backgroundWorkPolicy";
@@ -28,6 +29,7 @@ describe("reader background work policy", () => {
       })
     ).toBe(false);
     expect(PDF_RUNTIME_OUTLINE_LOAD_DELAY_MS).toBeGreaterThanOrEqual(2500);
+    expect(PDF_RUNTIME_POST_VISIBLE_FALLBACK_MS).toBeLessThan(PDF_RUNTIME_OUTLINE_LOAD_DELAY_MS);
   });
 
   it("schedules outline only after the displayed page is marked post-visible ready", () => {
@@ -78,4 +80,3 @@ describe("reader background work policy", () => {
     ).toBe(false);
   });
 });
-

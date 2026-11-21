@@ -2625,13 +2625,8 @@ button {
   mix-blend-mode: normal;
 }
 
-.continuous-reader__page-image--incoming,
-.continuous-reader__page-image--previous {
+.continuous-reader__page-image--incoming {
   transition: opacity 90ms ease-out;
-}
-
-.continuous-reader__page-image-stack .continuous-reader__page-image--fallback {
-  filter: brightness(0.97) contrast(0.94) saturate(0.92);
 }
 
 @media (max-width: 1320px) {
@@ -3203,7 +3198,7 @@ body.reader-pane-resizing .notes-pane img {
   transition: opacity 140ms ease;
 }
 
-.notes-pane--scrollbar-visible .notes-pane__scrollbar {
+.notes-pane__scrollbar[data-visible="true"] {
   opacity: 1;
   pointer-events: auto;
 }
@@ -3313,8 +3308,12 @@ body.reader-pane-resizing .notes-pane img {
 }
 
 .notes-popover--navigation {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   width: 25rem;
   min-width: 25rem;
+  max-height: min(34rem, calc(100vh - var(--topbar-height) - 2rem));
+  overflow: hidden;
   padding: 1rem 0.9rem 1.05rem;
   border-radius: 1rem;
   background: color-mix(in srgb, var(--overlay-surface-strong) 94%, var(--theme-chrome));
@@ -3768,7 +3767,22 @@ body.reader-pane-resizing .notes-pane img {
 .notes-navigation {
   display: grid;
   gap: 0.55rem;
+  min-height: 0;
   margin-top: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.25rem;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--overlay-border) 86%, transparent) transparent;
+}
+
+.notes-navigation::-webkit-scrollbar {
+  width: 0.45rem;
+}
+
+.notes-navigation::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--overlay-border) 86%, transparent);
 }
 
 .notes-navigation__chapter {
@@ -4193,6 +4207,12 @@ body.reader-pane-resizing .notes-pane img {
   margin: 0;
   padding: 0.2rem 0;
   outline: none;
+}
+
+.note-editor__body[data-heading-link-modifier-active="true"]
+  > [data-heading-has-source-reference="true"]
+  > .note-editor__block-content {
+  cursor: pointer;
 }
 
 .page-link {

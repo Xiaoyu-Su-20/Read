@@ -1,4 +1,5 @@
 export const PDF_RUNTIME_OUTLINE_LOAD_DELAY_MS = 2500;
+export const PDF_RUNTIME_POST_VISIBLE_FALLBACK_MS = 900;
 
 type NativeTextEligibility = {
   backgroundWorkSuspended: boolean;

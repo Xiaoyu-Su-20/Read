@@ -19,6 +19,21 @@ pub struct NoteStore;
 
 const NON_STANDALONE_NOTE_DELETE_REASON: &str = "Only standalone notes can be deleted here.";
 const STANDALONE_NOTE_DELETE_BLOCKED_REASON: &str = "Clear the note before deleting it.";
+const NOTE_EXCERPT_MAX_CHARS: usize = 160;
+
+fn truncate_excerpt(excerpt: &mut String) {
+    if excerpt.chars().count() <= NOTE_EXCERPT_MAX_CHARS {
+        return;
+    }
+
+    let boundary = excerpt
+        .char_indices()
+        .nth(NOTE_EXCERPT_MAX_CHARS)
+        .map(|(index, _)| index)
+        .unwrap_or(excerpt.len());
+    excerpt.truncate(boundary);
+    excerpt.push_str("...");
+}
 
 impl NoteStore {
     fn normalize_topic_color(&self, color: &str) -> String {
@@ -354,10 +369,7 @@ impl NoteStore {
             .collect::<Vec<_>>()
             .join(" ");
 
-        if excerpt.len() > 160 {
-            excerpt.truncate(160);
-            excerpt.push_str("...");
-        }
+        truncate_excerpt(&mut excerpt);
 
         excerpt
     }

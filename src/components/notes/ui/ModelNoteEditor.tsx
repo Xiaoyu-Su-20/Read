@@ -76,7 +76,9 @@ import {
   createPageLinkNode,
   createTextNode,
   createTopicCardNode,
-  formatPageLinkText
+  formatPageLinkText,
+  normalizeDocumentSourceReference,
+  noteBlockText
 } from "../../../lib/notes";
 import { DEFAULT_TOPIC_COLOR, normalizeTopicText } from "../../../lib/paragraphTopics";
 import { extractStandaloneSpellcheckWord } from "../../../lib/spellcheck";
@@ -94,6 +96,7 @@ import type {
   NoteModelPoint,
   NoteModelSelection,
   NotePageLinkNode,
+  DocumentSourceReference,
   ParagraphTopic
 } from "../../../lib/types";
 import { computeTopAlignedChildScrollTop } from "./noteEditorScroll";
@@ -110,6 +113,25 @@ function escapeCssIdentifier(value: string) {
   }
 
   return value.replace(/["\\]/g, "\\$&");
+}
+
+function ensureFocusBlockVisible(
+  root: HTMLElement,
+  selection: NoteModelSelection
+) {
+  const block = findBlockElement(root, selection.focus.blockId);
+  const scrollSurface = block?.closest<HTMLElement>(".notes-pane__scroll-surface");
+  if (!block || !scrollSurface) {
+    return;
+  }
+
+  const blockRect = block.getBoundingClientRect();
+  const scrollRect = scrollSurface.getBoundingClientRect();
+  if (blockRect.bottom > scrollRect.bottom) {
+    scrollSurface.scrollTop += blockRect.bottom - scrollRect.bottom;
+  } else if (blockRect.top < scrollRect.top) {
+    scrollSurface.scrollTop += blockRect.top - scrollRect.top;
+  }
 }
 
 type NoteEditorProps = {
@@ -150,9 +172,36 @@ type AtomicInlineSelection = {
 type CompositionSession = {
   blockId: string;
   host: HTMLElement | null;
+  hostTextAtStart: string;
   marks: PendingTextMarks | null;
   selection: NoteModelSelection;
 };
+
+function inferCompositionTextFromHost(before: string, after: string) {
+  if (before === after) {
+    return "";
+  }
+
+  let prefixLength = 0;
+  const maxPrefixLength = Math.min(before.length, after.length);
+  while (
+    prefixLength < maxPrefixLength &&
+    before[prefixLength] === after[prefixLength]
+  ) {
+    prefixLength += 1;
+  }
+
+  let suffixLength = 0;
+  while (
+    suffixLength < before.length - prefixLength &&
+    suffixLength < after.length - prefixLength &&
+    before[before.length - suffixLength - 1] === after[after.length - suffixLength - 1]
+  ) {
+    suffixLength += 1;
+  }
+
+  return after.slice(prefixLength, after.length - suffixLength);
+}
 
 const NoteBlockView = memo(function NoteBlockView({
   block
@@ -169,6 +218,7 @@ const NoteBlockView = memo(function NoteBlockView({
       className="note-editor__block"
       data-block-id={block.id}
       data-block-type={block.type}
+      data-heading-has-source-reference={block.sourceReference?.target ? "true" : undefined}
     >
       <div
         className="note-editor__block-content"
@@ -199,6 +249,83 @@ function inlineNodeStartOffset(block: NoteBlock, inlineIndex: number) {
   return block.children
     .slice(0, inlineIndex)
     .reduce((length, node) => length + inlineNodeLength(node), 0);
+}
+
+function headingSourceReferenceToPageLink(
+  block: NoteBlock,
+  sourceReference: DocumentSourceReference | null | undefined
+): NotePageLinkNode | null {
+  const target = sourceReference?.target;
+  if (
+    !target ||
+    !Number.isInteger(target.pageIndex) ||
+    target.pageIndex < 0
+  ) {
+    return null;
+  }
+
+  const pageNumber = target.pageIndex + 1;
+  return createPageLinkNode({
+    id: `heading-source-${block.id}`,
+    text: formatPageLinkText(pageNumber),
+    bookPageLabel: String(pageNumber),
+    documentId: target.documentId ?? sourceReference?.documentId ?? null,
+    pdfPageIndex: pageNumber,
+    createdAt: sourceReference?.createdAt,
+    origin: {
+      kind: "heading-reference",
+      ownerBlockId: block.id
+    }
+  });
+}
+
+function createHeadingSourceReference(
+  block: NoteBlock,
+  documentId: string | null | undefined,
+  currentPage: number | null
+): DocumentSourceReference | null {
+  if (!documentId || currentPage == null || currentPage <= 0) {
+    return null;
+  }
+
+  return normalizeDocumentSourceReference(
+    {
+      id: crypto.randomUUID(),
+      documentId,
+      kind: "direct",
+      outlineItemId: null,
+      outlineSource: null,
+      title: noteBlockText(block).trim() || "Untitled section",
+      target: {
+        documentId,
+        pageIndex: currentPage - 1
+      },
+      createdAt: new Date().toISOString()
+    },
+    documentId
+  );
+}
+
+function attachHeadingSourceReference(
+  blocks: NoteBlock[],
+  blockId: string,
+  documentId: string | null | undefined,
+  currentPage: number | null
+) {
+  return blocks.map((block) => {
+    if (
+      block.id !== blockId ||
+      block.type === "paragraph" ||
+      block.sourceReference
+    ) {
+      return block;
+    }
+
+    return {
+      ...block,
+      sourceReference: createHeadingSourceReference(block, documentId, currentPage)
+    };
+  });
 }
 
 function clipboardBlocksFromHtml(html: string) {
@@ -302,6 +429,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     const blocksByIdRef = useRef(createNoteBlockLookup(initialRuntime.blocks));
     const [renderedBlocks, setRenderedBlocks] = useState(() => blocksRef.current);
     const [renderTick, setRenderTick] = useState(0);
+    const [headingLinkModifierActive, setHeadingLinkModifierActive] = useState(false);
+    const headingLinkModifierActiveRef = useRef(false);
     const selectedBlockIdRef = useRef<string | null>(null);
     const selectedBlockElementRef = useRef<HTMLElement | null>(null);
     const selectedPageLinkIdRef = useRef<string | null>(null);
@@ -311,8 +440,11 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     const pendingPageLinkPointRef = useRef<NoteModelPoint | null>(null);
     const pendingTopicSelectionRef = useRef<NoteModelSelection | null>(null);
     const pendingSelectionRestoreRef = useRef<NoteModelSelection | null>(null);
+    const pendingCaretVisibilityRef = useRef(false);
     const pendingTextMarksRef = useRef<PendingTextMarks | null>(null);
     const compositionSessionRef = useRef<CompositionSession | null>(null);
+    const isComposingRef = useRef(false);
+    const queuedCompositionReloadRef = useRef<NoteDocument | null>(null);
     const historyRef = useRef<NoteModelHistoryState | null>(initialRuntime.history);
     const applyingHistoryRef = useRef(false);
     const beforeInputHandlerRef = useRef<(event: InputEvent) => boolean>(() => false);
@@ -324,6 +456,14 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         noteId: note?.id ?? null,
         ...fields
       });
+    }
+
+    function setHeadingLinkModifierActiveState(active: boolean) {
+      if (headingLinkModifierActiveRef.current === active) {
+        return;
+      }
+      headingLinkModifierActiveRef.current = active;
+      setHeadingLinkModifierActive(active);
     }
 
     function currentSelection() {
@@ -403,6 +543,33 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     function resolvePageLink(pageLinkId: string): NotePageLinkNode | null {
       const found = findInlineNode(blocksRef.current, pageLinkId);
       return found?.node.type === "page-link" ? found.node : null;
+    }
+
+    function resolveHeadingSourceLinkFromTarget(target: EventTarget | null) {
+      const targetElement = closestTargetElement(target);
+      const blockElement = targetElement?.closest<HTMLElement>("[data-block-id]") ?? null;
+      const blockId = blockElement?.dataset.blockId ?? null;
+      const block = blockId
+        ? blocksRef.current.find((candidate) => candidate.id === blockId)
+        : null;
+      if (!block || block.type === "paragraph") {
+        return null;
+      }
+
+      const node = headingSourceReferenceToPageLink(block, block.sourceReference);
+      return node ? { block, node } : null;
+    }
+
+    function updateHeadingLinkModifierFromPointer(event: {
+      ctrlKey: boolean;
+      metaKey: boolean;
+      target: EventTarget | null;
+    }) {
+      setHeadingLinkModifierActiveState(
+        documentCapabilities &&
+          (event.ctrlKey || event.metaKey) &&
+          Boolean(resolveHeadingSourceLinkFromTarget(event.target))
+      );
     }
 
     function selectedAtomicInline(): AtomicInlineSelection | null {
@@ -635,7 +802,11 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       }
     }
 
-    function applyModelEdit(edit: NoteModelEdit, mergeKey: NoteHistoryMergeKey | null) {
+    function applyModelEdit(
+      edit: NoteModelEdit,
+      mergeKey: NoteHistoryMergeKey | null,
+      ensureCaretVisible = false
+    ) {
       clearTokenSelection();
       updateSelectedBlock(null);
       clearPendingTextMarks();
@@ -649,6 +820,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       setCurrentBlocks(nextState.blocks);
       historyRef.current = nextState.history;
       pendingSelectionRestoreRef.current = nextState.pendingSelectionRestore;
+      pendingCaretVisibilityRef.current = ensureCaretVisible;
       setRenderedBlocks(nextState.blocks);
       if (nextState.changed) {
         const updateProfile = markNoteBlocksUpdate(nextState.blocks, {
@@ -670,7 +842,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     }
 
     function updateHistorySelectionFromDom() {
-      if (!historyRef.current || applyingHistoryRef.current) {
+      if (!historyRef.current || applyingHistoryRef.current || isComposingRef.current) {
         return;
       }
       historyRef.current = replaceNoteEditorSelection({
@@ -782,7 +954,11 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       ) {
         const selection = currentSelection();
         if (selection) {
-          applyModelEdit(splitBlockAtSelection(blocksRef.current, selection), null);
+          applyModelEdit(
+            splitBlockAtSelection(blocksRef.current, selection),
+            null,
+            true
+          );
         }
         return true;
       }
@@ -1191,6 +1367,25 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
     }
 
     useEffect(() => {
+      function updateModifierState(event: KeyboardEvent) {
+        setHeadingLinkModifierActiveState(event.ctrlKey || event.metaKey);
+      }
+
+      function clearModifierState() {
+        setHeadingLinkModifierActiveState(false);
+      }
+
+      window.addEventListener("keydown", updateModifierState);
+      window.addEventListener("keyup", updateModifierState);
+      window.addEventListener("blur", clearModifierState);
+      return () => {
+        window.removeEventListener("keydown", updateModifierState);
+        window.removeEventListener("keyup", updateModifierState);
+        window.removeEventListener("blur", clearModifierState);
+      };
+    }, []);
+
+    useEffect(() => {
       if (!note) {
         const runtime = createNoteEditorRuntimeState([createEmptyNoteBlock()], null, null);
         setCurrentBlocks(runtime.blocks);
@@ -1204,6 +1399,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         pendingTopicSelectionRef.current = null;
         clearPendingTextMarks();
         compositionSessionRef.current = null;
+        isComposingRef.current = false;
+        queuedCompositionReloadRef.current = null;
         return;
       }
       const sameNote = appliedNoteIdRef.current === note.id;
@@ -1215,6 +1412,14 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             noteBlocksContentEqual(note.blocks, lastDispatchedBlocksRef.current)));
       if (isLocalEcho) {
         lastDispatchedBlocksRef.current = note.blocks;
+        return;
+      }
+      if (sameNote && isComposingRef.current) {
+        queuedCompositionReloadRef.current = note;
+        debugLocalAction("notes.interaction.composition-reload-queued", {
+          noteId: note.id,
+          blockCount: note.blocks.length
+        });
         return;
       }
       const runtime = createNoteEditorRuntimeState(note.blocks, note.bookId, null);
@@ -1229,6 +1434,8 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       pendingTopicSelectionRef.current = null;
       clearPendingTextMarks();
       compositionSessionRef.current = null;
+      isComposingRef.current = false;
+      queuedCompositionReloadRef.current = null;
     }, [note]);
 
     useClientLayoutEffect(() => {
@@ -1238,6 +1445,9 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
       updateSelectedBlock(selectedBlockIdRef.current);
       updateSelectedPageLink(selectedPageLinkIdRef.current);
       updateSelectedTopic(selectedTopicIdRef.current);
+      if (isComposingRef.current) {
+        return;
+      }
       const pendingSelection = pendingSelectionRestoreRef.current;
       if (pendingSelection) {
         const restored = restoreModelSelection(
@@ -1246,10 +1456,6 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           pendingSelection,
           blocksByIdRef.current
         );
-        if (!SHOULD_VERIFY_SELECTION_RESTORE && restored) {
-          pendingSelectionRestoreRef.current = null;
-          return;
-        }
         const actualSelection =
           restored && SHOULD_VERIFY_SELECTION_RESTORE
             ? captureModelSelection(
@@ -1258,12 +1464,17 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
                 blocksByIdRef.current
               )
             : null;
-        if (
-          actualSelection &&
-          actualSelection.focus.blockId === pendingSelection.focus.blockId &&
-          actualSelection.anchor.blockId === pendingSelection.anchor.blockId
-        ) {
+        const selectionRestored =
+          restored &&
+          (!SHOULD_VERIFY_SELECTION_RESTORE ||
+            (actualSelection?.focus.blockId === pendingSelection.focus.blockId &&
+              actualSelection.anchor.blockId === pendingSelection.anchor.blockId));
+        if (selectionRestored) {
           pendingSelectionRestoreRef.current = null;
+          if (pendingCaretVisibilityRef.current) {
+            ensureFocusBlockVisible(bodyRef.current, pendingSelection);
+          }
+          pendingCaretVisibilityRef.current = false;
         }
       }
     }, [renderTick, renderedBlocks]);
@@ -1275,7 +1486,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         selectionChangeFrameRef.current = null;
         const root = bodyRef.current;
         const history = historyRef.current;
-        if (!root || !history || applyingHistoryRef.current) {
+        if (!root || !history || applyingHistoryRef.current || isComposingRef.current) {
           return;
         }
         const selection = root.ownerDocument.defaultView?.getSelection();
@@ -1386,8 +1597,11 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
         },
         resolveContextMenuTargetAtPoint,
         turnInto(blockId, type) {
+          const nextBlocks = convertBlockType(blocksRef.current, blockId, type);
           commitBlocks(
-            convertBlockType(blocksRef.current, blockId, type),
+            type === "paragraph"
+              ? nextBlocks
+              : attachHeadingSourceReference(nextBlocks, blockId, note?.bookId, currentPage),
             currentSelection(),
             "turn-into",
             true
@@ -1566,6 +1780,7 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
           contentEditable={!loading}
           suppressContentEditableWarning
           data-note-editor-root="true"
+          data-heading-link-modifier-active={headingLinkModifierActive ? "true" : undefined}
           role="textbox"
           aria-label="Note body"
           aria-multiline="true"
@@ -1575,6 +1790,18 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
               button: event.button,
               pointerType: event.pointerType
             });
+          }}
+          onPointerMove={(event) => {
+            updateHeadingLinkModifierFromPointer(event);
+          }}
+          onPointerLeave={() => {
+            setHeadingLinkModifierActiveState(false);
+          }}
+          onPointerOut={(event) => {
+            const nextTarget = event.relatedTarget;
+            if (!bodyRef.current?.contains(nextTarget instanceof Node ? nextTarget : null)) {
+              setHeadingLinkModifierActiveState(false);
+            }
           }}
           onWheelCapture={(event) => event.stopPropagation()}
           onBlur={(event) => {
@@ -1694,28 +1921,78 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
                 ".note-editor__block-content"
               ) ??
               null;
+            isComposingRef.current = true;
+            queuedCompositionReloadRef.current = null;
             compositionSessionRef.current = {
               blockId,
               host,
+              hostTextAtStart: host?.textContent ?? "",
               marks: effectiveTextMarks(selection) ?? null,
               selection
             };
+            logInteraction("compositionstart", {
+              blockId,
+              hostConnected: host ? bodyRef.current?.contains(host) ?? false : false,
+              hostTextLength: host?.textContent?.length ?? null
+            });
+          }}
+          onCompositionUpdate={(event) => {
+            const session = compositionSessionRef.current;
+            logInteraction("compositionupdate", {
+              blockId: session?.blockId ?? null,
+              dataLength: event.data.length,
+              hostConnected: session?.host
+                ? bodyRef.current?.contains(session.host) ?? false
+                : false,
+              hostTextLength: session?.host?.textContent?.length ?? null
+            });
           }}
           onCompositionEnd={(event) => {
             const session = compositionSessionRef.current;
             compositionSessionRef.current = null;
+            isComposingRef.current = false;
             if (!session) {
               return;
             }
+            const hostConnected = session.host
+              ? bodyRef.current?.contains(session.host) ?? false
+              : false;
+            const hostText = session.host?.textContent ?? "";
+            const inferredText =
+              event.data.length > 0
+                ? event.data
+                : inferCompositionTextFromHost(session.hostTextAtStart, hostText);
+            const queuedReload = queuedCompositionReloadRef.current;
+            queuedCompositionReloadRef.current = null;
+            logInteraction("compositionend", {
+              blockId: session.blockId,
+              dataLength: event.data.length,
+              inferredTextLength: inferredText.length,
+              hostConnected,
+              hostTextLength: session.host?.textContent?.length ?? null,
+              queuedReload: Boolean(queuedReload)
+            });
             if (
               !blocksRef.current.some((block) => block.id === session.blockId) ||
-              (session.host && !bodyRef.current?.contains(session.host))
+              (session.host && !hostConnected)
             ) {
+              if (queuedReload) {
+                debugLocalAction("notes.interaction.composition-queued-reload-discarded", {
+                  reason: "composition-host-detached",
+                  noteId: queuedReload.id
+                });
+              }
               rerenderFromModel(session.selection);
               return;
             }
-            const text = event.data ?? "";
+            const text = inferredText;
             if (text.length > 0 || !isCollapsedModelSelection(session.selection)) {
+              if (queuedReload) {
+                debugLocalAction("notes.interaction.composition-queued-reload-discarded", {
+                  reason: "composition-committed-local-edit",
+                  noteId: queuedReload.id
+                });
+              }
               applyModelEdit(
                 insertTextAtSelection(
                   blocksRef.current,
@@ -1725,6 +2002,28 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
                 ),
                 "typing"
               );
+              return;
+            }
+            if (queuedReload) {
+              const runtime = createNoteEditorRuntimeState(
+                queuedReload.blocks,
+                queuedReload.bookId,
+                null
+              );
+              setCurrentBlocks(runtime.blocks);
+              setRenderedBlocks(runtime.blocks);
+              historyRef.current = runtime.history;
+              appliedNoteIdRef.current = queuedReload.id;
+              lastDispatchedBlocksRef.current = null;
+              clearTokenSelection();
+              updateSelectedBlock(null);
+              pendingPageLinkPointRef.current = null;
+              pendingTopicSelectionRef.current = null;
+              clearPendingTextMarks();
+              debugLocalAction("notes.interaction.composition-queued-reload-applied", {
+                noteId: queuedReload.id,
+                blockCount: queuedReload.blocks.length
+              });
               return;
             }
             rerenderFromModel(session.selection);
@@ -1809,6 +2108,14 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
             if (!bodyRef.current || event.button !== 0 || !documentCapabilities) {
               return;
             }
+            if (event.ctrlKey || event.metaKey) {
+              const headingLink = resolveHeadingSourceLinkFromTarget(event.target);
+              if (headingLink) {
+                setHeadingLinkModifierActiveState(true);
+                event.preventDefault();
+                return;
+              }
+            }
             const targetElement = closestTargetElement(event.target);
             const pageLink =
               targetElement
@@ -1884,6 +2191,22 @@ const ModelNoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(
               event.stopPropagation();
               updateSelectedTopic(topic.dataset.topicId ?? null);
               return;
+            }
+            if ((event.ctrlKey || event.metaKey) && documentCapabilities) {
+              const headingLink = resolveHeadingSourceLinkFromTarget(event.target);
+              if (headingLink) {
+                event.preventDefault();
+                event.stopPropagation();
+                clearTokenSelection();
+                updateSelectedBlock(headingLink.block.id);
+                logInteraction("heading-source-click-dispatch-open", {
+                  blockId: headingLink.block.id,
+                  documentId: headingLink.node.documentId,
+                  pdfPageIndex: headingLink.node.pdfPageIndex
+                });
+                onOpenPageLink(headingLink.node);
+                return;
+              }
             }
             const pageLink =
               targetElement

@@ -145,22 +145,64 @@ export function captureContinuousSemanticAnchor(
   readingLineOffsetPx: number,
   pageGapPx: number
 ): ContinuousSemanticAnchor | null {
-  const placements = computeContinuousPagePlacements(metrics, pageGapPx);
+  return captureContinuousSemanticAnchorFromPlacements(
+    computeContinuousPagePlacements(metrics, pageGapPx),
+    scrollTop,
+    readingLineOffsetPx
+  );
+}
+
+// Placements are sorted by position, so lookups by offset can binary-search.
+function firstPlacementIndex(
+  placements: ContinuousPagePlacement[],
+  matches: (placement: ContinuousPagePlacement) => boolean
+) {
+  let low = 0;
+  let high = placements.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (matches(placements[middle])) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  return low;
+}
+
+function distanceToPlacement(placement: ContinuousPagePlacement, offset: number) {
+  return Math.min(Math.abs(offset - placement.top), Math.abs(offset - placement.bottom));
+}
+
+export function captureContinuousSemanticAnchorFromPlacements(
+  placements: ContinuousPagePlacement[],
+  scrollTop: number,
+  readingLineOffsetPx: number
+): ContinuousSemanticAnchor | null {
   if (placements.length === 0) {
     return null;
   }
 
   const readingLine = finiteNonNegative(scrollTop) + finiteNonNegative(readingLineOffsetPx);
-  const placement =
-    placements.find((candidate) => readingLine >= candidate.top && readingLine <= candidate.bottom) ??
-    placements.reduce((best, candidate) => {
-      const bestDistance = Math.min(Math.abs(readingLine - best.top), Math.abs(readingLine - best.bottom));
-      const candidateDistance = Math.min(
-        Math.abs(readingLine - candidate.top),
-        Math.abs(readingLine - candidate.bottom)
-      );
-      return candidateDistance < bestDistance ? candidate : best;
-    }, placements[0]);
+  const index = firstPlacementIndex(placements, (candidate) => candidate.bottom >= readingLine);
+  let placement: ContinuousPagePlacement;
+  if (index < placements.length && placements[index].top <= readingLine) {
+    placement = placements[index];
+  } else {
+    // The reading line is in a gap or past the end: take the nearer neighbour.
+    const before = placements[index - 1];
+    const after = placements[index];
+    if (!before) {
+      placement = after;
+    } else if (!after) {
+      placement = before;
+    } else {
+      placement =
+        distanceToPlacement(after, readingLine) < distanceToPlacement(before, readingLine)
+          ? after
+          : before;
+    }
+  }
 
   return {
     pageNumber: placement.pageNumber,
@@ -202,6 +244,17 @@ export function resolveContinuousActivePage(
   return captureContinuousSemanticAnchor(metrics, scrollTop, readingLineOffsetPx, pageGapPx)?.pageNumber ?? 1;
 }
 
+export function resolveContinuousActivePageFromPlacements(
+  placements: ContinuousPagePlacement[],
+  scrollTop: number,
+  readingLineOffsetPx: number
+) {
+  return (
+    captureContinuousSemanticAnchorFromPlacements(placements, scrollTop, readingLineOffsetPx)
+      ?.pageNumber ?? 1
+  );
+}
+
 export function computeContinuousVirtualRange(args: {
   metrics: ContinuousPageMetric[];
   scrollTop: number;
@@ -209,7 +262,21 @@ export function computeContinuousVirtualRange(args: {
   overscanPx: number;
   pageGapPx: number;
 }): ContinuousVirtualRange {
-  const placements = computeContinuousPagePlacements(args.metrics, args.pageGapPx);
+  return computeContinuousVirtualRangeFromPlacements({
+    placements: computeContinuousPagePlacements(args.metrics, args.pageGapPx),
+    scrollTop: args.scrollTop,
+    viewportHeight: args.viewportHeight,
+    overscanPx: args.overscanPx
+  });
+}
+
+export function computeContinuousVirtualRangeFromPlacements(args: {
+  placements: ContinuousPagePlacement[];
+  scrollTop: number;
+  viewportHeight: number;
+  overscanPx: number;
+}): ContinuousVirtualRange {
+  const { placements } = args;
   const totalHeight = placements[placements.length - 1]?.bottom ?? 0;
   if (placements.length === 0) {
     return {
@@ -226,11 +293,15 @@ export function computeContinuousVirtualRange(args: {
     finiteNonNegative(args.scrollTop) +
     finiteNonNegative(args.viewportHeight) +
     finiteNonNegative(args.overscanPx);
-  const visiblePlacements = placements.filter(
-    (placement) => placement.bottom >= viewportStart && placement.top <= viewportEnd
+  const firstIndex = firstPlacementIndex(
+    placements,
+    (placement) => placement.bottom >= viewportStart
   );
-  const first = visiblePlacements[0] ?? placements[0];
-  const last = visiblePlacements[visiblePlacements.length - 1] ?? first;
+  const lastIndex =
+    firstPlacementIndex(placements, (placement) => placement.top > viewportEnd) - 1;
+  const anyVisible = firstIndex <= lastIndex;
+  const first = anyVisible ? placements[firstIndex] : placements[0];
+  const last = anyVisible ? placements[lastIndex] : first;
 
   return {
     startPage: first.pageNumber,

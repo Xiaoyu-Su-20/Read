@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use mupdf::{Colorspace, Cookie, Device, Document, IRect, Matrix, Pixmap, Rect};
+use mupdf::{Colorspace, Cookie, CookieAbortHandle, Device, Document, IRect, Matrix, Pixmap, Rect};
 use serde_json::json;
 
 use crate::{
@@ -29,6 +29,74 @@ pub use session::{
     SessionDisplayListPage,
 };
 
+/// Error text for a render that was cancelled by the caller (an expected outcome, not a failure).
+pub const RENDER_CANCELLED_MESSAGE: &str = "Render request cancelled.";
+/// Error text for a render skipped because its reader generation is no longer active.
+pub const STALE_RENDER_MESSAGE: &str = "Stale render request skipped.";
+
+/// True when `message` (an `AppError` display string or a bare command error) describes a
+/// render that was cancelled or superseded rather than one that failed.
+pub fn is_expected_render_outcome(message: &str) -> bool {
+    message.contains(RENDER_CANCELLED_MESSAGE) || message.contains(STALE_RENDER_MESSAGE)
+}
+
+/// Cancellation state shared between a render request and `cancel_pdf_page_render`.
+///
+/// Besides the flag checked between render phases, it can abort the MuPDF run that is currently
+/// executing: the render registers its cookie's abort handle for the duration of the run.
+#[derive(Debug, Default)]
+pub struct RenderCancellation {
+    cancelled: AtomicBool,
+    abort: Mutex<Option<CookieAbortHandle>>,
+}
+
+impl RenderCancellation {
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Marks the request cancelled and aborts any MuPDF run currently attached.
+    pub fn cancel(&self) {
+        // The flag must be visible before the abort so a run that stops early is always
+        // recognised as cancelled by the post-run check and its partial pixmap is discarded.
+        self.cancelled.store(true, Ordering::Release);
+        if let Ok(abort) = self.abort.lock() {
+            if let Some(handle) = abort.as_ref() {
+                // SAFETY: the handle is detached (under this same lock) before its cookie is
+                // dropped, see `CookieAbortGuard`.
+                unsafe { handle.abort() };
+            }
+        }
+    }
+
+    /// Attaches `cookie` until the returned guard is dropped. The guard must be dropped before
+    /// the cookie.
+    fn attach<'a>(&'a self, cookie: &Cookie) -> CookieAbortGuard<'a> {
+        let handle = cookie.abort_handle();
+        if let Ok(mut abort) = self.abort.lock() {
+            if self.is_cancelled() {
+                // Cancelled before the run started: make it return immediately.
+                // SAFETY: the cookie is alive (borrowed by the caller).
+                unsafe { handle.abort() };
+            }
+            *abort = Some(handle);
+        }
+        CookieAbortGuard { cancellation: self }
+    }
+}
+
+struct CookieAbortGuard<'a> {
+    cancellation: &'a RenderCancellation,
+}
+
+impl Drop for CookieAbortGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut abort) = self.cancellation.abort.lock() {
+            *abort = None;
+        }
+    }
+}
+
 const RENDERER_VERSION: &str = "mupdf-v6";
 const BASE_PDF_RENDER_SCALE: f32 = 1.0;
 const JPEG_QUALITY: u32 = 92;
@@ -44,7 +112,7 @@ pub struct PageRenderRequest {
     pub page_number: u32,
     pub request_sequence: Option<u32>,
     pub request_id: Option<String>,
-    pub cancellation: Option<Arc<AtomicBool>>,
+    pub cancellation: Option<Arc<RenderCancellation>>,
     pub expected_normalization_token: Option<String>,
     pub expected_render_variant: Option<RenderVariant>,
     pub expected_rotation: Option<i32>,
@@ -182,6 +250,11 @@ impl PdfRenderStore {
             let cookie = Cookie::new().map_err(|error| {
                 AppError::Render(format!("Unable to create MuPDF render cookie: {error}"))
             })?;
+            // Declared after the cookie so it detaches before the cookie is freed.
+            let _abort_guard = request
+                .cancellation
+                .as_ref()
+                .map(|cancellation| cancellation.attach(&cookie));
 
             process.checkpoint(
                 "render-started",
@@ -334,7 +407,14 @@ impl PdfRenderStore {
                 "pageNumber": payload.page_number,
                 "width": payload.width,
             })),
-            Err(error) => process.fail(&error.to_string(), json!({})),
+            Err(error) => {
+                let message = error.to_string();
+                if is_expected_render_outcome(&message) {
+                    process.abandon(&message, json!({}));
+                } else {
+                    process.fail(&message, json!({}));
+                }
+            }
         }
 
         result
@@ -511,7 +591,7 @@ fn ensure_render_not_cancelled(request: &PageRenderRequest, phase: &str) -> AppR
     let cancelled = request
         .cancellation
         .as_ref()
-        .is_some_and(|cancellation| cancellation.load(Ordering::Acquire));
+        .is_some_and(|cancellation| cancellation.is_cancelled());
     if !cancelled {
         return Ok(());
     }
@@ -525,7 +605,7 @@ fn ensure_render_not_cancelled(request: &PageRenderRequest, phase: &str) -> AppR
             "requestSequence": request.request_sequence,
         }),
     );
-    Err(AppError::Render("Render request cancelled.".to_string()))
+    Err(AppError::Render(RENDER_CANCELLED_MESSAGE.to_string()))
 }
 
 fn render_run_error(

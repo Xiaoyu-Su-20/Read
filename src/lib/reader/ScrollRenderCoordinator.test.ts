@@ -49,7 +49,7 @@ function demand(
 
 function payload(pageNumber: number): RenderedPagePayload {
   return {
-    imageBytes: [1, 2, 3],
+    imageBytes: new Uint8Array([1, 2, 3]),
     pageNumber,
     width: 10,
     height: 20,

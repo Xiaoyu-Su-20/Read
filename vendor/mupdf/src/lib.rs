@@ -85,7 +85,7 @@ pub use color_params::{ColorParams, RenderingIntent};
 pub use colorspace::Colorspace;
 pub(crate) use context::context;
 pub use context::Context;
-pub use cookie::Cookie;
+pub use cookie::{Cookie, CookieAbortHandle};
 pub use destination::{Destination, DestinationKind};
 pub use device::{BlendMode, Device, Function, NativeDevice};
 pub use display_list::DisplayList;
